@@ -332,7 +332,7 @@
 
     // 步骤4: 打包 IPA 并安装
     NSError *installError = nil;
-    BOOL installed = [self installSignedApp:result.outputPath
+    BOOL installed = [self installSignedApp:result.signedAppPath
                           bundleIdentifier:bundleIdentifier
                                      error:&installError];
     if (!installed) {

@@ -62,6 +62,7 @@
         result.errorMessage = signError.localizedDescription;
         if (error) *error = signError;
     } else {
+        result.signedAppPath = options.outputPath ?: options.appPath;
         NSLog(@"[RePro] ldid 签名成功: %@", options.bundleIdentifier);
     }
 

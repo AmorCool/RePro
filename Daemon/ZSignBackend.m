@@ -149,6 +149,7 @@
         if (!result.success) {
             result.errorMessage = [NSString stringWithFormat:@"zsign 退出码 %d\n%@", result.exitCode, logOutput];
         } else {
+            result.signedAppPath = options.outputPath ?: options.appPath;
             NSLog(@"[RePro] zsign 签名成功: %@", options.bundleIdentifier);
         }
     } else {
