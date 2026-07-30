@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var isLoggingIn = false
     @State private var loginMessage: String?
     @State private var showingRespringAlert = false
+    @State private var anisetteReady: Bool = false
+    @State private var validTokenCount: Int = 0
 
     var body: some View {
         NavigationView {
@@ -79,13 +81,13 @@ struct SettingsView: View {
                     HStack {
                         Text("Anisette 本地生成")
                         Spacer()
-                        Text("已启用")
-                            .foregroundColor(.green)
+                        Text(anisetteReady ? "已启用" : "未就绪")
+                            .foregroundColor(anisetteReady ? .green : .orange)
                     }
                     HStack {
                         Text("Token 缓存")
                         Spacer()
-                        Text("查看详情")
+                        Text("\(validTokenCount) 个有效")
                             .foregroundColor(.blue)
                     }
                 }
@@ -130,6 +132,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .onAppear { refreshStatus() }
             .alert("确认重启 SpringBoard", isPresented: $showingRespringAlert) {
                 Button("取消", role: .cancel) {}
                 Button("重启", role: .destructive) {
@@ -162,6 +165,21 @@ struct SettingsView: View {
 
     private func performRespring() {
         showingRespringAlert = true
+    }
+
+    private func refreshStatus() {
+        DaemonClient.shared.getHealth { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let status):
+                    self.anisetteReady = status.anisetteReady
+                    self.validTokenCount = status.validTokenCount
+                case .failure:
+                    self.anisetteReady = false
+                    self.validTokenCount = 0
+                }
+            }
+        }
     }
 
     private func performRespringNow() {

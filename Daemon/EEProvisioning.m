@@ -20,6 +20,7 @@
 #import "EEProvisioning.h"
 #import "EEAppleServices.h"
 #import "EESigning.h"
+#import "RPVLoginImpl.h"
 
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
@@ -53,10 +54,53 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 - (BOOL)authenticateWithAppleID:(NSString *)appleID
                          password:(NSString *)password
                             error:(NSError **)error {
-    // 现代流程通过 AnisetteManager + ensureSessionWithIdentity 完成认证
+    // 使用 RPVLoginImpl 执行完整的 SRP 认证
+    RPVLoginImpl *loginImpl = [[RPVLoginImpl alloc] init];
+
+    __block NSError *authError = nil;
+    __block NSString *userIdentity = nil;
+    __block NSString *gsToken = nil;
+
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    [loginImpl loginWithUsername:appleID
+                         password:password
+                      completion:^(NSError *err, NSString *identity, NSString *token, NSString *idmsToken) {
+        authError = err;
+        userIdentity = identity;
+        gsToken = token;
+        dispatch_semaphore_signal(sem);
+    }];
+
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+
+    if (authError) {
+        if (error) *error = authError;
+        return NO;
+    }
+
+    if (userIdentity && gsToken) {
+        self.identity = userIdentity;
+        self.gsToken = gsToken;
+
+        // 使用获取的凭证初始化 appleServices 会话
+        if (!self.appleServices) {
+            self.appleServices = [[EEAppleServices alloc] init];
+        }
+        [self.appleServices ensureSessionWithIdentity:userIdentity
+                                              gsToken:gsToken
+                                andCompletionHandler:^(NSError *e, NSDictionary *plist) {
+            if (e) {
+                NSLog(@"[RePro] 会话初始化失败: %@", e);
+            }
+        }];
+
+        return YES;
+    }
+
     if (error) *error = [NSError errorWithDomain:@"EEProvisioning"
-                                          code:-1
-                                      userInfo:@{NSLocalizedDescriptionKey: @"请使用 Anisette 认证流程"}];
+                                             code:-1
+                                         userInfo:@{NSLocalizedDescriptionKey: @"登录失败：未返回有效凭证"}];
     return NO;
 }
 
@@ -65,11 +109,79 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
                             keyPathOut:(NSString *_Nullable *_Nullable)keyPath
                          profilePathsOut:(NSArray<NSString *> *_Nullable *_Nullable)profilePaths
                                   error:(NSError **)error {
-    // 现代流程通过 _handleDevelopmentCodesigningRequestIfNecessary 完成
-    if (error) *error = [NSError errorWithDomain:@"EEProvisioning"
-                                          code:-1
-                                      userInfo:@{NSLocalizedDescriptionKey: @"请使用 XPC 签名流程"}];
-    return NO;
+    // 确保 appleServices 已初始化
+    if (!self.appleServices) {
+        self.appleServices = [[EEAppleServices alloc] init];
+    }
+    if (!self.identity || !self.gsToken) {
+        if (error) *error = [NSError errorWithDomain:@"EEProvisioning"
+                                                 code:-2
+                                             userInfo:@{NSLocalizedDescriptionKey: @"请先登录 Apple ID"}];
+        return NO;
+    }
+
+    // 通过 semaphore 桥接异步 downloadProvisioningProfileForApplicationIdentifier 到同步 API
+    __block NSError *resultError = nil;
+    __block NSData *profileData = nil;
+    __block NSString *privateKeyResult = nil;
+    __block NSDictionary *certificateResult = nil;
+    __block NSDictionary *entitlementsResult = nil;
+
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    [self downloadProvisioningProfileForApplicationIdentifier:bundleID
+                                             applicationName:bundleID
+                                             binaryLocation:@""
+                                            withTeamIDCheck:^NSString *(NSArray *teams) {
+        // 自动选择第一个可用团队
+        return teams.firstObject[@"teamId"];
+    }
+                                                 andCallback:^(NSError *e, NSData *p, NSString *k, NSDictionary *c, NSDictionary *en) {
+        resultError = e;
+        profileData = p;
+        privateKeyResult = k;
+        certificateResult = c;
+        entitlementsResult = en;
+        dispatch_semaphore_signal(sem);
+    }];
+
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+
+    if (resultError) {
+        if (error) *error = resultError;
+        return NO;
+    }
+
+    // 将证书、私钥、profile 写入临时文件
+    NSString *tmpDir = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"RePro_%@_%d", bundleID, getpid()]];
+    [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir
+                               withIntermediateDirectories:YES
+                                                attributes:nil
+                                                     error:nil];
+
+    // 写入私钥
+    NSString *keyFilePath = [tmpDir stringByAppendingPathComponent:@"key.p12"];
+    if (privateKeyResult && keyPathOut) {
+        [privateKeyResult writeToFile:keyFilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        *keyPathOut = keyFilePath;
+    }
+
+    // 写入 profile
+    NSString *profilePath = nil;
+    if (profileData && profilePathsOut) {
+        profilePath = [tmpDir stringByAppendingPathComponent:@"embedded.mobileprovision"];
+        [profileData writeToFile:profilePath atomically:YES];
+        *profilePathsOut = @[profilePath];
+    }
+
+    // 证书信息已通过 certificateResult 返回，调用方可以使用
+    // certPath 暂不填充（证书路径需要额外的 PEM 格式化）
+
+    NSLog(@"[RePro] 证书/Profile 申请完成: bundleID=%@, key=%@, profile=%@",
+          bundleID, keyFilePath, profilePath);
+
+    return YES;
 }
 
 #pragma mark - 错误处理工具方法

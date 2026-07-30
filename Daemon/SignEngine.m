@@ -251,13 +251,32 @@
 
     NSDictionary *appInfo = self.importedApps[bundleIdentifier];
     if (!appInfo) {
-        // 如果不是通过导入的，尝试从已安装列表中查找并重新处理
-        // TODO: 实现对非导入应用的重签逻辑
-        if (error) *error = [NSError errorWithDomain:@"RePro"
-                                                 code:404
-                                             userInfo:@{NSLocalizedDescriptionKey:
-                                                        [NSString stringWithFormat:@"未找到应用: %@", bundleIdentifier]}];
-        return NO;
+        // 尝试从已安装应用列表中查找路径
+        NSString *fallbackPath = nil;
+        NSArray<NSDictionary *> *allApps = [self listInstalledApps];
+        for (NSDictionary *app in allApps) {
+            if ([app[@"bundleIdentifier"] isEqualToString:bundleIdentifier]) {
+                fallbackPath = app[@"path"];
+                break;
+            }
+        }
+
+        if (!fallbackPath) {
+            if (error) *error = [NSError errorWithDomain:@"RePro"
+                                                     code:404
+                                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                            [NSString stringWithFormat:@"未找到应用: %@", bundleIdentifier]}];
+            return NO;
+        }
+
+        // 为系统应用创建临时导入记录
+        self.importedApps[bundleIdentifier] = @{
+            @"bundleIdentifier": bundleIdentifier,
+            @"extractedPath": fallbackPath,
+            @"installedPath": fallbackPath,
+            @"imported": @NO
+        };
+        appInfo = self.importedApps[bundleIdentifier];
     }
 
     NSString *appPath = appInfo[@"extractedPath"];
@@ -312,9 +331,55 @@
     }
 
     // 步骤4: 打包 IPA 并安装
-    // ... (打包 + LSApplicationWorkspace 安装)
+    NSError *installError = nil;
+    BOOL installed = [self installSignedApp:result.outputPath
+                          bundleIdentifier:bundleIdentifier
+                                     error:&installError];
+    if (!installed) {
+        NSLog(@"[RePro] 安装失败: %@", installError);
+        if (error) *error = [NSError errorWithDomain:@"RePro"
+                                                 code:510
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                                        [NSString stringWithFormat:@"签名成功但安装失败: %@", installError.localizedDescription]}];
+        return NO;
+    }
 
-    NSLog(@"[RePro] 重签完成: %@", bundleIdentifier);
+    NSLog(@"[RePro] 重签并安装完成: %@", bundleIdentifier);
+    return YES;
+}
+
+/// 安装签名后的应用（通过 posix_spawn 调用 ipainstaller 或直接替换 .app）
+- (BOOL)installSignedApp:(NSString *)signedAppPath
+       bundleIdentifier:(NSString *)bundleIdentifier
+                  error:(NSError **)error {
+    NSDictionary *appInfo = self.importedApps[bundleIdentifier];
+    NSString *targetPath = appInfo[@"installedPath"];
+    if (!targetPath) {
+        targetPath = [NSString stringWithFormat:@"/Applications/%@.app",
+                      [bundleIdentifier pathExtension].length > 0 ?
+                      [[bundleIdentifier componentsSeparatedByString:@"."] lastObject] :
+                      bundleIdentifier];
+    }
+
+    // 方式1: 直接复制 .app 目录到 Applications
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:targetPath]) {
+        [fm removeItemAtPath:targetPath error:nil];
+    }
+
+    BOOL copied = [fm copyItemAtPath:signedAppPath toPath:targetPath error:error];
+    if (!copied) {
+        return NO;
+    }
+
+    // 方式2: 尝试通过 ipainstaller 安装（如果有）
+    // 或者直接调用 uicache 刷新
+    pid_t pid = 0;
+    const char *argv[] = { "/usr/bin/uicache", "-p", [targetPath UTF8String], NULL };
+    int status = posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, NULL);
+    if (status == 0) waitpid(pid, NULL, 0);
+
+    NSLog(@"[RePro] 应用已安装到: %@", targetPath);
     return YES;
 }
 
