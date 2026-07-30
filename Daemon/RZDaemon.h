@@ -62,6 +62,9 @@ extern NSString *const kRZDaemonErrorLogPath;
 /// Anisette 状态查询
 - (void)getAnisetteStatusWithReply:(void (^)(BOOL ready))reply;
 
+/// 重启 SpringBoard（类似 Sileo 安装完成后的功能）
+- (void)respringWithReply:(void (^)(BOOL success, NSString * _Nullable message))reply;
+
 @end
 
 #pragma mark - 守护进程主类

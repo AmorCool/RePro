@@ -151,8 +151,9 @@ NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.
 - (void)restartWithReply:(void (^)(BOOL))reply {
     NSLog(@"[RePro] 收到重启请求");
     // 通过 launchctl kickstart 重启自己（system() 在 iOS 不可用）
+    // 注意：kickstart 参数格式是 system/<Label>，Label 来自 plist
     pid_t pid = 0;
-    const char *argv[] = { "/bin/launchctl", "kickstart", "system/com.reprovision.daemon", NULL };
+    const char *argv[] = { "/bin/launchctl", "kickstart", "system/jp.soh.reprovisiond", NULL };
     int status = posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, NULL);
     if (status == 0) waitpid(pid, NULL, 0);
     reply(status == 0);
@@ -182,6 +183,29 @@ NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.
 - (void)getAnisetteStatusWithReply:(void (^)(BOOL))reply {
     BOOL ready = [self.anisetteManager isReady];
     reply(ready);
+}
+
+- (void)respringWithReply:(void (^)(BOOL, NSString * _Nullable))reply {
+    NSLog(@"[RePro] 收到重启 SpringBoard 请求");
+
+    // 使用 killall 重启 SpringBoard（越狱环境可用）
+    pid_t pid = 0;
+    const char *argv[] = { "/usr/bin/killall", "SpringBoard", NULL };
+    int status = posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, NULL);
+    if (status == 0) {
+        waitpid(pid, NULL, 0);
+        reply(YES, nil);
+    } else {
+        // fallback: launchctl 方式
+        const char *argv2[] = { "/bin/launchctl", "kickstart", "gui/$(id -u)/com.apple.SpringBoard", NULL };
+        status = posix_spawn(&pid, argv2[0], NULL, NULL, (char *const *)argv2, NULL);
+        if (status == 0) {
+            waitpid(pid, NULL, 0);
+            reply(YES, @"使用 kickstart 重启");
+        } else {
+            reply(NO, @"重启失败: 权限不足或命令不可用");
+        }
+    }
 }
 
 #pragma mark - 内部方法

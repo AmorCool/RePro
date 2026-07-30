@@ -231,6 +231,23 @@ class DaemonClient: NSObject, ObservableObject {
             }
         }
     }
+
+    /// 重启 SpringBoard
+    func respring(completion: @escaping (Result<Void, Error>) -> Void) {
+        getProxy { proxy in
+            guard let proxy = proxy else {
+                completion(.failure(ReProError.daemonConnectionFailed("连接未建立")))
+                return
+            }
+            proxy.respring { success, message in
+                if success {
+                    completion(.success(()))
+                } else {
+                    completion(.failure(ReProError.permissionDenied))
+                }
+            }
+        }
+    }
 }
 
 // MARK: - XPC 协议定义（必须与 RZDaemon.h 中的 @protocol RZDaemonXPCProtocol 完全匹配）
@@ -266,6 +283,9 @@ class DaemonClient: NSObject, ObservableObject {
 
     // Anisette 状态
     func getAnisetteStatus(_ reply: @escaping (Bool) -> Void)
+
+    // 重启 SpringBoard
+    func respring(_ reply: @escaping (Bool, String?) -> Void)
 }
 
 // MARK: - 扩展：字典转换

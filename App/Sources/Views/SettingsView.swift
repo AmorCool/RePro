@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var password: String = ""
     @State private var isLoggingIn = false
     @State private var loginMessage: String?
+    @State private var showingRespringAlert = false
 
     var body: some View {
         NavigationView {
@@ -100,6 +101,21 @@ struct SettingsView: View {
                             step: 10)
                 }
 
+                // MARK: 系统操作
+                Section("系统操作") {
+                    Button(action: performRespring) {
+                        HStack {
+                            Image(systemName: "arrow.clockwise")
+                            Text("重启 SpringBoard")
+                            Spacer()
+                            Text("Respring")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .foregroundColor(.red)
+                }
+
                 // MARK: 关于
                 Section("关于") {
                     HStack {
@@ -114,6 +130,14 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .alert("确认重启 SpringBoard", isPresented: $showingRespringAlert) {
+                Button("取消", role: .cancel) {}
+                Button("重启", role: .destructive) {
+                    performRespringNow()
+                }
+            } message: {
+                Text("这将关闭所有应用并重新加载 SpringBoard。正在运行的进程将会被终止。")
+            }
         }
     }
 
@@ -131,6 +155,24 @@ struct SettingsView: View {
                 case .failure(let error):
                     self.loginMessage = "登录失败: \(error.localizedDescription)"
                     LogManager.shared.error("Apple ID 登录失败: \(error)", source: "SettingsView")
+                }
+            }
+        }
+    }
+
+    private func performRespring() {
+        showingRespringAlert = true
+    }
+
+    private func performRespringNow() {
+        DaemonClient.shared.respring { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    LogManager.shared.info("SpringBoard 重启中...", source: "SettingsView")
+                case .failure(let error):
+                    self.loginMessage = "重启失败: \(error.localizedDescription)"
+                    LogManager.shared.error("重启 SpringBoard 失败: \(error)", source: "SettingsView")
                 }
             }
         }
