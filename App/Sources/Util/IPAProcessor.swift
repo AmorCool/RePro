@@ -10,22 +10,22 @@ class IPAProcessor {
     /// 通过 posix_spawn 执行外部命令（iOS 上 Process 不可用），返回退出码
     private static func runCommand(_ executable: String, args: [String], workingDirectory: String? = nil) -> Int32 {
         var pid: pid_t = 0
-        var fileActions: posix_spawn_file_actions_t?
+        var fileActions = posix_spawn_file_actions_t()
         posix_spawn_file_actions_init(&fileActions)
         if let wd = workingDirectory {
-            posix_spawn_file_actions_addchdir_np(&fileActions!, wd)
+            posix_spawn_file_actions_addchdir_np(&fileActions, wd)
         }
         let argv: [UnsafeMutablePointer<CChar>?] = args.map { $0.withCString(strdup) } + [nil]
         defer { for p in argv { free(p) } }
         let status = argv.withUnsafeBufferPointer { buf in
-            posix_spawn(&pid, executable, &fileActions!, nil,
+            posix_spawn(&pid, executable, &fileActions, nil,
                         UnsafeMutablePointer(mutating: buf.baseAddress), nil)
         }
-        posix_spawn_file_actions_destroy(&fileActions!)
+        posix_spawn_file_actions_destroy(&fileActions)
         if status == 0 {
             var st: Int32 = 0
             waitpid(pid, &st, 0)
-            return WEXITSTATUS(st)
+            return (st >> 8) & 0xff  // WEXITSTATUS 等价实现
         }
         return status
     }

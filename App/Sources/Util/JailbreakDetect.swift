@@ -44,7 +44,8 @@ enum JailbreakDetect {
         let resolved = try? FileManager.default.destinationOfSymbolicLink(atPath: link)
         // .jbroot 是符号链接，需要解析其指向的真实路径
         let fullResolved = (try? URL(fileURLWithPath: link).resolvingSymlinksInPath().path) ?? resolved
-        guard FileManager.default.fileExists(atPath: fullResolved?.appendingPathComponent("usr/local/bin") ?? "") else { return nil }
+        let binPath = (fullResolved ?? "") + "/usr/local/bin"
+        guard FileManager.default.fileExists(atPath: binPath) else { return nil }
         return fullResolved
     }
 
