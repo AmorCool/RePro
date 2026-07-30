@@ -6,6 +6,8 @@
 #import "ProfileInstaller.h"
 #import <dlfcn.h>
 #import <sys/stat.h>
+#import <sys/wait.h>
+#import <spawn.h>
 #import <objc/runtime.h>
 #import <CommonCrypto/CommonCrypto.h>
 
@@ -165,8 +167,11 @@ static NSString *const kProfileDir = @"/var/Managed Preferences/mobile";
 
 - (void)notifyProfiled {
     // 向 profiled 发送 SIGHUP 通知其重新扫描 profile 目录
-    // NSTask 在 iOS 上不可用，改用 system() 调用 killall
-    system("killall -HUP profiled 2>/dev/null");
+    // system()/NSTask 在 iOS 均不可用，使用 posix_spawn
+    pid_t pid = 0;
+    const char *argv[] = { "/usr/bin/killall", "-HUP", "profiled", NULL };
+    posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, NULL);
+    waitpid(pid, NULL, 0);
     NSLog(@"[RePro] 已向 profiled 发送 SIGHUP");
 }
 
