@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import SwiftUI
 
 // MARK: - 已安装应用模型
 
@@ -49,7 +50,7 @@ enum LogLevel: String, Codable, CaseIterable {
 
 // MARK: - 日志条目
 
-struct LogEntry: Identifiable, Codable {
+struct LogEntry: Identifiable, Codable, Equatable {
     let id: UUID
     let timestamp: Date
     let level: LogLevel

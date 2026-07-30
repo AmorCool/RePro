@@ -48,6 +48,30 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
     return self;
 }
 
+#pragma mark - 兼容性存根（.h 声明但现代流程不使用）
+
+- (BOOL)authenticateWithAppleID:(NSString *)appleID
+                         password:(NSString *)password
+                            error:(NSError **)error {
+    // 现代流程通过 AnisetteManager + ensureSessionWithIdentity 完成认证
+    if (error) *error = [NSError errorWithDomain:@"EEProvisioning"
+                                          code:-1
+                                      userInfo:@{NSLocalizedDescriptionKey: @"请使用 Anisette 认证流程"}];
+    return NO;
+}
+
+- (BOOL)requestCertificateForBundleID:(NSString *)bundleID
+                           certPathOut:(NSString *_Nullable *_Nullable)certPath
+                            keyPathOut:(NSString *_Nullable *_Nullable)keyPath
+                         profilePathsOut:(NSArray<NSString *> *_Nullable *_Nullable)profilePaths
+                                  error:(NSError **)error {
+    // 现代流程通过 _handleDevelopmentCodesigningRequestIfNecessary 完成
+    if (error) *error = [NSError errorWithDomain:@"EEProvisioning"
+                                          code:-1
+                                      userInfo:@{NSLocalizedDescriptionKey: @"请使用 XPC 签名流程"}];
+    return NO;
+}
+
 #pragma mark - 错误处理工具方法
 
 /// 从字符串创建 NSError 对象
@@ -1207,6 +1231,7 @@ toApplicationGroupIdentifier:(NSString *)groupIdentifier
     [self.appleServices assignApplicationGroup:groupIdentifier
                               toApplicationIdId:appIdId
                                          teamID:[self.appleServices currentTeamID]
+                                     systemType:EESystemTypeUndefined
                           withCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             completionHandler(error);
@@ -1257,7 +1282,8 @@ toApplicationGroupIdentifier:(NSString *)groupIdentifier
 
     [self.appleServices getProvisioningProfileForAppIdId:appIdId
                                                withTeamID:[self.appleServices currentTeamID]
-                                     andCompletionHandler:^(NSError *error, NSDictionary *plist) {
+                                              systemType:EESystemTypeUndefined
+                                             andCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             NSError *downloadError = [EEProvisioning _errorFromString:
                 [NSString stringWithFormat:@"getProvisioningProfileForAppIdId: %@", error.localizedDescription]];
@@ -1300,6 +1326,7 @@ toApplicationGroupIdentifier:(NSString *)groupIdentifier
 
     [self.appleServices deleteProvisioningProfileForApplication:_actualIdentifier
                                                       andTeamID:[self.appleServices currentTeamID]
+                                                      systemType:EESystemTypeUndefined
                                            withCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             completionHandler(error);

@@ -100,8 +100,8 @@ struct LogView: View {
                     .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
             }
             .onAppear {
-                if let first = filteredLogs.firstIndex(of: filteredLogs.last) {
-                    proxy.scrollTo(first, anchor: .bottom)
+                if !filteredLogs.isEmpty {
+                    proxy.scrollTo(filteredLogs.count - 1, anchor: .bottom)
                 }
             }
         }
