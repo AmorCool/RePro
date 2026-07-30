@@ -210,7 +210,7 @@ class DaemonClient: NSObject {
                 completion(.failure(ReProError.daemonConnectionFailed("连接未建立")))
                 return
             }
-            proxy.preSignTokens(count) { signedCount in
+            proxy.preSignTokens(count: count) { signedCount in
                 completion(.success(signedCount))
             }
         }

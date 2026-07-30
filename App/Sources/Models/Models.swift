@@ -59,7 +59,7 @@ struct LogEntry: Identifiable, Codable {
 
 // MARK: - 越狱类型
 
-enum JailbreakType: String, CaseIterable {
+enum JailbreakType: String, CaseIterable, Codable {
     case dopamine, roothide, rootful, unknown
 
     var displayName: String {

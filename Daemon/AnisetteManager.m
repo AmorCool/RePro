@@ -12,6 +12,7 @@
 #import "AnisetteManager.h"
 #import <CommonCrypto/CommonHMAC.h>
 #import <sys/sysctl.h>
+#import <sys/stat.h>
 
 static NSString *const kOTPKeyPath = @"/var/mobile/Library/ReProvision/otp_key.bin";
 static NSString *const kLockdownPlistPath = @"/var/lockdown/device_data.plist";
@@ -39,7 +40,7 @@ static NSString *const kLockdownPlistPath = @"/var/lockdown/device_data.plist";
         self.deviceUDID = [coder decodeObjectForKey:@"deviceUDID"] ?: @"";
         self.deviceSerialNumber = [coder decodeObjectForKey:@"deviceSerialNumber"] ?: @"";
         self.deviceModel = [coder decodeObjectForKey:@"deviceModel"] ?: @"";
-        self.deviceDescription = [coder decodeObjectForKey:@"deviceDescription"] ?? @"Unknown iPhone";
+        self.deviceDescription = [coder decodeObjectForKey:@"deviceDescription"] ?: @"Unknown iPhone";
         self.localUserID = (uint32_t)[coder decodeIntegerForKey:@"localUserID"];
         self.timestamp = [coder decodeDoubleForKey:@"timestamp"];
         self.locale = [coder decodeObjectForKey:@"locale"] ?: @"en_US";
@@ -72,7 +73,6 @@ static NSString *const kLockdownPlistPath = @"/var/lockdown/device_data.plist";
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _localUserID = 501; // mobile 用户
         [self loadOrGenerateOTPKey];
     }
     return self;

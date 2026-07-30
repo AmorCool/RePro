@@ -10,18 +10,25 @@ class IPAProcessor {
     /// 通过 posix_spawn 执行外部命令（iOS 上 Process 不可用），返回退出码
     private static func runCommand(_ executable: String, args: [String], workingDirectory: String? = nil) -> Int32 {
         var pid: pid_t = 0
-        var fileActions = posix_spawn_file_actions_t()
-        posix_spawn_file_actions_init(&fileActions)
+
+        // 保存并切换工作目录（posix_spawn_file_actions_t 在当前 SDK 不可默认构造，
+        // 改用 FileManager.changeCurrentDirectoryPath + 同步 waitpid 保证线程安全）
+        let savedCWD = FileManager.default.currentDirectoryPath
         if let wd = workingDirectory {
-            posix_spawn_file_actions_addchdir_np(&fileActions, wd)
+            FileManager.default.changeCurrentDirectoryPath(wd)
         }
+        defer {
+            if workingDirectory != nil {
+                FileManager.default.changeCurrentDirectoryPath(savedCWD)
+            }
+        }
+
         let argv: [UnsafeMutablePointer<CChar>?] = args.map { $0.withCString(strdup) } + [nil]
         defer { for p in argv { free(p) } }
         let status = argv.withUnsafeBufferPointer { buf in
-            posix_spawn(&pid, executable, &fileActions, nil,
+            posix_spawn(&pid, executable, nil, nil,
                         UnsafeMutablePointer(mutating: buf.baseAddress), nil)
         }
-        posix_spawn_file_actions_destroy(&fileActions)
         if status == 0 {
             var st: Int32 = 0
             waitpid(pid, &st, 0)

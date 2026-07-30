@@ -49,7 +49,7 @@ class LogManager: ObservableObject {
             self?.logs.append(entry)
 
             // 限制日志数量，防止内存膨胀
-            while (self?.logs.count ?? 0) > self?.maxLogEntries {
+            while (self?.logs.count ?? 0) > (self?.maxLogEntries ?? 50) {
                 self?.logs.removeFirst()
             }
 
