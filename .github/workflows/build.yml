@@ -20,23 +20,41 @@ jobs:
       - name: Install dependencies
         run: |
           brew install ldid openssl@3 zlib 2>/dev/null || true
+          gem install cocoapods --no-document 2>/dev/null || true
+
+      - name: CocoaPods install
+        run: |
+          set -e
+          if [ -f Podfile ]; then
+            pod install --repo-update
+          fi
 
       - name: Build iOS App (RePro)
         run: |
           set -e
-          xcodebuild -project RePro.xcodeproj \
+
+          # 使用 workspace（如果存在）或 project
+          if [ -f RePro.xcworkspace/xcshareddata/swiftpm/Package.resolved ]; then
+            BUILD_CMD="xcodebuild -workspace RePro.xcworkspace"
+          else
+            BUILD_CMD="xcodebuild -project RePro.xcodeproj"
+          fi
+
+          $BUILD_CMD \
             -scheme RePro \
             -configuration Release \
             -sdk iphoneos \
             -arch arm64 \
             CODE_SIGNING_ALLOWED=NO \
             -derivedDataPath build \
-            | tail -20
+            2>&1 | tee build.log | tail -50
 
           # 检查构建产物
           APP_PATH=$(find build -name "RePro.app" -type d | head -1)
           if [ ! -d "$APP_PATH" ]; then
             echo "error: RePro.app not found"
+            echo "=== 构建日志最后 100 行 ==="
+            tail -100 build.log
             exit 1
           fi
           echo "Built app at $APP_PATH"
@@ -84,7 +102,14 @@ jobs:
             Daemon/ldid/lookup2.c \
             ${LIBPLIST_C} \
             ${LIBPLIST_CPP} \
-            2>&1 | tail -20
+            2>&1 | tee daemon_build.log | tail -50
+
+          if [ ! -f build/reprovisiond ]; then
+            echo "error: reprovisiond build failed"
+            echo "=== Daemon 构建日志 ==="
+            cat daemon_build.log
+            exit 1
+          fi
 
           file build/reprovisiond
           chmod +x build/reprovisiond

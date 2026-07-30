@@ -31,9 +31,15 @@
 3. **单次 pass 签名**: 绝不能主 pass 后再对嵌套 bundle 二次重签
 4. **RootHide 三要素**: 标准根路径 + Architecture: iphoneos-arm64e + postinst 用 jbroot 工具
 5. **application-identifier 双重前缀修复**: 检测已有 TeamID 前缀则直接使用
+6. **Daemon 证书路径不能用 NSBundle**: reprovisiond 是 CLI 二进制，用 `RZCertificatePath()` 按固定绝对路径查找 (`/usr/share/reprovision/certificates/` 或 `/var/jb/usr/share/...`)
+7. **CI Daemon 编译必须用 clang++**: ldid.cpp 是 C++，需要 `-std=c++17` + 链接 OpenSSL + libplist 全部源码
 
-## 待解决问题
-- ldid 库集成（EESigning 依赖 ldid.hpp）
-- CA 证书资源文件（apple-ios.pem, apple-ios.g3.pem, root.pem）
-- CocoaPods 依赖安装
-- CI 构建验证
+## 已解决问题 (2026-07-30)
+- [x] ldid 库集成 — 源码编译（ldid 5 文件 + libplist 43 文件）
+- [x] CA 证书资源 — 三套 deb 包各含 apple-ios/apple-ios-g3/root.pem
+- [x] CocoaPods — 当前无外部依赖（纯 Foundation/Security）
+- [x] 接口对接修复 — 6 CRITICAL + 1 WARN 已修复
+- [x] CI 脚本完整化 — 补全所有源文件 + OpenSSL + 证书复制
+
+## 待验证
+- [ ] CI 构建通过（v1.0.0 tag 已推送，等待 GitHub Actions 结果）

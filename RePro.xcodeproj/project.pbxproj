@@ -21,6 +21,7 @@
 		AA00000C24AABBCC0001 /* JailbreakDetect.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001C24AABBCC0001 /* JailbreakDetect.swift */; };
 		AA00000D24AABBCC0001 /* IPAProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001D24AABBCC0001 /* IPAProcessor.swift */; };
 		AA00000E24AABBCC0001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = AA00001E24AABBCC0001 /* Localizable.strings */; };
+		AA00007124AABBCC0001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA00007024AABBCC0001 /* Assets.xcassets */; };
 		AA00000F24AABBCC0001 /* entitlements-base.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA00003024AABBCC0001 /* entitlements-base.plist */; };
 		/* Daemon target */
 		DA00000124BBDDCC0001 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001124BBDDCC0001 /* main.m */; };
@@ -175,6 +176,7 @@
 		AA00004124AABBCC0001 /* apple-ios.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = apple-ios.pem; sourceTree = "<group>"; };
 		AA00004224AABBCC0001 /* apple-ios-g3.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = apple-ios-g3.pem; sourceTree = "<group>"; };
 		AA00004324AABBCC0001 /* root.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = root.pem; sourceTree = "<group>"; };
+		AA00007024AABBCC0001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -226,6 +228,7 @@
 			children = (
 				AA00001124AABBCC0001 /* AppDelegate.swift */,
 				AA00001224AABBCC0001 /* ReProApp.swift */,
+				AA00007024AABBCC0001 /* Assets.xcassets */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -518,6 +521,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA00000E24AABBCC0001 /* Localizable.strings in Resources */,
+				AA00007124AABBCC0001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
