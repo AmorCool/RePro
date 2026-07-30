@@ -368,6 +368,7 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 - (void)_handleDevelopmentCodesigningRequestIfNecessary:(void (^)(NSError *, NSString *, NSDictionary *))completionHandler {
 
     [self.appleServices listAllDevelopmentCertificatesForTeamID:[self.appleServices currentTeamID]
+                                             systemType:EESystemTypeUndefined
                                              withCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             NSError *listError = [EEProvisioning _errorFromString:
