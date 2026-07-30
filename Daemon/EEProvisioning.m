@@ -766,6 +766,7 @@ free_all:
               withCompletionHandler:(void (^)(NSError *, NSString *, NSDictionary *))completionHandler {
 
     [self.appleServices listAllApplicationsForTeamID:[self.appleServices currentTeamID]
+                                         systemType:EESystemTypeUndefined
                                  withCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             NSError *listError = [EEProvisioning _errorFromString:
@@ -1016,6 +1017,7 @@ free_all:
                                          enabledFeatures:enabledFeatures
                                                  teamID:[self.appleServices currentTeamID]
                                              entitlements:entitlements
+                                               systemType:EESystemTypeUndefined
                                       withCompletionHandler:^(NSError *error, NSDictionary *plist) {
                     if (error) {
                         NSError *updateError = [EEProvisioning _errorFromString:
@@ -1126,6 +1128,7 @@ free_all:
              withCompletionHandler:(void (^)(NSError *, NSString *))completionHandler {
 
     [self.appleServices listAllApplicationGroupsForTeamID:[self.appleServices currentTeamID]
+                                             systemType:EESystemTypeUndefined
                                      withCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             completionHandler(error, nil);
@@ -1192,6 +1195,7 @@ free_all:
             [self.appleServices addApplicationGroupWithIdentifier:newGroupIdentifier
                                                         andName:newGroupName
                                                        forTeamID:[self.appleServices currentTeamID]
+                                                      systemType:EESystemTypeUndefined
                                           withCompletionHandler:^(NSError *error,NSDictionary *plist) {
                 if (error) {
                     completionHandler(error, nil);
