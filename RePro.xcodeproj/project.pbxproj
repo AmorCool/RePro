@@ -35,7 +35,7 @@
 		DA00000924BBDDCC0001 /* ProfileInstaller.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001924BBDDCC0001 /* ProfileInstaller.m */; };
 		DA00000A24BBDDCC0001 /* EntitlementsGen.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001A24BBDDCC0001 /* EntitlementsGen.m */; };
 		DA00000B24BBDDCC0001 /* EEProvisioning.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001B24BBDDCC0001 /* EEProvisioning.m */; };
-		DA00000C24BBDDCC0001 /* EESigning.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001C24BBDDCC0001 /* EESigning.m */; };
+		DA00000C24BBDDCC0001 /* EESigning.mm in Sources */ = {isa = PBXBuildFile; fileRef = DA00001C24BBDDCC0001 /* EESigning.mm */; };
 		/* ldid sources */
 		LD00000124CCDDEE0001 /* ldid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LD00001124CCDDEE0001 /* ldid.cpp */; };
 		LD00000224CCDDEE0001 /* lookup2.c in Sources */ = {isa = PBXBuildFile; fileRef = LD00001324CCDDEE0001 /* lookup2.c */; };
@@ -106,7 +106,7 @@
 		DA00001AH24BBDDCC0001 /* EntitlementsGen.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EntitlementsGen.h; sourceTree = "<group>"; };
 		DA00001B24BBDDCC0001 /* EEProvisioning.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = EEProvisioning.m; sourceTree = "<group>"; };
 		DA00001BH24BBDDCC0001 /* EEProvisioning.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EEProvisioning.h; sourceTree = "<group>"; };
-		DA00001C24BBDDCC0001 /* EESigning.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = EESigning.m; sourceTree = "<group>"; };
+		DA00001C24BBDDCC0001 /* EESigning.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EESigning.mm; sourceTree = "<group>"; };
 		DA00001CH24BBDDCC0001 /* EESigning.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EESigning.h; sourceTree = "<group>"; };
 		DA00002024BBDDCC0001 /* reprovisiond */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = reprovisiond; sourceTree = BUILT_PRODUCTS_DIR; };
 		/* ldid */
@@ -302,7 +302,7 @@
 				DA00001AH24BBDDCC0001 /* EntitlementsGen.h */,
 				DA00001B24BBDDCC0001 /* EEProvisioning.m */,
 				DA00001BH24BBDDCC0001 /* EEProvisioning.h */,
-				DA00001C24BBDDCC0001 /* EESigning.m */,
+				DA00001C24BBDDCC0001 /* EESigning.mm */,
 				DA00001CH24BBDDCC0001 /* EESigning.h */,
 				LD00009024CCDDEE0001 /* ldid */,
 				LP00009024CCDDEE0001 /* libplist */,
@@ -563,7 +563,7 @@
 				DA00000924BBDDCC0001 /* ProfileInstaller.m in Sources */,
 				DA00000A24BBDDCC0001 /* EntitlementsGen.m in Sources */,
 				DA00000B24BBDDCC0001 /* EEProvisioning.m in Sources */,
-				DA00000C24BBDDCC0001 /* EESigning.m in Sources */,
+				DA00000C24BBDDCC0001 /* EESigning.mm in Sources */,
 				/* ldid sources */
 				LD00000124CCDDEE0001 /* ldid.cpp in Sources */,
 				LD00000224CCDDEE0001 /* lookup2.c in Sources */,

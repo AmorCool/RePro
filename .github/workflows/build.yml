@@ -19,28 +19,37 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install ldid openssl@3 zlib 2>/dev/null || true
-          gem install cocoapods --no-document 2>/dev/null || true
+          brew install ldid 2>/dev/null || true
 
-      - name: CocoaPods install
+      # daemon 需要链接 iOS arm64 版 OpenSSL，brew 的是 macOS 版无法链接，必须交叉编译
+      - name: Cache OpenSSL (iOS arm64)
+        id: openssl-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/openssl-ios
+          key: openssl-ios-arm64-3.4.1-${{ runner.os }}
+
+      - name: Build OpenSSL for iOS arm64
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          if [ -f Podfile ]; then
-            pod install --repo-update
-          fi
+          OPENSSL_VER=3.4.1
+          rm -rf /tmp/openssl-ios-src
+          git clone --depth 1 --branch "openssl-${OPENSSL_VER}" https://github.com/openssl/openssl.git /tmp/openssl-ios-src
+          cd /tmp/openssl-ios-src
+          export CROSS_TOP=$(xcrun --sdk iphoneos --show-sdk-platform-path)/Developer
+          export CROSS_SDK=$(basename $(xcrun --sdk iphoneos --show-sdk-path))
+          ./Configure ios64-xcrun no-shared no-tests no-asm --prefix=/tmp/openssl-ios > /dev/null
+          make -j$(sysctl -n hw.ncpu) > /dev/null 2>&1
+          make install_sw > /dev/null 2>&1
+          ls -la /tmp/openssl-ios/lib/
 
       - name: Build iOS App (RePro)
         run: |
           set -e
 
-          # 使用 workspace（如果存在）或 project
-          if [ -f RePro.xcworkspace/xcshareddata/swiftpm/Package.resolved ]; then
-            BUILD_CMD="xcodebuild -workspace RePro.xcworkspace"
-          else
-            BUILD_CMD="xcodebuild -project RePro.xcodeproj"
-          fi
-
-          $BUILD_CMD \
+          # 本项目无第三方依赖，直接用 xcodeproj 构建（无 CocoaPods / SwiftPM）
+          xcodebuild -project RePro.xcodeproj \
             -scheme RePro \
             -configuration Release \
             -sdk iphoneos \
@@ -53,8 +62,10 @@ jobs:
           APP_PATH=$(find build -name "RePro.app" -type d | head -1)
           if [ ! -d "$APP_PATH" ]; then
             echo "error: RePro.app not found"
-            echo "=== 构建日志最后 100 行 ==="
-            tail -100 build.log
+            echo "=== 所有编译错误行 ==="
+            grep -nE "error:|fatal error:|Undefined symbol|does not contain a scheme" build.log || true
+            echo "=== 构建日志最后 120 行 ==="
+            tail -120 build.log
             exit 1
           fi
           echo "Built app at $APP_PATH"
@@ -63,51 +74,69 @@ jobs:
         run: |
           set -e
 
-          # 收集 libplist 所有需编译的源文件（.c 和 .cpp）
-          LIBPLIST_C=$(find Daemon/libplist -name '*.c' ! -path '*test*' ! -path '*tools*' | tr '\n' ' ')
-          LIBPLIST_CPP=$(find Daemon/libplist -name '*.cpp' ! -path '*test*' ! -path '*tools*' | tr '\n' ' ')
+          mkdir -p build/obj
+          : > daemon_build.log
 
-          # OpenSSL 头文件路径（brew 安装的 openssl@3）
-          OPENSSL_DIR=$(brew --prefix openssl@3 2>/dev/null || echo "/usr/local/opt/openssl@3")
+          # 交叉编译得到的 iOS arm64 OpenSSL
+          OPENSSL_DIR=/tmp/openssl-ios
 
-          echo "=== 编译 reprovisiond daemon ==="
+          COMMON_FLAGS="-arch arm64 -miphoneos-version-min=15.0 \
+            -I Daemon -I Daemon/ldid -I Daemon/libplist -I Daemon/libplist/libcnary \
+            -I ${OPENSSL_DIR}/include"
+
+          # C 源码必须用 C 模式编译（clang++ 会把 .c 当 C++，导致 libplist/lookup2 报类型错误）
+          C_SOURCES=$(find Daemon/libplist -name '*.c' ! -path '*test*' ! -path '*tools*')
+          C_SOURCES="$C_SOURCES Daemon/ldid/lookup2.c"
+          # C++ 源码
+          CXX_SOURCES=$(find Daemon/libplist -name '*.cpp' ! -path '*test*' ! -path '*tools*')
+          CXX_SOURCES="$CXX_SOURCES Daemon/ldid/ldid.cpp"
+          # ObjC 源码
+          OBJC_SOURCES=$(ls Daemon/*.m)
+          # ObjC++ 源码
+          OBJCXX_SOURCES=$(ls Daemon/*.mm 2>/dev/null || true)
+
+          echo "=== 编译 C 源码（C 模式）==="
+          for f in $C_SOURCES; do
+            o="build/obj/$(echo "$f" | tr '/' '_').o"
+            xcrun -sdk iphoneos clang -x c -std=gnu11 $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
+              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+          done
+
+          echo "=== 编译 C++ 源码 ==="
+          for f in $CXX_SOURCES; do
+            o="build/obj/$(echo "$f" | tr '/' '_').o"
+            xcrun -sdk iphoneos clang++ -x c++ -std=gnu++17 $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
+              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+          done
+
+          echo "=== 编译 ObjC 源码 ==="
+          for f in $OBJC_SOURCES; do
+            o="build/obj/$(echo "$f" | tr '/' '_').o"
+            xcrun -sdk iphoneos clang -x objective-c -fobjc-arc $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
+              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+          done
+
+          echo "=== 编译 ObjC++ 源码 ==="
+          for f in $OBJCXX_SOURCES; do
+            o="build/obj/$(echo "$f" | tr '/' '_').o"
+            xcrun -sdk iphoneos clang++ -x objective-c++ -std=gnu++17 -fobjc-arc $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
+              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+          done
+
+          echo "=== 链接 reprovisiond ==="
           xcrun -sdk iphoneos clang++ \
-            -arch arm64 \
-            -miphoneos-version-min=15.0 \
-            -std=c++17 \
-            -framework Foundation \
-            -framework Security \
-            -framework CoreFoundation \
-            -I Daemon \
-            -I Daemon/ldid \
-            -I Daemon/libplist \
-            -I "${OPENSSL_DIR}/include" \
-            -L "${OPENSSL_DIR}/lib" \
-            -lssl -lcrypto -lz \
+            -arch arm64 -miphoneos-version-min=15.0 \
+            -framework Foundation -framework Security -framework CoreFoundation \
+            -L "${OPENSSL_DIR}/lib" -lssl -lcrypto -lz \
             -o build/reprovisiond \
-            Daemon/main.m \
-            Daemon/RZDaemon.m \
-            Daemon/SignEngine.m \
-            Daemon/ZSignBackend.m \
-            Daemon/LdidBackend.m \
-            Daemon/AnisetteManager.m \
-            Daemon/TokenCacheManager.m \
-            Daemon/HealthCheck.m \
-            Daemon/ProfileInstaller.m \
-            Daemon/EntitlementsGen.m \
-            Daemon/EEAppleServices.m \
-            Daemon/EEProvisioning.m \
-            Daemon/EESigning.m \
-            Daemon/ldid/ldid.cpp \
-            Daemon/ldid/lookup2.c \
-            ${LIBPLIST_C} \
-            ${LIBPLIST_CPP} \
-            2>&1 | tee daemon_build.log | tail -50
+            build/obj/*.o >> daemon_build.log 2>&1 || true
 
           if [ ! -f build/reprovisiond ]; then
             echo "error: reprovisiond build failed"
-            echo "=== Daemon 构建日志 ==="
-            cat daemon_build.log
+            echo "=== 所有编译错误行 ==="
+            grep -nE "error:|fatal error:|Undefined symbol" daemon_build.log || true
+            echo "=== Daemon 构建日志（尾部 150 行）==="
+            tail -150 daemon_build.log
             exit 1
           fi
 
