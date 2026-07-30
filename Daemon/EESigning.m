@@ -84,6 +84,36 @@ static std::string RPVSanitizeEntitlementsXML(const std::string &xml, NSSet *all
     return std::string((const char *)out.bytes, out.length);
 }
 
+/// 返回 CA 证书安装目录的绝对路径
+///
+/// reprovisiond 是 CLI 二进制（非 .app bundle），不能用 NSBundle mainBundle。
+/// deb 包将证书安装到固定的系统共享目录：
+///   - RootHide / rootful:  /usr/share/reprovision/certificates/
+///   - Dopamine rootless:    /var/jb/usr/share/reprovision/certificates/
+///
+/// 按优先级依次探测，找到第一个存在的目录即返回
+static NSString *RZCertificateDirectory(void) {
+    NSArray *candidates = @[
+        @"/var/jb/usr/share/reprovision/certificates/",   // Dopamine rootless
+        @"/usr/share/reprovision/certificates/",           // RootHide / rootful
+    ];
+
+    for (NSString *dir in candidates) {
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:dir isDirectory:&isDir] && isDir) {
+            return dir;
+        }
+    }
+
+    // 兜底：返回默认路径（即使暂时不存在，错误信息会更清晰）
+    return @"/usr/share/reprovision/certificates/";
+}
+
+/// 根据证书名称返回完整绝对路径
+static NSString *RZCertificatePath(NSString *name) {
+    return [RZCertificateDirectory() stringByAppendingPathComponent:[name stringByAppendingString:@".pem"]];
+}
+
 #pragma mark - 私有辅助方法（PKCS12 / CA Chain / Requirements）
 
 @interface EESigning (Private)
@@ -320,9 +350,9 @@ static std::string RPVSanitizeEntitlementsXML(const std::string &xml, NSSet *all
 
     NSString *filepath;
     if (issuerHash == 0x817d2f7a) {
-        filepath = [[NSBundle mainBundle] pathForResource:@"apple-ios" ofType:@"pem"];
+        filepath = RZCertificatePath(@"apple-ios");
     } else if (issuerHash == 0x9b16b75c) {
-        filepath = [[NSBundle mainBundle] pathForResource:@"apple-ios-g3" ofType:@"pem"];
+        filepath = RZCertificatePath(@"apple-ios-g3");
     } else {
         NSLog(@"[RePro] 错误：无法确定要使用的中间证书 (issuerHash=0x%lx)", issuerHash);
         X509_free(certForHashCheck);
@@ -365,7 +395,7 @@ static std::string RPVSanitizeEntitlementsXML(const std::string &xml, NSSet *all
                                    certificate:(NSData *)certificate
                                     andCAChain:(X509 *)chain {
     // 加载根 CA 证书（root.pem）
-    NSString *rootCAFilepath = [[NSBundle mainBundle] pathForResource:@"root" ofType:@"pem"];
+    NSString *rootCAFilepath = RZCertificatePath(@"root");
     NSString *rootCAContents = [NSString stringWithContentsOfFile:rootCAFilepath encoding:NSUTF8StringEncoding error:nil];
 
     BIO *rootCABio = BIO_new(BIO_s_mem());

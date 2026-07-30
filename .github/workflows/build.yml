@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install ldid 2>/dev/null || true
+          brew install ldid openssl@3 zlib 2>/dev/null || true
 
       - name: Build iOS App (RePro)
         run: |
@@ -44,56 +44,89 @@ jobs:
       - name: Build Daemon (reprovisiond)
         run: |
           set -e
-          xcrun -sdk iphoneos clang \
+
+          # 收集 libplist 所有需编译的源文件（.c 和 .cpp）
+          LIBPLIST_C=$(find Daemon/libplist -name '*.c' ! -path '*test*' ! -path '*tools*' | tr '\n' ' ')
+          LIBPLIST_CPP=$(find Daemon/libplist -name '*.cpp' ! -path '*test*' ! -path '*tools*' | tr '\n' ' ')
+
+          # OpenSSL 头文件路径（brew 安装的 openssl@3）
+          OPENSSL_DIR=$(brew --prefix openssl@3 2>/dev/null || echo "/usr/local/opt/openssl@3")
+
+          echo "=== 编译 reprovisiond daemon ==="
+          xcrun -sdk iphoneos clang++ \
             -arch arm64 \
             -miphoneos-version-min=15.0 \
+            -std=c++17 \
             -framework Foundation \
-            -o build/reprovisiond \
-            Daemon/main.m Daemon/RZDaemon.m Daemon/SignEngine.m \
-            Daemon/ZSignBackend.m Daemon/LdidBackend.m \
-            Daemon/AnisetteManager.m Daemon/TokenCacheManager.m \
-            Daemon/HealthCheck.m Daemon/ProfileInstaller.m \
-            Daemon/EntitlementsGen.m \
+            -framework Security \
+            -framework CoreFoundation \
             -I Daemon \
-            -lCommonCrypto \
-            2>&1 | tail -10
+            -I Daemon/ldid \
+            -I Daemon/libplist \
+            -I "${OPENSSL_DIR}/include" \
+            -L "${OPENSSL_DIR}/lib" \
+            -lssl -lcrypto -lz \
+            -o build/reprovisiond \
+            Daemon/main.m \
+            Daemon/RZDaemon.m \
+            Daemon/SignEngine.m \
+            Daemon/ZSignBackend.m \
+            Daemon/LdidBackend.m \
+            Daemon/AnisetteManager.m \
+            Daemon/TokenCacheManager.m \
+            Daemon/HealthCheck.m \
+            Daemon/ProfileInstaller.m \
+            Daemon/EntitlementsGen.m \
+            Daemon/EEAppleServices.m \
+            Daemon/EEProvisioning.m \
+            Daemon/EESigning.m \
+            Daemon/ldid/ldid.cpp \
+            Daemon/ldid/lookup2.c \
+            ${LIBPLIST_C} \
+            ${LIBPLIST_CPP} \
+            2>&1 | tail -20
 
           file build/reprovisiond
           chmod +x build/reprovisiond
           echo "Daemon built successfully"
 
-      - name: Sign with entitlements
+      - name: Sign with entitlements + 打包资源
         run: |
           set -e
           LDID=$(command -v ldid)
 
-          # Rootless deb (Dopamine) - base entitlements
+          # --- Rootless deb (Dopamine) ---
           PKG="Packages/rootless"
           RL="$PKG/var/jb"
-          mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" "$RL/Library/LaunchDaemons"
+          mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" \
+                   "$RL/Library/LaunchDaemons" "$RL/usr/share/reprovision/certificates"
           cp -R $(find build -name "RePro.app" -type d | head -1) "$RL/Applications/"
           cp build/reprovisiond "$RL/usr/libexec/"
-          # zsign 在 CI 中不存在，跳过（设备上由用户自行安装）
+          cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
           "$LDID" -SResources/entitlements-base.plist "$RL/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$RL/usr/libexec/reprovisiond"
 
-          # Rootful deb - base entitlements
+          # --- Rootful deb ---
           PKG2="Packages/rootful"
-          mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/Library/LaunchDaemons"
+          mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/Library/LaunchDaemons" \
+                   "$PKG2/usr/share/reprovision/certificates"
           cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG2/Applications/"
           cp build/reprovisiond "$PKG2/usr/libexec/"
+          cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
           "$LDID" -SResources/entitlements-base.plist "$PKG2/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$PKG2/usr/libexec/reprovisiond"
 
-          # RootHide deb - roothide entitlements, arm64e arch
+          # --- RootHide deb ---
           PKG3="Packages/roothide"
-          mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/Library/LaunchDaemons"
+          mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/Library/LaunchDaemons" \
+                   "$PKG3/usr/share/reprovision/certificates"
           cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG3/Applications/"
           cp build/reprovisiond "$PKG3/usr/libexec/"
+          cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           "$LDID" -SResources/entitlements-roothide.plist "$PKG3/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$PKG3/usr/libexec/reprovisiond"
 
-          echo "Signing complete for all 3 packages"
+          echo "Signing + packaging complete for all 3 packages"
 
       - name: Package debs
         run: |
