@@ -1,9 +1,34 @@
 import Foundation
 import UniformTypeIdentifiers
+import UIKit
+import Darwin
 
 // MARK: - IPA 处理工具类
 
 class IPAProcessor {
+
+    /// 通过 posix_spawn 执行外部命令（iOS 上 Process 不可用），返回退出码
+    private static func runCommand(_ executable: String, args: [String], workingDirectory: String? = nil) -> Int32 {
+        var pid: pid_t = 0
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        if let wd = workingDirectory {
+            posix_spawn_file_actions_addchdir_np(&fileActions!, wd)
+        }
+        let argv: [UnsafeMutablePointer<CChar>?] = args.map { $0.withCString(strdup) } + [nil]
+        defer { for p in argv { free(p) } }
+        let status = argv.withUnsafeBufferPointer { buf in
+            posix_spawn(&pid, executable, &fileActions!, nil,
+                        UnsafeMutablePointer(mutating: buf.baseAddress), nil)
+        }
+        posix_spawn_file_actions_destroy(&fileActions!)
+        if status == 0 {
+            var st: Int32 = 0
+            waitpid(pid, &st, 0)
+            return WEXITSTATUS(st)
+        }
+        return status
+    }
 
     /// 解压 IPA 到临时目录
     static func extract(ipaPath: String) throws -> URL {
@@ -13,15 +38,9 @@ class IPAProcessor {
 
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-        // 使用 unzip 解压
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        process.arguments = ["-qo", ipaPath, "-d", tempDir.path]
-
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
+        // 使用 unzip 解压（iOS 无 Process，改用 posix_spawn）
+        let status = runCommand("/usr/bin/unzip", args: ["unzip", "-qo", ipaPath, "-d", tempDir.path])
+        guard status == 0 else {
             throw ReProError.invalidIPA
         }
 
@@ -48,19 +67,15 @@ class IPAProcessor {
 
     /// 打包 .app 目录为 IPA
     static func pack(appPath: URL, outputPath: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        process.arguments = [
-            "-q", "-r",
+        // zip 在 Payload 的父目录中执行，将 "Payload/xxx.app" 加入归档
+        let workDir = appPath.deletingLastPathComponent().deletingLastPathComponent().path
+        let status = runCommand("/usr/bin/zip", args: [
+            "zip", "-q", "-r",
             outputPath.path,
             "Payload/\(appPath.lastPathComponent)"
-        ]
-        process.currentDirectoryURL = appPath.deletingLastPathComponent().deletingLastPathComponent()
+        ], workingDirectory: workDir)
 
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
+        guard status == 0 else {
             throw ReProError.signingFailed("打包 IPA 失败")
         }
     }
@@ -68,7 +83,7 @@ class IPAProcessor {
     /// 读取 App 的 Info.plist
     static func readInfoPlist(fromAppBundle appPath: URL) -> [String: Any]? {
         let plistPath = appPath.appendingPathComponent("Info.plist")
-        guard let data = FileManager.default.contents(atPath: plistPath),
+        guard let data = FileManager.default.contents(atPath: plistPath.path),
               let plist = try? PropertyListSerialization.propertyList(from: data,
                                                                         options: [],
                                                                         format: nil) as? [String: Any] else {
@@ -80,7 +95,7 @@ class IPAProcessor {
     /// 读取 embedded.mobileprovision 数据
     static func readEmbeddedProfile(fromAppBundle appPath: URL) -> Data? {
         let profilePath = appPath.appendingPathComponent("embedded.mobileprovision")
-        return FileManager.default.contents(atPath: profilePath)
+        return FileManager.default.contents(atPath: profilePath.path)
     }
 
     /// 获取应用图标

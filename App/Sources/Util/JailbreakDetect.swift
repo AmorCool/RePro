@@ -16,35 +16,35 @@ enum JailbreakDetect {
     private static func isRootHide() -> Bool {
         // 方法1: 检测 .jbroot 符号链接
         let jbrootLink = Bundle.main.bundlePath + "/.jbroot"
-        if FileManager.default.fileExistsAtPath(jbrootLink) {
+        if FileManager.default.fileExists(atPath: jbrootLink) {
             return true
         }
         // 方法2: 检测 RootHide 特有路径
-        return FileManager.default.fileExistsAtPath("/var/jb/.roothide_version")
+        return FileManager.default.fileExists(atPath: "/var/jb/.roothide_version")
     }
 
     /// 是否为 Dopamine 环境
     private static func isDopamine() -> Bool {
         // Dopamine 的标志文件
-        return FileManager.default.fileExistsAtPath("/var/jb/dopamine") ||
-               FileManager.default.fileExistsAtPath("/var/jb/basebin/package.deb")
+        return FileManager.default.fileExists(atPath: "/var/jb/dopamine") ||
+               FileManager.default.fileExists(atPath: "/var/jb/basebin/package.deb")
     }
 
     /// 是否为 rootful 越狱
     private static func isRootful() -> Bool {
         // rootful 越狱可以直接访问 /Applications 且不是沙盒
         return FileManager.default.isWritableFile(atPath: "/Applications") &&
-               !FileManager.default.fileExistsAtPath("/var/jb")
+               !FileManager.default.fileExists(atPath: "/var/jb")
     }
 
     /// 获取 jbroot 路径（仅 RootHide）
     static func jbrootPath() -> String? {
         let link = Bundle.main.bundlePath + "/.jbroot"
-        guard FileManager.default.fileExistsAtPath(link) else { return nil }
+        guard FileManager.default.fileExists(atPath: link) else { return nil }
         let resolved = try? FileManager.default.destinationOfSymbolicLink(atPath: link)
         // .jbroot 是符号链接，需要解析其指向的真实路径
         let fullResolved = (try? URL(fileURLWithPath: link).resolvingSymlinksInPath().path) ?? resolved
-        guard FileManager.default.fileExistsAtPath(fullResolved?.appendingPathComponent("usr/local/bin").fullResolved ?? "") else { return nil }
+        guard FileManager.default.fileExists(atPath: fullResolved?.appendingPathComponent("usr/local/bin") ?? "") else { return nil }
         return fullResolved
     }
 
@@ -52,8 +52,8 @@ enum JailbreakDetect {
     static func packageType() -> PackageType {
         let fm = FileManager.default
         // 检测是否通过 dpkg 安装
-        if fm.fileExistsAtPath("/var/lib/dpkg/info/com.reprovision.list") ||
-           fm.fileExistsAtPath("/var/jb/var/lib/dpkg/info/jp.soh.reprovision.list") {
+        if fm.fileExists(atPath: "/var/lib/dpkg/info/com.reprovision.list") ||
+           fm.fileExists(atPath: "/var/jb/var/lib/dpkg/info/jp.soh.reprovision.list") {
             return .dpkg
         }
         // 检测是否为 sideload（TestFlight / Sideloadly）

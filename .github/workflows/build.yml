@@ -80,8 +80,16 @@ jobs:
           # 交叉编译得到的 iOS arm64 OpenSSL
           OPENSSL_DIR=/tmp/openssl-ios
 
-          COMMON_FLAGS="-arch arm64 -miphoneos-version-min=15.0 \
-            -I Daemon -I Daemon/ldid -I Daemon/libplist -I Daemon/libplist/libcnary \
+          # 注意：不能把 -I Daemon/libplist 加进公共头文件路径。
+          # libplist 自带与系统头同名的 String.h/Array.h 等，加进 -I 后
+          # #include <string.h> 会被大小写不敏感地解析成 libplist 的 String.h（C++ 头），
+          # 进而拉入 Node.h 的 <cstddef> 导致 C 编译失败。
+          # libplist/ldid 内部均用相对路径引用彼此的头文件（如 "../libplist/plist.h"），
+          # 因此无需 -I Daemon/libplist。
+          # -DHAVE_CONFIG_H 让 libplist 的 plist.h 真正包含我们手写的精简 config.h
+          # （autotools 由 ./configure 在命令行注入该宏，手动构建需自行补上）。
+          COMMON_FLAGS="-arch arm64 -miphoneos-version-min=15.0 -DHAVE_CONFIG_H \
+            -I Daemon -I Daemon/ldid \
             -I ${OPENSSL_DIR}/include"
 
           # C 源码必须用 C 模式编译（clang++ 会把 .c 当 C++，导致 libplist/lookup2 报类型错误）
