@@ -15,6 +15,8 @@
 #import "HealthCheck.h"
 #import "ProfileInstaller.h"
 #import <sys/stat.h>
+#import <sys/wait.h>
+#import <spawn.h>
 
 const uint8_t kRZDaemonProtocolVersion = 1;
 NSString *const kRZDaemonMachServiceName = @"com.reprovision.daemon";
@@ -36,7 +38,10 @@ NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _listener = [[NSXPCListener alloc] initWithMachServiceName:kRZDaemonMachServiceName];
+        // NSXPCListener initWithMachServiceName: 在 iOS 标记为 unavailable
+        // 使用 ObjC 运行时 performSelector: 绕过编译器检查（daemon 实际运行在 root 环境）
+        SEL initSel = NSSelectorFromString(@"initWithMachServiceName:");
+        _listener = [[NSXPCListener alloc] performSelector:initSel withObject:kRZDaemonMachServiceName];
         _listener.delegate = self;
 
         // 初始化各子模块
@@ -145,9 +150,12 @@ NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.
 
 - (void)restartWithReply:(void (^)(BOOL))reply {
     NSLog(@"[RePro] 收到重启请求");
-    // 通过 launchctl kickstart 重启自己
-    int ret = system("launchctl kickstart system/com.reprovision.daemon");
-    reply(ret == 0);
+    // 通过 launchctl kickstart 重启自己（system() 在 iOS 不可用）
+    pid_t pid = 0;
+    const char *argv[] = { "/bin/launchctl", "kickstart", "system/com.reprovision.daemon", NULL };
+    int status = posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, NULL);
+    if (status == 0) waitpid(pid, NULL, 0);
+    reply(status == 0);
 }
 
 - (void)installProvisioningProfileAtPath:(NSString *)path
