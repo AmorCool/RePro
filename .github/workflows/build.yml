@@ -100,9 +100,8 @@ jobs:
           # C++ 源码
           CXX_SOURCES=$(find Daemon/libplist -name '*.cpp' ! -path '*test*' ! -path '*tools*')
           CXX_SOURCES="$CXX_SOURCES Daemon/ldid/ldid.cpp"
-          # ObjC 源码（排除 ccsrp.m：corecrypto 透明联合体与现代 clang 不兼容，
-          # Daemon 的其他 .m 均通过 dlopen/dlsym 动态调用 libcorecrypto）
-          OBJC_SOURCES=$(ls Daemon/*.m | grep -v ccsrp.m)
+          # ObjC 源码
+          OBJC_SOURCES=$(ls Daemon/*.m)
           # ObjC++ 源码
           OBJCXX_SOURCES=$(ls Daemon/*.mm 2>/dev/null || true)
 

@@ -11,7 +11,7 @@
 
 #import <Foundation/Foundation.h>
 
-cc_unit *srp_ccn(void *srp)
+cc_unit *srp_ccn(ccsrp_ctx_t srp)
 {
     // Memory layout of ccsrp_ctx changed between iOS 13/macOS 10.15 and iOS 14/macOS 11.
     // Dynamically cast to correct memory layout to ensure we access valid memory.
@@ -22,7 +22,7 @@ cc_unit *srp_ccn(void *srp)
     if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){ 11, 0, 0 }])
 #endif
     {
-        return SRP_CCN((ccsrp_ctx_t)(srp));
+        return SRP_CCN(srp);
     }
     else
     {
