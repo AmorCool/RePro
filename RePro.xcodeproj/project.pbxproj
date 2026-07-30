@@ -395,12 +395,12 @@
 				AA00003024AABBCC0001 /* entitlements-base.plist */,
 				AA00003124AABBCC0001 /* entitlements-roothide.plist */,
 				AA00003224AABBCC0001 /* entitlements-daemon.plist */,
-				AA00004024AABBCC0001 /* Certificates */,
+				AA00004424AABBCC0001 /* Certificates */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
 		};
-		AA00004024AABBCC0001 /* Certificates */ = {
+		AA00004424AABBCC0001 /* Certificates */ = {
 			isa = PBXGroup;
 			children = (
 				AA00004124AABBCC0001 /* apple-ios.pem */,

@@ -14,6 +14,7 @@
 
 import sys
 import os
+import re
 
 # old-style plist 中可以不加引号的裸字符集合
 BARE = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$/:.-")
@@ -192,6 +193,72 @@ def check_references(root, project_dir):
     return missing
 
 
+def find_duplicate_ids(text):
+    """扫描原始文本，找出在 objects 段中重复定义的对象 ID。
+
+    parse_dict 用 Python dict 存储，重复键会被静默覆盖（最后一条胜出），
+    因此必须直接扫描原始文本才能发现这类 ID 冲突 —— 这是 xcodebuild
+    报 'The project is damaged' 的典型根因（同一 ID 既是 group 又是 buildPhase）。
+    """
+    ids = re.findall(r"^\t\t([A-Z0-9]{16,24}) ", text, re.M)
+    seen = {}
+    for x in ids:
+        seen[x] = seen.get(x, 0) + 1
+    return [k for k, v in seen.items() if v > 1]
+
+
+def check_semantics(root):
+    """校验对象间引用的类型一致性（xcodebuild 解析项目树时依赖正确的 isa 类型）。"""
+    objects = root.get("objects", {})
+    isa_of = {
+        oid: (obj.get("isa") if isinstance(obj, dict) else None)
+        for oid, obj in objects.items()
+    }
+
+    def isa(o):
+        return isa_of.get(o)
+
+    errors = []
+    for oid, obj in objects.items():
+        if not isinstance(obj, dict):
+            continue
+        t = obj.get("isa")
+        if t in ("PBXGroup", "PBXVariantGroup"):
+            for kid in obj.get("children", []):
+                kt = isa(kid)
+                if kt not in ("PBXGroup", "PBXVariantGroup", "PBXFileReference"):
+                    errors.append("组 %s 的子项 %s 类型 %s 非法（应为 group/fileref）" % (oid, kid, kt))
+        elif t == "PBXNativeTarget":
+            for bp in obj.get("buildPhases", []):
+                if not (isa(bp) or "").endswith("BuildPhase"):
+                    errors.append("target %s 的 buildPhase %s 类型 %s 非法" % (oid, bp, isa(bp)))
+            bcl = obj.get("buildConfigurationList")
+            if bcl and isa(bcl) != "XCConfigurationList":
+                errors.append("target %s 的 buildConfigurationList %s 类型 %s 非法" % (oid, bcl, isa(bcl)))
+            pr = obj.get("productReference")
+            if pr and isa(pr) != "PBXFileReference":
+                errors.append("target %s 的 productReference %s 类型 %s 非法" % (oid, pr, isa(pr)))
+        elif t == "PBXBuildFile":
+            fr = obj.get("fileRef")
+            if fr and isa(fr) != "PBXFileReference":
+                errors.append("PBXBuildFile %s 的 fileRef %s 类型 %s 非法" % (oid, fr, isa(fr)))
+        elif t and t.endswith("BuildPhase"):
+            for f in obj.get("files", []):
+                if isa(f) != "PBXBuildFile":
+                    errors.append("buildPhase %s 的 file %s 类型 %s 非法（应为 PBXBuildFile）" % (oid, f, isa(f)))
+        elif t == "PBXProject":
+            mg = obj.get("mainGroup")
+            if mg and isa(mg) != "PBXGroup":
+                errors.append("PBXProject mainGroup %s 类型 %s 非法" % (mg, isa(mg)))
+            prg = obj.get("productRefGroup")
+            if prg and isa(prg) != "PBXGroup":
+                errors.append("PBXProject productRefGroup %s 类型 %s 非法" % (prg, isa(prg)))
+            bcl = obj.get("buildConfigurationList")
+            if bcl and isa(bcl) != "XCConfigurationList":
+                errors.append("PBXProject buildConfigurationList %s 类型 %s 非法" % (bcl, isa(bcl)))
+    return errors
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "RePro.xcodeproj/project.pbxproj"
     if not os.path.exists(path):
@@ -209,6 +276,25 @@ def main():
     print("语法合法，共解析 %d 个对象" % n_obj)
 
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+
+    # 结构性检查优先：ID 冲突 / 类型不一致会直接导致 xcodebuild 报项目损坏，
+    # 且会让“文件引用”检查产生误导性级联报错，因此先跑这两项以给出精准报错。
+    dups = find_duplicate_ids(text)
+    if dups:
+        print("发现重复定义的对象 ID (%d):" % len(dups))
+        for d in dups:
+            print("  %s" % d)
+        return 1
+    print("无重复对象 ID")
+
+    sem_errors = check_semantics(root)
+    if sem_errors:
+        print("语义校验失败 (%d):" % len(sem_errors))
+        for e in sem_errors:
+            print("  - %s" % e)
+        return 1
+    print("对象引用类型一致性 OK")
+
     missing = check_references(root, project_dir)
     if missing:
         print("以下被引用的文件在磁盘上不存在 (%d):" % len(missing))
