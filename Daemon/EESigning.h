@@ -25,6 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable NSDictionary *)analyzeEntitlementsFromBinaryAtPath:(NSString *)binaryPath
                                                       error:(NSError **)error;
 
+/// 从二进制提取 entitlements 并更新 application-identifier / team-identifier
++ (NSDictionary *)updateEntitlementsForBinaryAtLocation:(NSString *)binaryLocation
+                                       bundleIdentifier:(NSString *)bundleIdentifier
+                                                  teamID:(NSString *)teamid;
+
 @end
 
 NS_ASSUME_NONNULL_END

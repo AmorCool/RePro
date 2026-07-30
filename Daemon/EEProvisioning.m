@@ -139,6 +139,7 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
         [self.appleServices addDevice:udid
                           deviceName:name
                            forTeamID:[self.appleServices currentTeamID]
+                         systemType:EESystemTypeUndefined
                          withCompletionHandler:^(NSError *error, NSDictionary *plist) {
             if (error) {
                 completionHandler(error);
@@ -171,6 +172,7 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 
         // 列出所有开发证书
         [self.appleServices listAllDevelopmentCertificatesForTeamID:[self.appleServices currentTeamID]
+                                             systemType:EESystemTypeUndefined
                                              withCompletionHandler:^(NSError *error, NSDictionary *plist) {
             if (error) {
                 completionHandler(error);
@@ -193,7 +195,8 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
                 // 找到了，撤销它
                 [self.appleServices revokeCertificateForIdentifier:certId
                                                          andTeamID:[self.appleServices currentTeamID]
-                                              withCompletionHandler:^(NSError *error, NSDictionary *plist) {
+                                                      systemType:EESystemTypeUndefined
+                                                   withCompletionHandler:^(NSError *error, NSDictionary *plist) {
                     if (error) {
                         completionHandler(error);
                         return;
@@ -443,7 +446,8 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 
                 [self.appleServices revokeCertificateForIdentifier:certId
                                                          andTeamID:[self.appleServices currentTeamID]
-                                              withCompletionHandler:^(NSError *error, NSDictionary *plist) {
+                                                      systemType:EESystemTypeUndefined
+                                                   withCompletionHandler:^(NSError *error, NSDictionary *plist) {
                     if (error) {
                         completionHandler(error, nil, nil);
                         return;
@@ -563,6 +567,7 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
                                              machineName:machineName
                                                machineID:machineId
                                       codeSigningRequest:codeSigningRequest
+                                              systemType:EESystemTypeUndefined
                                      withCompletionHandler:^(NSError *error, NSDictionary *plist) {
         if (error) {
             completionHandler(error, nil, nil);
@@ -586,6 +591,7 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 
         // 再次查询证书列表以获取完整的证书信息
         [self.appleServices listAllDevelopmentCertificatesForTeamID:[self.appleServices currentTeamID]
+                                             systemType:EESystemTypeUndefined
                                              withCompletionHandler:^(NSError *error, NSDictionary *plist) {
             if (error) {
                 completionHandler(error, nil, nil);
@@ -965,6 +971,7 @@ free_all:
                                     enabledFeatures:enabledFeatures
                                             teamID:[self.appleServices currentTeamID]
                                         entitlements:entitlements
+                                          systemType:EESystemTypeUndefined
                                  withCompletionHandler:^(NSError *error, NSDictionary *plist) {
                     if (error) {
                         NSError *addError = [EEProvisioning _errorFromString:
