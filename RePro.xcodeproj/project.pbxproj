@@ -35,6 +35,35 @@
 		DA00000A24BBDDCC0001 /* EntitlementsGen.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001A24BBDDCC0001 /* EntitlementsGen.m */; };
 		DA00000B24BBDDCC0001 /* EEProvisioning.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001B24BBDDCC0001 /* EEProvisioning.m */; };
 		DA00000C24BBDDCC0001 /* EESigning.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001C24BBDDCC0001 /* EESigning.m */; };
+		/* ldid sources */
+		LD00000124CCDDEE0001 /* ldid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LD00001124CCDDEE0001 /* ldid.cpp */; };
+		LD00000224CCDDEE0001 /* lookup2.c in Sources */ = {isa = PBXBuildFile; fileRef = LD00001324CCDDEE0001 /* lookup2.c */; };
+		/* libplist sources */
+		LP00010124CCDDEE0001 /* plist.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020124CCDDEE0001 /* plist.c */; };
+		LP00010224CCDDEE0001 /* bplist.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020224CCDDEE0001 /* bplist.c */; };
+		LP00010324CCDDEE0001 /* xplist.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020324CCDDEE0001 /* xplist.c */; };
+		LP00010424CCDDEE0001 /* base64.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020424CCDDEE0001 /* base64.c */; };
+		LP00010524CCDDEE0001 /* bytearray.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020524CCDDEE0001 /* bytearray.c */; };
+		LP00010624CCDDEE0001 /* hashtable.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020624CCDDEE0001 /* hashtable.c */; };
+		LP00010724CCDDEE0001 /* ptrarray.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020724CCDDEE0001 /* ptrarray.c */; };
+		LP00010824CCDDEE0001 /* time64.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00020824CCDDEE0001 /* time64.c */; };
+		LP00010924CCDDEE0001 /* Array.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020924CCDDEE0001 /* Array.cpp */; };
+		LP00010A24CCDDEE0001 /* Boolean.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020A24CCDDEE0001 /* Boolean.cpp */; };
+		LP00010B24CCDDEE0001 /* Data.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020B24CCDDEE0001 /* Data.cpp */; };
+		LP00010C24CCDDEE0001 /* Date.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020C24CCDDEE0001 /* Date.cpp */; };
+		LP00010D24CCDDEE0001 /* Dictionary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020D24CCDDEE0001 /* Dictionary.cpp */; };
+		LP00010E24CCDDEE0001 /* Integer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020E24CCDDEE0001 /* Integer.cpp */; };
+		LP00010F24CCDDEE0001 /* Key.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00020F24CCDDEE0001 /* Key.cpp */; };
+		LP00011024CCDDEE0001 /* Node.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00021024CCDDEE0001 /* Node.cpp */; };
+		LP00011124CCDDEE0001 /* Real.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00021124CCDDEE0001 /* Real.cpp */; };
+		LP00011224CCDDEE0001 /* String.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00021224CCDDEE0001 /* String.cpp */; };
+		LP00011324CCDDEE0001 /* Structure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00021324CCDDEE0001 /* Structure.cpp */; };
+		LP00011424CCDDEE0001 /* Uid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LP00021424CCDDEE0001 /* Uid.cpp */; };
+		LP00011524CCDDEE0001 /* iterator.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00021524CCDDEE0001 /* iterator.c */; };
+		LP00011624CCDDEE0001 /* list.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00021624CCDDEE0001 /* list.c */; };
+		LP00011724CCDDEE0001 /* node.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00021724CCDDEE0001 /* node.c */; };
+		LP00011824CCDDEE0001 /* node_iterator.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00021824CCDDEE0001 /* node_iterator.c */; };
+		LP00011924CCDDEE0001 /* node_list.c in Sources */ = {isa = PBXBuildFile; fileRef = LP00021924CCDDEE0001 /* node_list.c */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -79,6 +108,73 @@
 		DA00001C24BBDDCC0001 /* EESigning.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = EESigning.m; sourceTree = "<group>"; };
 		DA00001CH24BBDDCC0001 /* EESigning.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EESigning.h; sourceTree = "<group>"; };
 		DA00002024BBDDCC0001 /* reprovisiond */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = reprovisiond; sourceTree = BUILT_PRODUCTS_DIR; };
+		/* ldid */
+		LD00001124CCDDEE0001 /* ldid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ldid.cpp; sourceTree = "<group>"; };
+		LD00001224CCDDEE0001 /* ldid.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ldid.hpp; sourceTree = "<group>"; };
+		LD00001324CCDDEE0001 /* lookup2.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = lookup2.c; sourceTree = "<group>"; };
+		LD00001424CCDDEE0001 /* sha1.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sha1.h; sourceTree = "<group>"; };
+		/* libplist - C sources */
+		LP00020124CCDDEE0001 /* plist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = plist.c; sourceTree = "<group>"; };
+		LP00020224CCDDEE0001 /* bplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bplist.c; sourceTree = "<group>"; };
+		LP00020324CCDDEE0001 /* xplist.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = xplist.c; sourceTree = "<group>"; };
+		LP00020424CCDDEE0001 /* base64.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = base64.c; sourceTree = "<group>"; };
+		LP00020524CCDDEE0001 /* bytearray.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bytearray.c; sourceTree = "<group>"; };
+		LP00020624CCDDEE0001 /* hashtable.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hashtable.c; sourceTree = "<group>"; };
+		LP00020724CCDDEE0001 /* ptrarray.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ptrarray.c; sourceTree = "<group>"; };
+		LP00020824CCDDEE0001 /* time64.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = time64.c; sourceTree = "<group>"; };
+		/* libplist - C++ sources */
+		LP00020924CCDDEE0001 /* Array.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Array.cpp; sourceTree = "<group>"; };
+		LP00020A24CCDDEE0001 /* Boolean.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Boolean.cpp; sourceTree = "<group>"; };
+		LP00020B24CCDDEE0001 /* Data.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Data.cpp; sourceTree = "<group>"; };
+		LP00020C24CCDDEE0001 /* Date.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Date.cpp; sourceTree = "<group>"; };
+		LP00020D24CCDDEE0001 /* Dictionary.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Dictionary.cpp; sourceTree = "<group>"; };
+		LP00020E24CCDDEE0001 /* Integer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Integer.cpp; sourceTree = "<group>"; };
+		LP00020F24CCDDEE0001 /* Key.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Key.cpp; sourceTree = "<group>"; };
+		LP00021024CCDDEE0001 /* Node.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Node.cpp; sourceTree = "<group>"; };
+		LP00021124CCDDEE0001 /* Real.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Real.cpp; sourceTree = "<group>"; };
+		LP00021224CCDDEE0001 /* String.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = String.cpp; sourceTree = "<group>"; };
+		LP00021324CCDDEE0001 /* Structure.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Structure.cpp; sourceTree = "<group>"; };
+		LP00021424CCDDEE0001 /* Uid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Uid.cpp; sourceTree = "<group>"; };
+		/* libcnary sources */
+		LP00021524CCDDEE0001 /* iterator.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterator.c; sourceTree = "<group>"; };
+		LP00021624CCDDEE0001 /* list.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = list.c; sourceTree = "<group>"; };
+		LP00021724CCDDEE0001 /* node.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = node.c; sourceTree = "<group>"; };
+		LP00021824CCDDEE0001 /* node_iterator.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = node_iterator.c; sourceTree = "<group>"; };
+		LP00021924CCDDEE0001 /* node_list.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = node_list.c; sourceTree = "<group>"; };
+		/* libplist - headers (not compiled) */
+		LP00022024CCDDEE0001 /* plist.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist.h; sourceTree = "<group>"; };
+		LP00022124CCDDEE0001 /* plist++.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = plist++.h; sourceTree = "<group>"; };
+		LP00022224CCDDEE0001 /* plist2.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist2.h; sourceTree = "<group>"; };
+		LP00022324CCDDEE0001 /* base64.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = base64.h; sourceTree = "<group>"; };
+		LP00022424CCDDEE0001 /* bytearray.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bytearray.h; sourceTree = "<group>"; };
+		LP00022524CCDDEE0001 /* hashtable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = hashtable.h; sourceTree = "<group>"; };
+		LP00022624CCDDEE0001 /* ptrarray.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ptrarray.h; sourceTree = "<group>"; };
+		LP00022724CCDDEE0001 /* time64.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = time64.h; sourceTree = "<group>"; };
+		LP00022824CCDDEE0001 /* time64_limits.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = time64_limits.h; sourceTree = "<group>"; };
+		LP00022924CCDDEE0001 /* strbuf.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = strbuf.h; sourceTree = "<group>"; };
+		LP00022A24CCDDEE0001 /* Array.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Array.h; sourceTree = "<group>"; };
+		LP00022B24CCDDEE0001 /* Boolean.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Boolean.h; sourceTree = "<group>"; };
+		LP00022C24CCDDEE0001 /* Data.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Data.h; sourceTree = "<group>"; };
+		LP00022D24CCDDEE0001 /* Date.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Date.h; sourceTree = "<group>"; };
+		LP00022E24CCDDEE0001 /* Dictionary.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Dictionary.h; sourceTree = "<group>"; };
+		LP00022F24CCDDEE0001 /* Integer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Integer.h; sourceTree = "<group>"; };
+		LP00023024CCDDEE0001 /* Key.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Key.h; sourceTree = "<group>"; };
+		LP00023124CCDDEE0001 /* Node.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Node.h; sourceTree = "<group>"; };
+		LP00023224CCDDEE0001 /* Real.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Real.h; sourceTree = "<group>"; };
+		LP00023324CCDDEE0001 /* String.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = String.h; sourceTree = "<group>"; };
+		LP00023424CCDDEE0001 /* Structure.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Structure.h; sourceTree = "<group>"; };
+		LP00023524CCDDEE0001 /* Uid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Uid.h; sourceTree = "<group>"; };
+		/* libcnary headers */
+		LP00023624CCDDEE0001 /* iterator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iterator.h; sourceTree = "<group>"; };
+		LP00023724CCDDEE0001 /* list.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = list.h; sourceTree = "<group>"; };
+		LP00023824CCDDEE0001 /* node.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = node.h; sourceTree = "<group>"; };
+		LP00023924CCDDEE0001 /* node_iterator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = node_iterator.h; sourceTree = "<group>"; };
+		LP00023A24CCDDEE0001 /* node_list.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = node_list.h; sourceTree = "<group>"; };
+		LP00023B24CCDDEE0001 /* object.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = object.h; sourceTree = "<group>"; };
+		/* Certificates */
+		AA00004124AABBCC0001 /* apple-ios.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = apple-ios.pem; sourceTree = "<group>"; };
+		AA00004224AABBCC0001 /* apple-ios-g3.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = apple-ios-g3.pem; sourceTree = "<group>"; };
+		AA00004324AABBCC0001 /* root.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = root.pem; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -205,18 +301,110 @@
 				DA00001BH24BBDDCC0001 /* EEProvisioning.h */,
 				DA00001C24BBDDCC0001 /* EESigning.m */,
 				DA00001CH24BBDDCC0001 /* EESigning.h */,
+				LD00009024CCDDEE0001 /* ldid */,
+				LP00009024CCDDEE0001 /* libplist */,
 			);
 			path = Daemon;
+			sourceTree = "<group>";
+		};
+		LD00009024CCDDEE0001 /* ldid */ = {
+			isa = PBXGroup;
+			children = (
+				LD00001124CCDDEE0001 /* ldid.cpp */,
+				LD00001224CCDDEE0001 /* ldid.hpp */,
+				LD00001324CCDDEE0001 /* lookup2.c */,
+				LD00001424CCDDEE0001 /* sha1.h */,
+			);
+			path = ldid;
+			sourceTree = "<group>";
+		};
+		LP00009024CCDDEE0001 /* libplist */ = {
+			isa = PBXGroup;
+			children = (
+				LP00029024CCDDEE0001 /* libcnary */,
+				LP00020124CCDDEE0001 /* plist.c */,
+				LP00020224CCDDEE0001 /* bplist.c */,
+				LP00020324CCDDEE0001 /* xplist.c */,
+				LP00020424CCDDEE0001 /* base64.c */,
+				LP00020524CCDDEE0001 /* bytearray.c */,
+				LP00020624CCDDEE0001 /* hashtable.c */,
+				LP00020724CCDDEE0001 /* ptrarray.c */,
+				LP00020824CCDDEE0001 /* time64.c */,
+				LP00020924CCDDEE0001 /* Array.cpp */,
+				LP00020A24CCDDEE0001 /* Boolean.cpp */,
+				LP00020B24CCDDEE0001 /* Data.cpp */,
+				LP00020C24CCDDEE0001 /* Date.cpp */,
+				LP00020D24CCDDEE0001 /* Dictionary.cpp */,
+				LP00020E24CCDDEE0001 /* Integer.cpp */,
+				LP00020F24CCDDEE0001 /* Key.cpp */,
+				LP00021024CCDDEE0001 /* Node.cpp */,
+				LP00021124CCDDEE0001 /* Real.cpp */,
+				LP00021224CCDDEE0001 /* String.cpp */,
+				LP00021324CCDDEE0001 /* Structure.cpp */,
+				LP00021424CCDDEE0001 /* Uid.cpp */,
+				LP00022024CCDDEE0001 /* plist.h */,
+				LP00022124CCDDEE0001 /* plist++.h */,
+				LP00022224CCDDEE0001 /* plist2.h */,
+				LP00022324CCDDEE0001 /* base64.h */,
+				LP00022424CCDDEE0001 /* bytearray.h */,
+				LP00022524CCDDEE0001 /* hashtable.h */,
+				LP00022624CCDDEE0001 /* ptrarray.h */,
+				LP00022724CCDDEE0001 /* time64.h */,
+				LP00022824CCDDEE0001 /* time64_limits.h */,
+				LP00022924CCDDEE0001 /* strbuf.h */,
+				LP00022A24CCDDEE0001 /* Array.h */,
+				LP00022B24CCDDEE0001 /* Boolean.h */,
+				LP00022C24CCDDEE0001 /* Data.h */,
+				LP00022D24CCDDEE0001 /* Date.h */,
+				LP00022E24CCDDEE0001 /* Dictionary.h */,
+				LP00022F24CCDDEE0001 /* Integer.h */,
+				LP00023024CCDDEE0001 /* Key.h */,
+				LP00023124CCDDEE0001 /* Node.h */,
+				LP00023224CCDDEE0001 /* Real.h */,
+				LP00023324CCDDEE0001 /* String.h */,
+				LP00023424CCDDEE0001 /* Structure.h */,
+				LP00023524CCDDEE0001 /* Uid.h */,
+			);
+			path = libplist;
+			sourceTree = "<group>";
+		};
+		LP00029024CCDDEE0001 /* libcnary */ = {
+			isa = PBXGroup;
+			children = (
+				LP00021524CCDDEE0001 /* iterator.c */,
+				LP00021624CCDDEE0001 /* list.c */,
+				LP00021724CCDDEE0001 /* node.c */,
+				LP00021824CCDDEE0001 /* node_iterator.c */,
+				LP00021924CCDDEE0001 /* node_list.c */,
+				LP00023624CCDDEE0001 /* iterator.h */,
+				LP00023724CCDDEE0001 /* list.h */,
+				LP00023824CCDDEE0001 /* node.h */,
+				LP00023924CCDDEE0001 /* node_iterator.h */,
+				LP00023A24CCDDEE0001 /* node_list.h */,
+				LP00023B24CCDDEE0001 /* object.h */,
+			);
+			path = libcnary;
 			sourceTree = "<group>";
 		};
 		AA00009224AABBCC0001 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
 				AA00003024AABBCC0001 /* entitlements-base.plist */,
-				AA00003124AABBCC0001 /* entitlements-rothide.plist */,
+				AA00003124AABBCC0001 /* entitlements-roothide.plist */,
 				AA00003224AABBCC0001 /* entitlements-daemon.plist */,
+				AA00004024AABBCC0001 /* Certificates */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		AA00004024AABBCC0001 /* Certificates */ = {
+			isa = PBXGroup;
+			children = (
+				AA00004124AABBCC0001 /* apple-ios.pem */,
+				AA00004224AABBCC0001 /* apple-ios-g3.pem */,
+				AA00004324AABBCC0001 /* root.pem */,
+			);
+			path = Certificates;
 			sourceTree = "<group>";
 		};
 		AA00009324AABBCC0001 /* Packages */ = {
@@ -372,6 +560,35 @@
 				DA00000A24BBDDCC0001 /* EntitlementsGen.m in Sources */,
 				DA00000B24BBDDCC0001 /* EEProvisioning.m in Sources */,
 				DA00000C24BBDDCC0001 /* EESigning.m in Sources */,
+				/* ldid sources */
+				LD00000124CCDDEE0001 /* ldid.cpp in Sources */,
+				LD00000224CCDDEE0001 /* lookup2.c in Sources */,
+				/* libplist sources */
+				LP00010124CCDDEE0001 /* plist.c in Sources */,
+				LP00010224CCDDEE0001 /* bplist.c in Sources */,
+				LP00010324CCDDEE0001 /* xplist.c in Sources */,
+				LP00010424CCDDEE0001 /* base64.c in Sources */,
+				LP00010524CCDDEE0001 /* bytearray.c in Sources */,
+				LP00010624CCDDEE0001 /* hashtable.c in Sources */,
+				LP00010724CCDDEE0001 /* ptrarray.c in Sources */,
+				LP00010824CCDDEE0001 /* time64.c in Sources */,
+				LP00010924CCDDEE0001 /* Array.cpp in Sources */,
+				LP00010A24CCDDEE0001 /* Boolean.cpp in Sources */,
+				LP00010B24CCDDEE0001 /* Data.cpp in Sources */,
+				LP00010C24CCDDEE0001 /* Date.cpp in Sources */,
+				LP00010D24CCDDEE0001 /* Dictionary.cpp in Sources */,
+				LP00010E24CCDDEE0001 /* Integer.cpp in Sources */,
+				LP00010F24CCDDEE0001 /* Key.cpp in Sources */,
+				LP00011024CCDDEE0001 /* Node.cpp in Sources */,
+				LP00011124CCDDEE0001 /* Real.cpp in Sources */,
+				LP00011224CCDDEE0001 /* String.cpp in Sources */,
+				LP00011324CCDDEE0001 /* Structure.cpp in Sources */,
+				LP00011424CCDDEE0001 /* Uid.cpp in Sources */,
+				LP00011524CCDDEE0001 /* iterator.c in Sources */,
+				LP00011624CCDDEE0001 /* list.c in Sources */,
+				LP00011724CCDDEE0001 /* node.c in Sources */,
+				LP00011824CCDDEE0001 /* node_iterator.c in Sources */,
+				LP00011924CCDDEE0001 /* node_list.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -562,6 +779,8 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					Daemon,
+					Daemon/ldid,
+					Daemon/libplist,
 				);
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -569,12 +788,13 @@
 					"@executable_path/../lib",
 				);
 				MARKETING_VERSION = 1.0.0;
-				OTHER_LDFLAGS = "-framework Foundation -framework Security -framework CoreFoundation";
+				OTHER_LDFLAGS = "-framework Foundation -framework Security -framework CoreFoundation -lssl -lcrypto";
 				PRODUCT_BUNDLE_IDENTIFIER = com.reprovision.daemon;
 				PRODUCT_NAME = reprovisiond;
 				SUPPORTED_PLATFORMS = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 			};
 			name = Debug;
 		};
@@ -589,6 +809,8 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					Daemon,
+					Daemon/ldid,
+					Daemon/libplist,
 				);
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -596,12 +818,13 @@
 					"@executable_path/../lib",
 				);
 				MARKETING_VERSION = 1.0.0;
-				OTHER_LDFLAGS = "-framework Foundation -framework Security -framework CoreFoundation";
+				OTHER_LDFLAGS = "-framework Foundation -framework Security -framework CoreFoundation -lssl -lcrypto";
 				PRODUCT_BUNDLE_IDENTIFIER = com.reprovision.daemon;
 				PRODUCT_NAME = reprovisiond;
 				SUPPORTED_PLATFORMS = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 			};
 			name = Release;
 		};

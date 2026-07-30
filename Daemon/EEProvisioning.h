@@ -22,6 +22,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Apple Services 实例（外部注入，不再使用单例）
 @property (nonatomic, strong) EEAppleServices *appleServices;
 
+/// 当前 Team ID（登录后自动填充）
+@property (nonatomic, copy, readonly) NSString *teamID;
+
 /// Apple ID 身份标识
 @property (nonatomic, copy) NSString *identity;
 
@@ -39,6 +42,36 @@ NS_ASSUME_NONNULL_BEGIN
  */
 + (instancetype)provisionerWithCredentials:(NSString *)identity
                                   gsToken:(NSString *)gsToken;
+
+/**
+ * Apple ID 登录认证（SRP 协议 + Anisette 注入）
+ *
+ * @param appleID Apple ID 邮箱
+ * @param password 密码或 App-Specific Password
+ * @param error 错误输出
+ * @return YES 认证成功，NO 失败
+ */
+- (BOOL)authenticateWithAppleID:(NSString *)appleID
+                         password:(NSString *)password
+                            error:(NSError **)error;
+
+/**
+ * 为指定 Bundle ID 申请开发证书和 Provisioning Profile
+ *
+ * 内部执行完整流程：检查/创建证书 -> 添加/更新 App ID -> 下载 Profile
+ *
+ * @param bundleID 目标 Bundle Identifier
+ * @param certPathOut 输出：证书文件路径（PEM）
+ * @param keyPathOut 输出：私钥文件路径（PEM）
+ * @param profilePathsOut 输出：Profile 文件路径数组
+ * @param error 错误输出
+ * @return YES 成功，NO 失败
+ */
+- (BOOL)requestCertificateForBundleID:(NSString *)bundleID
+                           certPathOut:(NSString *_Nullable *_Nullable)certPath
+                            keyPathOut:(NSString *_Nullable *_Nullable)keyPath
+                         profilePathsOut:(NSArray<NSString *> *_Nullable *_Nullable)profilePaths
+                                  error:(NSError **)error;
 
 /**
  * 将当前设备注册到 Apple Developer Portal 的团队中

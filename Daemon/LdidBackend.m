@@ -12,7 +12,7 @@
 @interface LdidBackend : NSObject <RZSignBackend>
 @end
 
-@implementation LldidBackend
+@implementation LdidBackend
 
 - (NSString *)backendName { return @"ldid"; }
 

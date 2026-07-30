@@ -90,12 +90,14 @@ class DaemonClient: NSObject {
                 completion(.failure(ReProError.daemonConnectionFailed("连接未建立")))
                 return
             }
-            proxy.loginWithAppleID(appleID, password: password) { result in
-                switch result {
-                case .success:
-                    completion(.success(()))
-                case .failure(let error):
+            // ObjC 端返回 (NSDictionary?, Error?)
+            proxy.login(withAppleID: appleID, password: password) { resultDict, error in
+                if let error = error {
                     completion(.failure(error))
+                } else if resultDict != nil {
+                    completion(.success(()))
+                } else {
+                    completion(.failure(ReProError.daemonConnectionFailed("登录返回空结果")))
                 }
             }
         }
@@ -108,7 +110,9 @@ class DaemonClient: NSObject {
                 completion(.failure(ReProError.daemonConnectionFailed("连接未建立")))
                 return
             }
-            proxy.getInstalledApps { apps in
+            // ObjC 端返回 NSArray<NSDictionary *>，这里映射为 [[String: Any]]
+            proxy.getInstalledApps { dicts in
+                let apps = dicts.map { InstalledApp.fromDictionary($0) }
                 completion(.success(apps))
             }
         }
@@ -121,22 +125,27 @@ class DaemonClient: NSObject {
                 completion(.failure(ReProError.daemonConnectionFailed("连接未建立")))
                 return
             }
-            proxy.importIPA(atPath: path) { appDict in
-                // 将字典转换为 InstalledApp
-                let app = InstalledApp.fromDictionary(appDict)
-                completion(.success(app))
+            proxy.importIPA(atPath: path) { appDict, error in
+                if let error = error {
+                    completion(.failure(error))
+                } else if let dict = appDict {
+                    completion(.success(InstalledApp.fromDictionary(dict)))
+                } else {
+                    completion(.failure(ReProError.daemonConnectionFailed("导入返回空结果")))
+                }
             }
         }
     }
 
-    /// 重签应用
+    /// 重签应用（ObjC 选择器: resignApplicationWithBundleIdentifier:reply:）
     func resign(bundleID: String, completion: @escaping (Result<Void, Error>) -> Void) {
         getProxy { proxy in
             guard let proxy = proxy else {
                 completion(.failure(ReProError.daemonConnectionFailed("连接未建立")))
                 return
             }
-            proxy.resignApplication(bundleIdentifier: bundleID) { success, errorMessage in
+            // 使用与 ObjC 端匹配的方法签名
+            proxy.resignApplication(withBundleIdentifier: bundleID) { success, errorMessage in
                 if success {
                     completion(.success(()))
                 } else {
@@ -208,21 +217,24 @@ class DaemonClient: NSObject {
     }
 }
 
-// MARK: - XPC 协议定义
+// MARK: - XPC 协议定义（必须与 RZDaemon.h 中的 @protocol RZDaemonXPCProtocol 完全匹配）
 
 @objc protocol RZDaemonProtocol {
     // 基础
-    func ping(_ reply: @escaping (String) -> Void)
+    func pingWithReply(_ reply: @escaping (String) -> Void)
 
-    // 认证
-    func loginWithAppleID(_ appleID: String, password: String,
-                          _ reply: @escaping (Result<Void, Error>) -> Void)
+    // 认证（ObjC 端返回 NSDictionary + NSError，不能用 Swift Result）
+    func login(withAppleID appleID: String,
+              password: String,
+              reply: @escaping ([String: Any]?, Error?) -> Void)
 
-    // 应用管理
-    func getInstalledApps(_ reply: @escaping ([InstalledApp]) -> Void)
-    func importIPA(atPath path: String, _ reply: @escaping ([String: Any]) -> Void)
-    func resignApplication(bundleIdentifier: String,
-                           _ reply: @escaping (Bool, String?) -> Void)
+    // 应用管理（ObjC 端返回 NSArray<NSDictionary *>，不能直接传 Swift 自定义类型）
+    func getInstalledApps(_ reply: @escaping ([[String: Any]]) -> Void)
+    func importIPA(atPath path: String,
+                   reply: @escaping ([String: Any]?, Error?) -> Void)
+    // 注意：ObjC 选择器是 resignApplicationWithBundleIdentifier:reply:
+    func resignApplication(withBundleIdentifier bundleID: String,
+                           reply: @escaping (Bool, String?) -> Void)
 
     // 状态与健康检查
     func getHealthStatus(_ reply: @escaping ([String: Any]) -> Void)
@@ -230,10 +242,11 @@ class DaemonClient: NSObject {
 
     // Profile 管理
     func installProvisioningProfile(atPath path: String,
-                                    _ reply: @escaping (Bool, String?) -> Void)
+                                    reply: @escaping (Bool, String?) -> Void)
 
     // Token 缓存
-    func preSignTokens(_ count: Int, _ reply: @escaping (Int) -> Void)
+    func preSignTokens(count: Int,
+                       reply: @escaping (Int) -> Void)
 
     // Anisette 状态
     func getAnisetteStatus(_ reply: @escaping (Bool) -> Void)

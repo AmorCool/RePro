@@ -50,6 +50,8 @@
         return self.ldidBackend;
     case RZSignMethodZsign:
         return self.zsignBackend;
+    default:
+        return self.zsignBackend; // 默认 fallback 到 zsign
     }
 }
 
