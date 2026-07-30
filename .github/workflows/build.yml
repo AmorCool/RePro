@@ -91,7 +91,7 @@ jobs:
           # -DHAVE_CONFIG_H 让 libplist 的 plist.h 真正包含我们手写的精简 config.h
           # （autotools 由 ./configure 在命令行注入该宏，手动构建需自行补上）。
           COMMON_FLAGS="-arch arm64 -miphoneos-version-min=15.0 -DHAVE_CONFIG_H \
-            -I Daemon -I Daemon/ldid -I Daemon/include \
+            -I Daemon -I Daemon/ldid \
             -I ${OPENSSL_DIR}/include"
 
           # C 源码必须用 C 模式编译（clang++ 会把 .c 当 C++，导致 libplist/lookup2 报类型错误）
