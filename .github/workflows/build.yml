@@ -217,11 +217,14 @@ jobs:
           RL="$PKG/var/jb"
           mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" \
                    "$RL/Library/LaunchDaemons" "$RL/usr/share/reprovision/certificates"
-          cp -R $(find build -name "RePro.app" -type d | head -1) "$RL/Applications/"
+          APP_DIR=$(find build -name "RePro.app" -type d | head -1)
+          cp -R "$APP_DIR" "$RL/Applications/"
           cp build/reprovisiond "$RL/usr/libexec/"
           cp /tmp/zsign "$RL/usr/local/bin/zsign"
           chmod 0755 "$RL/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
+          # 复制图标（供 Cydia/Sileo 显示）
+          cp Resources/Icon.png "$RL/Applications/RePro.app/Icon.png"
           "$LDID" -SResources/entitlements-base.plist "$RL/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$RL/usr/libexec/reprovisiond"
           "$LDID" -S "$RL/usr/local/bin/zsign"
@@ -230,11 +233,12 @@ jobs:
           PKG2="Packages/rootful"
           mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/usr/local/bin" \
                    "$PKG2/Library/LaunchDaemons" "$PKG2/usr/share/reprovision/certificates"
-          cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG2/Applications/"
+          cp -R "$APP_DIR" "$PKG2/Applications/"
           cp build/reprovisiond "$PKG2/usr/libexec/"
           cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
+          cp Resources/Icon.png "$PKG2/Applications/RePro.app/Icon.png"
           "$LDID" -SResources/entitlements-base.plist "$PKG2/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$PKG2/usr/libexec/reprovisiond"
           "$LDID" -S "$PKG2/usr/local/bin/zsign"
@@ -243,11 +247,12 @@ jobs:
           PKG3="Packages/roothide"
           mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/usr/local/bin" \
                    "$PKG3/Library/LaunchDaemons" "$PKG3/usr/share/reprovision/certificates"
-          cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG3/Applications/"
+          cp -R "$APP_DIR" "$PKG3/Applications/"
           cp build/reprovisiond "$PKG3/usr/libexec/"
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
+          cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           "$LDID" -SResources/entitlements-roothide.plist "$PKG3/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$PKG3/usr/libexec/reprovisiond"
           "$LDID" -S "$PKG3/usr/local/bin/zsign"

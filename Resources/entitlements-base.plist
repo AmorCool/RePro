@@ -3,11 +3,8 @@
 <plist version="1.0">
 <dict>
     <!-- App entitlements（Dopamine / rootful 用） -->
-    <key>application-identifier</key>
-    <string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
-
-    <key>com.apple.developer.team-identifier</key>
-    <string>$(TeamIdentifier)</string>
+    <!-- 注意：不写 application-identifier / team-identifier，ldid 会自动从 Info.plist 填充 -->
+    <!-- 如果手写 $(AppIdentifierPrefix) 等 Xcode 变量，ldid 不会解析 → iOS 拒绝启动闪退 -->
 
     <!-- 网络权限（用于 Apple ID 认证和 profile 下载） -->
     <key>com.apple.CommCenter.fine-grained</key>
@@ -30,5 +27,9 @@
     <array>
         <string>fetch</string>
     </array>
+
+    <!-- 调试权限（越狱环境需要） -->
+    <key>get-task-allow</key>
+    <true/>
 </dict>
 </plist>
