@@ -162,17 +162,17 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 
     // 写入私钥
     NSString *keyFilePath = [tmpDir stringByAppendingPathComponent:@"key.p12"];
-    if (privateKeyResult && keyPathOut) {
+    if (privateKeyResult && keyPath) {
         [privateKeyResult writeToFile:keyFilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        *keyPathOut = keyFilePath;
+        *keyPath = keyFilePath;
     }
 
     // 写入 profile
     NSString *profilePath = nil;
-    if (profileData && profilePathsOut) {
+    if (profileData && profilePaths) {
         profilePath = [tmpDir stringByAppendingPathComponent:@"embedded.mobileprovision"];
         [profileData writeToFile:profilePath atomically:YES];
-        *profilePathsOut = @[profilePath];
+        *profilePaths = @[profilePath];
     }
 
     // 证书信息已通过 certificateResult 返回，调用方可以使用
