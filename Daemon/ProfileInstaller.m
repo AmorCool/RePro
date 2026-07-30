@@ -6,6 +6,8 @@
 #import "ProfileInstaller.h"
 #import <dlfcn.h>
 #import <sys/stat.h>
+#import <objc/runtime.h>
+#import <CommonCrypto/CommonCrypto.h>
 
 static NSString *const kProfileDir = @"/var/Managed Preferences/mobile";
 
@@ -97,7 +99,7 @@ static NSString *const kProfileDir = @"/var/Managed Preferences/mobile";
 
     // 使用 IMP 直接调用以避免编译器警告
     BOOL (*installFunc)(id, SEL, NSData *, NSString *, NSError **) =
-        (BOOL (*)(id, SEL, NSData *, NSString *, **)) [connection methodForSelector:installSel];
+        (BOOL (*)(id, SEL, NSData *, NSString *, NSError **)) [connection methodForSelector:installSel];
 
     NSError *outError = nil;
     BOOL success = installFunc(connection, installSel, profileData, @"com.reprovision", &outError);
@@ -148,7 +150,7 @@ static NSString *const kProfileDir = @"/var/Managed Preferences/mobile";
 
     // 写入文件
     NSError *writeErr = nil;
-    BOOL success = [profileData writeToFile:destPath options:NSDataAtomic error:&writeErr];
+    BOOL success = [profileData writeToFile:destPath options:NSDataWritingAtomic error:&writeErr];
 
     if (!success && error) {
         *error = writeErr;
@@ -163,45 +165,9 @@ static NSString *const kProfileDir = @"/var/Managed Preferences/mobile";
 
 - (void)notifyProfiled {
     // 向 profiled 发送 SIGHUP 通知其重新扫描 profile 目录
-    pid_t profiledPid = 0;
-
-    // 尝试通过 launchctl 获取 profiled 的 PID
-    NSTask *task = [[NSTask alloc] init];
-    task.launchPath = @"/bin/launchctl";
-    task.arguments = @[@"print", @"system/com.apple.mobile.profile_data"];
-    task.standardOutput = [NSPipe pipe];
-
-    @try {
-        [task launch];
-        [task waitUntilExit];
-
-        NSData *output = [[task.standardOutput fileHandleForReading] readDataToEndOfFile];
-        NSString *outputStr = [[NSString alloc] initWithData:output encoding:NSUTF8StringEncoding];
-
-        // 解析 PID（简化处理）
-        for (NSString *line in outputStr.componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
-            if ([line containsString:@"\"PID\""]) {
-                NSRange r = [line rangeOfString:@"= *(\\d+)" options:NSRegularExpressionSearch];
-                if (r.location != NSNotFound) {
-                    NSString *pidStr = [line substringWithRange:r].stringByTrimmingCharactersInSet:
-                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                    profiledPid = (pid_t)[pidStr integerValue];
-                }
-                break;
-            }
-        }
-    } @catch (NSException *e) {
-        NSLog(@"[RePro] 获取 profiled PID 失败: %@", e);
-    }
-
-    if (profiledPid > 0) {
-        kill(profiledPid, SIGHUP);
-        NSLog(@"[RePro] 已向 profiled (PID %d) 发送 SIGHUP", profiledPid);
-    } else {
-        // 回退：向所有 profiled 进程发信号
-        system("killall -HUP profiled 2>/dev/null");
-        NSLog(@"[RePro] 已向所有 profiled 发送 SIGHUP");
-    }
+    // NSTask 在 iOS 上不可用，改用 system() 调用 killall
+    system("killall -HUP profiled 2>/dev/null");
+    NSLog(@"[RePro] 已向 profiled 发送 SIGHUP");
 }
 
 @end
