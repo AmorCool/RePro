@@ -11,7 +11,8 @@
 #import "ZSignBackend.h"
 #import "EntitlementsGen.h"
 #import "EEProvisioning.h" // 从旧项目移植的证书/profile 申请模块
-#import <MobileCoreServices/LSApplicationWorkspace.h>
+// 注：LSApplicationWorkspace 仅通过 NSClassFromString/performSelector 动态调用，
+// 不 import 私有头文件（现代 iOS SDK 不含该头，会导致编译失败）。
 
 @implementation RZSignOptions
 @end

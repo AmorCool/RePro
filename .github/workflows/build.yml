@@ -185,7 +185,8 @@ jobs:
       - name: Package debs
         run: |
           set -e
-          VERSION=$(cat Resources/PackageVersion.plist | grep -o '<string>[0-9.]*</string>' | head -1 | grep -o '[0-9.]*')
+          # 版本号以 DEBIAN/control 中的 Version 为准（PackageVersion.plist 的 string 字段含空值，grep 易误取）
+          VERSION=$(grep -m1 '^Version:' Packages/rootless/DEBIAN/control | awk '{print $2}')
           echo "Version: $VERSION"
           mkdir -p CydiaPackages
 

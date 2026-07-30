@@ -23,7 +23,7 @@
 
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
-#import <UIKit/UIKit.h>
+#include <unistd.h>
 
 /// 文件存储根目录（daemon root 权限下可写）
 static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp.soh.reprovision";
@@ -477,7 +477,12 @@ static NSString * const kStorageDirectory = @"/var/mobile/Library/Preferences/jp
 #if TARGET_OS_SIMULATOR
     return @"Simulator";
 #elif TARGET_OS_IPHONE
-    return [NSString stringWithFormat:@"%@", [[UIDevice currentDevice] name]];
+    // daemon 不链接 UIKit，使用 BSD 主机名代替 UIDevice.currentDevice.name
+    char hostnameBuf[256];
+    if (gethostname(hostnameBuf, sizeof(hostnameBuf)) == 0) {
+        return [NSString stringWithUTF8String:hostnameBuf];
+    }
+    return @"iOS Device";
 #else
     return @"Unknown Device";
 #endif

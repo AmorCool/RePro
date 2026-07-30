@@ -144,7 +144,7 @@
 		LP00021924CCDDEE0001 /* node_list.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = node_list.c; sourceTree = "<group>"; };
 		/* libplist - headers (not compiled) */
 		LP00022024CCDDEE0001 /* plist.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist.h; sourceTree = "<group>"; };
-		LP00022124CCDDEE0001 /* plist++.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = plist++.h; sourceTree = "<group>"; };
+		LP00022124CCDDEE0001 /* plist++.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = "plist++.h"; sourceTree = "<group>"; };
 		LP00022224CCDDEE0001 /* plist2.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist2.h; sourceTree = "<group>"; };
 		LP00022324CCDDEE0001 /* base64.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = base64.h; sourceTree = "<group>"; };
 		LP00022424CCDDEE0001 /* bytearray.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bytearray.h; sourceTree = "<group>"; };
