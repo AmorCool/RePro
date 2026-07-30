@@ -109,15 +109,17 @@ struct LogView: View {
 
     // MARK: 空状态
     private var emptyLogView: some View {
-        Spacer()
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text")
-                .font(.system(size: 40))
-                .foregroundColor(.secondary)
-            Text("暂无日志")
-                .foregroundColor(.secondary)
+        Group {
+            Spacer()
+            VStack(spacing: 12) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 40))
+                    .foregroundColor(.secondary)
+                Text("暂无日志")
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
         }
-        Spacer()
     }
 
     // MARK: 筛选后的日志

@@ -2,11 +2,11 @@ import Foundation
 
 // MARK: - Daemon 通信客户端 (XPC)
 
-class DaemonClient: NSObject {
+class DaemonClient: NSObject, ObservableObject {
     static let shared = DaemonClient()
 
     private var connection: NSXPCConnection?
-    private(set) var isConnected: Bool = false
+    @Published private(set) var isConnected: Bool = false
     private var reconnectTimer: Timer?
 
     // XPC 协议版本
@@ -29,7 +29,7 @@ class DaemonClient: NSObject {
         let rawConn = (NSXPCConnection.self as AnyObject).perform(
             selector,
             with: "com.reprovision.daemon",
-            with: NSXPCConnection.ConnectionOptions.privileged.rawValue
+            with: NSXPCConnection.Options.privileged.rawValue
         )?.takeUnretainedValue()
         guard let conn = rawConn as? NSXPCConnection else { return }
         connection = conn

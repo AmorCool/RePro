@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - 系统健康状态检查页面
 
 struct HealthView: View {
-    @StateObject private var daemonClient = DaemonClient.shared
+    @ObservedObject private var daemonClient = DaemonClient.shared
     @State private var healthStatus: DaemonHealthStatus?
     @State private var isLoading = false
 
@@ -80,7 +80,7 @@ struct HealthView: View {
     private func refreshHealth() {
         isLoading = true
         daemonClient.getHealth { result in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async(execute: {
                 self.isLoading = false
                 switch result {
                 case .success(let status):
@@ -89,7 +89,7 @@ struct HealthView: View {
                     LogManager.shared.error("获取健康状态失败: \(error)", source: "HealthView")
                     self.healthStatus = nil
                 }
-            }
+            })
         }
     }
 
