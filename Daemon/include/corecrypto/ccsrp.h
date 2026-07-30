@@ -134,7 +134,7 @@ struct ccsrp_ctx_legacy {
 }  CC_ALIGNED(16);
 typedef struct ccsrp_ctx_legacy *ccsrp_ctx_t_legacy;
 
-cc_unit *srp_ccn(void *srp);
+cc_unit *srp_ccn(ccsrp_ctx_t srp);
 
 #endif
 

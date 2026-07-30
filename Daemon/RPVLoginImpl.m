@@ -518,7 +518,7 @@ static NSData *createAppTokensChecksum(NSData *sk, NSString *adsid, NSArray<NSSt
             struct ccsrp_ctx *srp_ctx = (struct ccsrp_ctx *)malloc(ccsrp_sizeof_srp(di_info, gp));
             ccsrp_ctx_init(srp_ctx, srp_di, gp);
             ccsrp_client_set_noUsernameInX(srp_ctx, true);
-            SRP_RNG(srp_ctx) = ccrng(NULL);
+            srp_ctx->hdr.blinding_rng = ccrng(NULL);
 
             NSArray<NSString *> *ps = @[@"s2k", @"s2k_fo"];
             for (int i = 0; i < ps.count; i++) {
