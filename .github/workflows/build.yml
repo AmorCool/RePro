@@ -200,6 +200,11 @@ jobs:
           echo "Version: $VERSION"
           mkdir -p CydiaPackages
 
+          # DEBIAN 维护脚本必须有可执行权限（0555~0775），否则 dpkg-deb 报错
+          for pkg in rootless rootful roothide; do
+            find "Packages/$pkg/DEBIAN" -type f -exec chmod 0755 {} \;
+          done
+
           dpkg-deb -Zgzip -b Packages/rootless "CydiaPackages/jp.soh.reprovision_${VERSION}_iphoneos-arm64.deb"
           dpkg-deb -Zgzip -b Packages/rootful "CydiaPackages/jp.soh.reprovision_${VERSION}_iphoneos-arm.deb"
           dpkg-deb -Zgzip -b Packages/roothide "CydiaPackages/jp.soh.reprovision_${VERSION}_roothide-iphoneos-arm64.deb"
