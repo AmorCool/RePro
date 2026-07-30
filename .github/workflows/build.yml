@@ -107,28 +107,28 @@ jobs:
           for f in $C_SOURCES; do
             o="build/obj/$(echo "$f" | tr '/' '_').o"
             xcrun -sdk iphoneos clang -x c -std=gnu11 $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
           done
 
           echo "=== 编译 C++ 源码 ==="
           for f in $CXX_SOURCES; do
             o="build/obj/$(echo "$f" | tr '/' '_').o"
             xcrun -sdk iphoneos clang++ -x c++ -std=gnu++17 $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
           done
 
           echo "=== 编译 ObjC 源码 ==="
           for f in $OBJC_SOURCES; do
             o="build/obj/$(echo "$f" | tr '/' '_').o"
             xcrun -sdk iphoneos clang -x objective-c -fobjc-arc $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
           done
 
           echo "=== 编译 ObjC++ 源码 ==="
           for f in $OBJCXX_SOURCES; do
             o="build/obj/$(echo "$f" | tr '/' '_').o"
             xcrun -sdk iphoneos clang++ -x objective-c++ -std=gnu++17 -fobjc-arc $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -40 daemon_build.log; exit 1; }
+              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
           done
 
           echo "=== 链接 reprovisiond ==="
