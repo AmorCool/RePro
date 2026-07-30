@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- RootHide 专用 App entitlements -->
+    <!-- RootHide 默认把越狱二进制关进沙箱，必须加这些才能正常运行 -->
+
+    <!-- 平台应用标识（绕过沙箱限制的关键） -->
+    <key>platform-application</key>
+    <true/>
+
+    <!-- 禁用沙盒 -->
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+
+    <!-- 存储访问权限（RootHide 沙箱下需要显式声明） -->
+    <key>storage.AppBundles</key>
+    <true/>
+    <key>storage.AppDataContainers</key>
+    <true/>
+
+    <!-- 基础身份 entitlements -->
+    <key>application-identifier</key>
+    <string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+
+    <key>com.apple.developer.team-identifier</key>
+    <string>$(TeamIdentifier)</string>
+
+    <!-- 网络权限 -->
+    <key>com.apple.CommCenter.fine-grained</key>
+    <true/>
+    <key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
+    <array>
+        <string>com.apple.network.eapon</string>
+    </array>
+
+    <!-- Keychain -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.reprovision.*</string>
+    </array>
+
+    <!-- XPC MachService 连接（与守护进程通信） -->
+    <key>com.apple.security.cs.mach-service</key>
+    <true/>
+
+    <!-- 后台运行 -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>fetch</string>
+    </array>
+</dict>
+</plist>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App entitlements（Dopamine / rootful 用） -->
+    <key>application-identifier</key>
+    <string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+
+    <key>com.apple.developer.team-identifier</key>
+    <string>$(TeamIdentifier)</string>
+
+    <!-- 网络权限（用于 Apple ID 认证和 profile 下载） -->
+    <key>com.apple.CommCenter.fine-grained</key>
+    <true/>
+    <key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
+    <array>
+        <string>com.apple.network.eapon</string>
+    </array>
+    <key>com.apple.SystemConfiguration.SCDynamicStore-write-access</key>
+    <true/>
+
+    <!-- Keychain 访问 -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.reprovision.*</string>
+    </array>
+
+    <!-- 后台运行 -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>fetch</string>
+    </array>
+</dict>
+</plist>

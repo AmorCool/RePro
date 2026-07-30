@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+PLIST="/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
+
+chmod +x /usr/libexec/reprovisiond 2>/dev/null || true
+chmod +x /usr/local/bin/zsign 2>/dev/null || true
+
+launchctl bootstrap system "$PLIST" 2>/dev/null && \
+    echo "[RePro] 守护进程启动成功" || \
+    launchctl kickstart system/jp.soh.reprovisiond 2>/dev/null || \
+    echo "[RePro] 守护进程启动失败"

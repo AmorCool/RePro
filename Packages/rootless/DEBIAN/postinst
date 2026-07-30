@@ -1,0 +1,20 @@
+#!/bin/bash
+set -e
+
+# ReProvision Dopamine/rootless 包 postinst
+# /var/jb/ 前缀布局（Dopamine dpkg 自动映射到 jbroot）
+
+PLIST="/var/jb/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
+
+echo "[RePro] rootless postinst 开始 $(date)"
+
+chmod +x /var/jb/usr/libexec/reprovisiond 2>/dev/null || true
+chmod +x /var/jb/usr/local/bin/zsign 2>/dev/null || true
+
+# Dopamine 下 launchctl 直接认 /var/jb/ 路径
+launchctl bootstrap system "$PLIST" 2>/dev/null && \
+    echo "[RePro] 守护进程启动成功" || \
+    launchctl kickstart system/jp.soh.reprovisiond 2>/dev/null || \
+    echo "[RePro] 守护进程启动失败"
+
+echo "[RePro] rootless postinst 完成 $(date)"

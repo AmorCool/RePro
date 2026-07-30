@@ -1,0 +1,126 @@
+name: Build RePro
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install ldid 2>/dev/null || true
+
+      - name: Build iOS App (RePro)
+        run: |
+          set -e
+          xcodebuild -project RePro.xcodeproj \
+            -scheme RePro \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build \
+            | tail -20
+
+          # 检查构建产物
+          APP_PATH=$(find build -name "RePro.app" -type d | head -1)
+          if [ ! -d "$APP_PATH" ]; then
+            echo "error: RePro.app not found"
+            exit 1
+          fi
+          echo "Built app at $APP_PATH"
+
+      - name: Build Daemon (reprovisiond)
+        run: |
+          set -e
+          xcrun -sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=15.0 \
+            -framework Foundation \
+            -o build/reprovisiond \
+            Daemon/main.m Daemon/RZDaemon.m Daemon/SignEngine.m \
+            Daemon/ZSignBackend.m Daemon/LdidBackend.m \
+            Daemon/AnisetteManager.m Daemon/TokenCacheManager.m \
+            Daemon/HealthCheck.m Daemon/ProfileInstaller.m \
+            Daemon/EntitlementsGen.m \
+            -I Daemon \
+            -lCommonCrypto \
+            2>&1 | tail -10
+
+          file build/reprovisiond
+          chmod +x build/reprovisiond
+          echo "Daemon built successfully"
+
+      - name: Sign with entitlements
+        run: |
+          set -e
+          LDID=$(command -v ldid)
+
+          # Rootless deb (Dopamine) - base entitlements
+          PKG="Packages/rootless"
+          RL="$PKG/var/jb"
+          mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" "$RL/Library/LaunchDaemons"
+          cp -R $(find build -name "RePro.app" -type d | head -1) "$RL/Applications/"
+          cp build/reprovisiond "$RL/usr/libexec/"
+          # zsign 在 CI 中不存在，跳过（设备上由用户自行安装）
+          "$LDID" -SResources/entitlements-base.plist "$RL/Applications/RePro.app/RePro"
+          "$LDID" -SResources/entitlements-daemon.plist "$RL/usr/libexec/reprovisiond"
+
+          # Rootful deb - base entitlements
+          PKG2="Packages/rootful"
+          mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/Library/LaunchDaemons"
+          cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG2/Applications/"
+          cp build/reprovisiond "$PKG2/usr/libexec/"
+          "$LDID" -SResources/entitlements-base.plist "$PKG2/Applications/RePro.app/RePro"
+          "$LDID" -SResources/entitlements-daemon.plist "$PKG2/usr/libexec/reprovisiond"
+
+          # RootHide deb - roothide entitlements, arm64e arch
+          PKG3="Packages/roothide"
+          mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/Library/LaunchDaemons"
+          cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG3/Applications/"
+          cp build/reprovisiond "$PKG3/usr/libexec/"
+          "$LDID" -SResources/entitlements-roothide.plist "$PKG3/Applications/RePro.app/RePro"
+          "$LDID" -SResources/entitlements-daemon.plist "$PKG3/usr/libexec/reprovisiond"
+
+          echo "Signing complete for all 3 packages"
+
+      - name: Package debs
+        run: |
+          set -e
+          VERSION=$(cat Resources/PackageVersion.plist | grep -o '<string>[0-9.]*</string>' | head -1 | grep -o '[0-9.]*')
+          echo "Version: $VERSION"
+          mkdir -p CydiaPackages
+
+          dpkg-deb -Zgzip -b Packages/rootless "CydiaPackages/jp.soh.reprovision_${VERSION}_iphoneos-arm64.deb"
+          dpkg-deb -Zgzip -b Packages/rootful "CydiaPackages/jp.soh.reprovision_${VERSION}_iphoneos-arm.deb"
+          dpkg-deb -Zgzip -b Packages/roothide "CydiaPackages/jp.soh.reprovision_${VERSION}_roothide-iphoneos-arm64.deb"
+
+          ls -lh CydiaPackages/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag: ${{ github.ref_name }}
+          name: "RePro ${{ github.ref_name }}"
+          body: |
+            ## RePro ${{ github.ref_name }}
+            ### 安装包
+            | 包 | 适用环境 |
+            |---|---|
+            | `*_roothide-iphoneos-arm64.deb` | **RootHide 用户安装此包** |
+            | `*_iphoneos-arm64.deb` | Dopamine / rootless |
+            | `*_iphoneos-arm.deb` | rootful (iOS 13/14) |
+          files: CydiaPackages/*.deb
+          draft: false
+          prerelease: false

@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+# ReProvision RootHide 包 prerm
+
+DAEMON_LABEL="com.reprovision.daemon"
+
+echo "[RePro] RootHide prerm 开始 $(date)"
+
+# 停止并卸载守护进程
+launchctl bootout system/"$DAEMON_LABEL" 2>/dev/null || true
+echo "[RePro] 守护进程已停止"
+
+echo "[RePro] RootHide prerm 完成 $(date)"

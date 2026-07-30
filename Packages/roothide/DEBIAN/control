@@ -1,0 +1,11 @@
+Package: jp.soh.reprovision
+Name: RePro
+Desc: iOS 应用签名工具 - RootHide 专用版
+Depends: firmware (>= 15.0), zip, unzip
+Version: 1.0.0~release
+Section: Utilities
+Priority: optional
+Architecture: iphoneos-arm64e
+Maintainer: AmorCool <admin@reprovision.dev>
+Author: AmorCool
+Icon: file:///Applications/RePro.app/Icon.png

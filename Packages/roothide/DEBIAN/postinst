@@ -1,0 +1,56 @@
+#!/bin/bash
+set -e
+
+# ReProvision RootHide 包 postinst
+# 标准 RootHide 布局（dpkg 自动映射到 jbroot）
+# Architecture: iphoneos-arm64e → Patcher 自动跳过
+
+DAEMON_PLIST="/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
+DAEMON_BIN="/usr/libexec/reprovisiond"
+ZSIGN_BIN="/usr/local/bin/zsign"
+
+echo "[RePro] RootHide postinst 开始 $(date)"
+
+# 确保 zsign 可执行
+if [ -f "$ZSIGN_BIN" ]; then
+    chmod +x "$ZSIGN_BIN"
+    echo "[RePro] zsign 权限已设置"
+fi
+
+# 确保守护进程二进制可执行
+if [ -f "$DAEMON_BIN" ]; then
+    chmod +x "$DAEMON_BIN"
+    echo "[RePro] reprovisiond 权限已设置"
+fi
+
+# 启动守护进程
+# RootHide 的 dpkg 脚本运行在 vroot shell，/ = jbroot
+# launchctl 是系统域工具，需要 rootfs 真实路径
+# 使用 jbroot 工具转换路径
+if command -v jbroot &>/dev/null; then
+    REAL_PLIST=$(/usr/bin/jbroot "$DAEMON_PLIST" 2>/dev/null || echo "$DAEMON_PLIST")
+    echo "[RePro] jbroot 路径转换: $DAEMON_PLIST -> $REAL_PLIST"
+else
+    REAL_PLIST="$DAEMON_PLIST"
+    echo "[RePro] jbroot 工具未找到，使用原始路径"
+fi
+
+# 写入日志
+echo "[RePro] postinst 时间: $(date)" > /tmp/reprovision_bootstrap.log
+echo "[RePro] plist 路径(原始): $DAEMON_PLIST" >> /tmp/reprovision_bootstrap.log
+echo "[RePro] plist 路径(转换): $REAL_PLIST" >> /tmp/reprovision_bootstrap.log
+echo "[RePro] 当前用户: $(whoami)" >> /tmp/reprovision_bootstrap.log
+echo "[RePro] 当前 uid: $(id -u)" >> /tmp/reprovision_bootstrap.log
+
+# 尝试启动守护进程
+if [ -f "$REAL_PLIST" ] || [ -f "$DAEMON_PLIST" ]; then
+    launchctl bootstrap system "$REAL_PLIST" 2>> /tmp/reprovision_bootstrap.log && \
+        echo "[RePro] 守护进程启动成功" >> /tmp/reprovision_bootstrap.log || \
+        echo "[RePro] 守护进程启动失败，尝试 kickstart" >> /tmp/reprovision_bootstrap.log
+        launchctl kickstart system/com.reprovision.daemon 2>> /tmp/reprovision_bootstrap.log || \
+            echo "[RePro] kickstart 也失败" >> /tmp/reprovision_bootstrap.log
+else
+    echo "[RePro] plist 文件不存在: $REAL_PLIST 或 $DAEMON_PLIST" >> /tmp/reprovision_bootstrap.log
+fi
+
+echo "[RePro] RootHide postinst 完成 $(date)"

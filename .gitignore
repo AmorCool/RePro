@@ -1,0 +1,24 @@
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+build/
+*.ipa
+
+# CocoaPods
+Pods/
+RePro.xcworkspace/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.bak
+*~
+.tmp/
