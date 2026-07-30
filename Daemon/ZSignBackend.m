@@ -106,7 +106,7 @@
 
     // 重定向 stdout/stderr 到日志文件
     NSString *logPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                          [NSString stringWithFormat:@"zsign_%@.log", [[NSUUID UUID] UUIDString]];
+                          [NSString stringWithFormat:@"zsign_%@.log", [[NSUUID UUID] UUIDString]]];
     int logFD = open(logPath.UTF8String, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 
     posix_spawn_file_actions_t fileActions;
