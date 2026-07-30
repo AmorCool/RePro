@@ -21,8 +21,8 @@ struct HealthView: View {
                              status: healthStatus?.hasRootPrivileges == true ? .good : .bad)
 
                     HealthRow(label: "沙盒限制",
-                             value: healthStatus?.isSandboxed == false ? "无沙盒" : "存在沙盒",
-                             status: healthStatus?.isSandboxed == false ? .good : .warning)
+                             value: healthStatus?.isSandboxed == true ? "存在" : "不受限制",
+                             status: healthStatus?.isSandboxed == true ? .warning : .good)
 
                     HealthRow(label: "上次重签",
                              value: healthStatus?.lastResignTime.map(formatTime) ?? "从未",

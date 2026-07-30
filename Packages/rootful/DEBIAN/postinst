@@ -10,3 +10,6 @@ launchctl bootstrap system "$PLIST" 2>/dev/null && \
     echo "[RePro] 守护进程启动成功" || \
     launchctl kickstart system/jp.soh.reprovisiond 2>/dev/null || \
     echo "[RePro] 守护进程启动失败"
+
+# 刷新图标缓存
+uicache -p /Applications/RePro.app 2>/dev/null || true

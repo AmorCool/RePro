@@ -137,7 +137,6 @@ jobs:
           xcrun -sdk iphoneos clang++ \
             -arch arm64 -miphoneos-version-min=15.0 \
             -framework Foundation -framework Security -framework CoreFoundation \
-            -framework corecrypto \
             -L "${OPENSSL_DIR}/lib" -lssl -lcrypto -lz \
             -o build/reprovisiond \
             build/obj/*.o >> daemon_build.log 2>&1 || true

@@ -1,9 +1,9 @@
 //
-//  RPVLoginImpl.hpp
-//  iOS
+//  RPVLoginImpl.h
+//  RePro Daemon
 //
-//  Created by Matt Clarke on 24/11/2019.
-//  Copyright © 2019 Matt Clarke. All rights reserved.
+//  基于 AuthKit 私有 API 的 Apple ID 认证
+//  使用 dlopen 运行时加载，避免编译时依赖私有框架
 //
 
 #import <Foundation/Foundation.h>
@@ -23,9 +23,11 @@ typedef void (^RPVTwoFactorResultBlock)(NSError *error);
 @property (nonatomic, strong) NSString *clientInfoOverride;
 
 - (void)loginWithUsername:(NSString*)username password:(NSString*)password completion:(RPVLoginResultBlock)completionHandler;
-
 - (void)requestTwoFactorCodeWithUserIdentity:(NSString*)userIdentity idmsToken:(NSString*)token mode:(int)mode andCompletion:(void (^)(NSError *error))completionHandler;
-
 - (void)submitTwoFactorCode:(NSString*)code withUserIdentity:(NSString*)userIdentity idmsToken:(NSString*)token andCompletion:(RPVTwoFactorResultBlock)completionHandler;
+
+// 获取 Anisette 数据（用于其他模块）
+- (NSDictionary *)anisetteData;
+- (NSDictionary *)deviceData;
 
 @end

@@ -8,6 +8,9 @@ struct LogView: View {
     @State private var selectedFilter: LogLevel? = nil
     @State private var showingClearAlert = false
     @State private var showingShareSheet = false
+    @State private var exportFileURL: URL?
+    @State private var showingExportError = false
+    @State private var exportErrorMessage = ""
 
     var body: some View {
         NavigationView {
@@ -43,6 +46,16 @@ struct LogView: View {
                 }
             } message: {
                 Text("确定要清空所有日志吗？此操作不可撤销。")
+            }
+            .alert("导出失败", isPresented: $showingExportError) {
+                Button("确定", role: .cancel) {}
+            } message: {
+                Text(exportErrorMessage)
+            }
+            .sheet(isPresented: $showingShareSheet) {
+                if let url = exportFileURL {
+                    ShareSheet(activityItems: [url])
+                }
             }
         }
     }
@@ -142,14 +155,31 @@ struct LogView: View {
 
     // MARK: 导出
     private func exportLogs() {
+        // 检查是否有日志可导出
+        guard !filteredLogs.isEmpty else {
+            exportErrorMessage = "没有可导出的日志"
+            showingExportError = true
+            return
+        }
+
         let text = filteredLogs.map { "\($0.timestamp) [\($0.level.rawValue)] [\($0.source)] \($0.message)" }.joined(separator: "\n")
-        guard let data = text.data(using: .utf8) else { return }
+
+        guard let data = text.data(using: .utf8) else {
+            exportErrorMessage = "日志数据编码失败"
+            showingExportError = true
+            return
+        }
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("repro_log_\(Int(Date().timeIntervalSince1970)).txt")
-        try? data.write(to: tempURL)
 
-        showingShareSheet = true
-        // UIActivityViewController 需要通过 UIViewControllerRepresentable 实现
+        do {
+            try data.write(to: tempURL, options: .atomic)
+            self.exportFileURL = tempURL
+            self.showingShareSheet = true
+        } catch {
+            exportErrorMessage = "写入文件失败: \(error.localizedDescription)"
+            showingExportError = true
+        }
     }
 }
 
