@@ -122,7 +122,7 @@ static void ensure_authkit_loaded(void) {
         @{@"urls": @[@"https://gsa.apple.com/grandslam/GsService2"]}
         format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
 
-    [[NSURLSession sharedSession] dataTaskWithRequest:req
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *resp, NSError *error) {
         if (error || !data) {
             completion(error ?: [self createError:@"Lookup 失败" :RPVInternalLoginError]);
@@ -183,7 +183,7 @@ static void ensure_authkit_loaded(void) {
         req.HTTPBody = [NSPropertyListSerialization dataWithPropertyList:authBody
                          format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
 
-        [[NSURLSession sharedSession] dataTaskWithRequest:req
+        [[[NSURLSession sharedSession] dataTaskWithRequest:req
             completionHandler:^(NSData *data, NSURLResponse *resp, NSError *error) {
 
             if (error || !data) {
