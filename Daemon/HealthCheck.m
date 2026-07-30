@@ -108,7 +108,7 @@
         return [[NSDate date] timeIntervalSinceDate:[NSDate dateWithTimeIntervalSinceNow:-st.st_mtime]];
     }
     // 回退：无法精确获取，返回进程启动后的时间估算
-    return [[NSProcessInfo processInfo] systemUptime;
+    return [[NSProcessInfo processInfo] systemUptime];
 }
 
 @end
