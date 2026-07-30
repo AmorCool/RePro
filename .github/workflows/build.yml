@@ -19,7 +19,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install ldid 2>/dev/null || true
+          brew install ldid dpkg 2>/dev/null || true
+          echo "ldid: $(command -v ldid || echo MISSING)"
+          echo "dpkg-deb: $(command -v dpkg-deb || echo MISSING)"
 
       # daemon 需要链接 iOS arm64 版 OpenSSL，brew 的是 macOS 版无法链接，必须交叉编译
       - name: Cache OpenSSL (iOS arm64)
