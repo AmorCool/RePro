@@ -11,6 +11,8 @@
 #import "ZSignBackend.h"
 #import "EntitlementsGen.h"
 #import "EEProvisioning.h" // 从旧项目移植的证书/profile 申请模块
+#import <spawn.h>
+#import <sys/wait.h>
 // 注：LSApplicationWorkspace 仅通过 NSClassFromString/performSelector 动态调用，
 // 不 import 私有头文件（现代 iOS SDK 不含该头，会导致编译失败）。
 
@@ -127,14 +129,20 @@
                           [NSString stringWithFormat:@"repro_import_%@", [[NSUUID UUID] UUIDString]]];
     [fm createDirectoryAtPath:tempDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    // 解压 IPA
-    NSTask *unzipTask = [[NSTask alloc] init];
-    unzipTask.launchPath = @"/usr/bin/unzip";
-    unzipTask.arguments = @[@"-qo", path, @"-d", tempDir];
-    [unzipTask launch];
-    [unzipTask waitUntilExit];
-
-    if (unzipTask.terminationStatus != 0) {
+    // 解压 IPA（NSTask 在 iOS 不可用，使用 posix_spawn）
+    pid_t unzipPid = 0;
+    const char *unzipArgv[] = { "/usr/bin/unzip", "-qo", path.UTF8String, "-d", tempDir.UTF8String, NULL };
+    int unzipStatus = posix_spawn(&unzipPid, unzipArgv[0], NULL, NULL, (char *const *)unzipArgv, NULL);
+    if (unzipStatus == 0) {
+        int st = 0;
+        waitpid(unzipPid, &st, 0);
+        if (WIFEXITED(st) && WEXITSTATUS(st) != 0) {
+            if (error) *error = [NSError errorWithDomain:@"RePro"
+                                                     code:1
+                                                 userInfo:@{NSLocalizedDescriptionKey: @"IPA 解压失败"}];
+            return nil;
+        }
+    } else {
         if (error) *error = [NSError errorWithDomain:@"RePro"
                                                  code:1
                                              userInfo:@{NSLocalizedDescriptionKey: @"IPA 解压失败"}];
@@ -144,9 +152,10 @@
     // 查找 .app 目录
     NSString *payloadDir = [tempDir stringByAppendingPathComponent:@"Payload"];
     NSArray *contents = [fm contentsOfDirectoryAtPath:payloadDir error:nil];
-    NSString *appDirName = [contents firstObjectPassingTest:^BOOL(NSString *obj, NSUInteger idx, BOOL *stop) {
-        return [obj hasSuffix:@".app"];
-    }];
+    NSString *appDirName = nil;
+    for (NSString *obj in contents) {
+        if ([obj hasSuffix:@".app"]) { appDirName = obj; break; }
+    }
 
     if (!appDirName) {
         if (error) *error = [NSError errorWithDomain:@"RePro"
