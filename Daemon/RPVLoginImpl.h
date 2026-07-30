@@ -21,6 +21,7 @@ typedef void (^RPVTwoFactorResultBlock)(NSError *error);
 @interface RPVLoginImpl : NSObject
 
 @property (nonatomic, strong) NSString *clientInfoOverride;
+@property (nonatomic, strong) NSDictionary *lookupURLs;  // 端点查找结果缓存
 
 - (void)loginWithUsername:(NSString*)username password:(NSString*)password completion:(RPVLoginResultBlock)completionHandler;
 - (void)requestTwoFactorCodeWithUserIdentity:(NSString*)userIdentity idmsToken:(NSString*)token mode:(int)mode andCompletion:(void (^)(NSError *error))completionHandler;

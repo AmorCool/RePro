@@ -20,6 +20,7 @@
 		AA00000B24AABBCC0001 /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001B24AABBCC0001 /* LogManager.swift */; };
 		AA00000C24AABBCC0001 /* JailbreakDetect.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001C24AABBCC0001 /* JailbreakDetect.swift */; };
 		AA00000D24AABBCC0001 /* IPAProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001D24AABBCC0001 /* IPAProcessor.swift */; };
+		AA00000G24AABBCC0001 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001G24AABBCC0001 /* ShareSheet.swift */; };
 		AA00000E24AABBCC0001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = AA00001E24AABBCC0001 /* Localizable.strings */; };
 		AA00007124AABBCC0001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA00007024AABBCC0001 /* Assets.xcassets */; };
 		AA00000F24AABBCC0001 /* entitlements-base.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA00003024AABBCC0001 /* entitlements-base.plist */; };
@@ -36,6 +37,7 @@
 		DA00000A24BBDDCC0001 /* EntitlementsGen.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001A24BBDDCC0001 /* EntitlementsGen.m */; };
 		DA00000B24BBDDCC0001 /* EEProvisioning.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001B24BBDDCC0001 /* EEProvisioning.m */; };
 		DA00000C24BBDDCC0001 /* EESigning.mm in Sources */ = {isa = PBXBuildFile; fileRef = DA00001C24BBDDCC0001 /* EESigning.mm */; };
+		DA00000D24BBDDCC0001 /* RPVLoginImpl.m in Sources */ = {isa = PBXBuildFile; fileRef = DA00001D24BBDDCC0001 /* RPVLoginImpl.m */; };
 		/* ldid sources */
 		LD00000124CCDDEE0001 /* ldid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = LD00001124CCDDEE0001 /* ldid.cpp */; };
 		LD00000224CCDDEE0001 /* lookup2.c in Sources */ = {isa = PBXBuildFile; fileRef = LD00001324CCDDEE0001 /* lookup2.c */; };
@@ -81,6 +83,7 @@
 		AA00001B24AABBCC0001 /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
 		AA00001C24AABBCC0001 /* JailbreakDetect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JailbreakDetect.swift; sourceTree = "<group>"; };
 		AA00001D24AABBCC0001 /* IPAProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPAProcessor.swift; sourceTree = "<group>"; };
+		AA00001G24AABBCC0001 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		AA00001E24AABBCC0001 /* Localizable.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = zh-Hans/Localizable.strings; sourceTree = "<group>"; };
 		AA00002024AABBCC0001 /* RePro.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RePro.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA00003024AABBCC0001 /* entitlements-base.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = entitlements-base.plist; sourceTree = "<group>"; };
@@ -108,6 +111,8 @@
 		DA00001BH24BBDDCC0001 /* EEProvisioning.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EEProvisioning.h; sourceTree = "<group>"; };
 		DA00001C24BBDDCC0001 /* EESigning.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EESigning.mm; sourceTree = "<group>"; };
 		DA00001CH24BBDDCC0001 /* EESigning.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EESigning.h; sourceTree = "<group>"; };
+		DA00001D24BBDDCC0001 /* RPVLoginImpl.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RPVLoginImpl.m; sourceTree = "<group>"; };
+		DA00001DH24BBDDCC0001 /* RPVLoginImpl.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RPVLoginImpl.h; sourceTree = "<group>"; };
 		DA00002024BBDDCC0001 /* reprovisiond */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = reprovisiond; sourceTree = BUILT_PRODUCTS_DIR; };
 		/* ldid */
 		LD00001124CCDDEE0001 /* ldid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ldid.cpp; sourceTree = "<group>"; };
@@ -249,6 +254,7 @@
 				AA00001624AABBCC0001 /* SettingsView.swift */,
 				AA00001724AABBCC0001 /* LogView.swift */,
 				AA00001824AABBCC0001 /* HealthView.swift */,
+				AA00001G24AABBCC0001 /* ShareSheet.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -304,6 +310,8 @@
 				DA00001BH24BBDDCC0001 /* EEProvisioning.h */,
 				DA00001C24BBDDCC0001 /* EESigning.mm */,
 				DA00001CH24BBDDCC0001 /* EESigning.h */,
+				DA00001D24BBDDCC0001 /* RPVLoginImpl.m */,
+				DA00001DH24BBDDCC0001 /* RPVLoginImpl.h */,
 				LD00009024CCDDEE0001 /* ldid */,
 				LP00009024CCDDEE0001 /* libplist */,
 			);
@@ -545,6 +553,7 @@
 				AA00000B24AABBCC0001 /* LogManager.swift in Sources */,
 				AA00000C24AABBCC0001 /* JailbreakDetect.swift in Sources */,
 				AA00000D24AABBCC0001 /* IPAProcessor.swift in Sources */,
+				AA00000G24AABBCC0001 /* ShareSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -564,6 +573,7 @@
 				DA00000A24BBDDCC0001 /* EntitlementsGen.m in Sources */,
 				DA00000B24BBDDCC0001 /* EEProvisioning.m in Sources */,
 				DA00000C24BBDDCC0001 /* EESigning.mm in Sources */,
+				DA00000D24BBDDCC0001 /* RPVLoginImpl.m in Sources */,
 				/* ldid sources */
 				LD00000124CCDDEE0001 /* ldid.cpp in Sources */,
 				LD00000224CCDDEE0001 /* lookup2.c in Sources */,

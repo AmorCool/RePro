@@ -353,4 +353,21 @@ static NSString *const kLockdownPlistPath = @"/var/lockdown/device_data.plist";
         && self.cachedAnisetteHeaders[@"X-Apple-I-Identity-Id"] != nil;
 }
 
+/// 生成 OTP（一次性密码）— 基于 AuthKit identityId 或本地 fallback
+- (NSString *)generateOTP {
+    // 优先使用 AuthKit 的 X-Apple-I-Identity-Id 中的 OTP
+    NSString *identityId = self.cachedAnisetteHeaders[@"X-Apple-I-Identity-Id"];
+    if (identityId && identityId.length > 0) {
+        // 格式: machineID:OTP:timestamp:locale
+        NSArray *parts = [identityId componentsSeparatedByString:@":"];
+        if (parts.count >= 2 && ((NSString *)parts[1]).length > 0) {
+            return parts[1];
+        }
+    }
+
+    // Fallback: 返回基于时间戳的简单 OTP（仅用于调试，无法通过苹果验证）
+    NSTimeInterval ts = [[NSDate date] timeIntervalSince1970];
+    return [NSString stringWithFormat:@"%016llx", (unsigned long long)(ts * 1000000)];
+}
+
 @end
