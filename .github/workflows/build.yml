@@ -137,6 +137,7 @@ jobs:
           xcrun -sdk iphoneos clang++ \
             -arch arm64 -miphoneos-version-min=15.0 \
             -framework Foundation -framework Security -framework CoreFoundation \
+            -framework corecrypto \
             -L "${OPENSSL_DIR}/lib" -lssl -lcrypto -lz \
             -o build/reprovisiond \
             build/obj/*.o >> daemon_build.log 2>&1 || true
@@ -223,8 +224,20 @@ jobs:
           cp /tmp/zsign "$RL/usr/local/bin/zsign"
           chmod 0755 "$RL/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
-          # 复制图标（供 Cydia/Sileo 显示）
+
+          # 验证 Assets.car 存在（图标依赖于此文件）
+          echo "=== 验证 .app 包结构 ==="
+          ls -lah "$RL/Applications/RePro.app/"
+          if [ -f "$RL/Applications/RePro.app/Assets.car" ]; then
+              echo "Assets.car 存在: $(ls -lh "$RL/Applications/RePro.app/Assets.car" | awk '{print $5}')"
+          else
+              echo "警告: Assets.car 不存在！图标可能无法显示"
+          fi
+
+          # 复制图标（供 Sileo/Cydia 显示，不影响 iOS 图标加载）
           cp Resources/Icon.png "$RL/Applications/RePro.app/Icon.png"
+
+          # 签名：先签二进制，不破坏 Assets.car
           "$LDID" -SResources/entitlements-base.plist "$RL/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$RL/usr/libexec/reprovisiond"
           "$LDID" -S "$RL/usr/local/bin/zsign"

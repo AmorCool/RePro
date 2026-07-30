@@ -50,15 +50,17 @@
 }
 
 - (BOOL)isSandboxed {
-    // 检查是否能访问 root-only 路径
-    struct stat st;
-    int ret = stat("/var/Managed Preferences/mobile", &st);
-    if (ret == 0) {
-        // 能 stat 不代表能写，但至少能看到
-        return NO; // 假设有 no-sandbox entitlement
+    // 检查是否有 root 权限 + 能否访问系统路径
+    // daemon 以 root 运行时应该无沙盒限制
+    if (getuid() == 0) {
+        // root 进程通常不受沙盒限制
+        // 但仍检查能否写入系统目录来确认
+        struct stat st;
+        if (stat("/var/mobile/Library/Preferences", &st) == 0) {
+            return NO; // 能访问 mobile 的 Preferences 目录，说明无沙盒
+        }
     }
-    // 另一种检查：看能否读取其他 app 的数据
-    return YES; // 默认保守判断
+    return YES;
 }
 
 - (NSString *)zsignPath {

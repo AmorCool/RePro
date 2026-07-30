@@ -11,6 +11,7 @@
 #import "ZSignBackend.h"
 #import "EntitlementsGen.h"
 #import "EEProvisioning.h" // 从旧项目移植的证书/profile 申请模块
+#import "RPVLoginImpl.h"  // 原版 SRP 认证实现
 #import <spawn.h>
 #import <sys/wait.h>
 // 注：LSApplicationWorkspace 仅通过 NSClassFromString/performSelector 动态调用，
@@ -63,17 +64,58 @@
 - (NSDictionary<NSString *, id> *)loginWithAppleID:(NSString *)appleID
                                           password:(NSString *)password
                                              error:(NSError **)error {
-    // 通过 EEProvisioning 执行 SRP 认证
-    // 注入本地生成的 Anisette 数据以减少对远程服务器的依赖
-    BOOL success = [self.provisioning authenticateWithAppleID:appleID password:password error:error];
+    // 使用原版 SRP 认证实现（RPVLoginImpl）
+    RPVLoginImpl *loginImpl = [[RPVLoginImpl alloc] init];
 
-    if (success && *error == nil) {
+    __block NSError *authError = nil;
+    __block NSString *userIdentity = nil;
+    __block NSString *gsToken = nil;
+
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    [loginImpl loginWithUsername:appleID
+                         password:password
+                      completion:^(NSError *err, NSString *identity, NSString *token, NSString *idmsToken) {
+        authError = err;
+        userIdentity = identity;
+        gsToken = token;
+        dispatch_semaphore_signal(sem);
+    }];
+
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+
+    if (authError) {
+        // 检查是否是 2FA 错误（需要特殊处理）
+        if (authError.code == RPVInternalLogin2FARequiredTrustedDeviceError ||
+            authError.code == RPVInternalLogin2FARequiredSecondaryAuthError) {
+            if (error) *error = [NSError errorWithDomain:@"RePro"
+                                                     code:authError.code
+                                                 userInfo:@{
+                NSLocalizedDescriptionKey: @"需要双因素认证，请使用支持 2FA 的登录流程",
+                @"requires2FA": @YES,
+                @"originalError": authError
+            }];
+        } else {
+            if (error) *error = authError;
+        }
+        return nil;
+    }
+
+    // 登录成功，使用获取到的凭证初始化 provisioning
+    if (userIdentity && gsToken) {
+        self.provisioning = [EEProvisioning provisionerWithCredentials:userIdentity gsToken:gsToken];
+
         return @{
             @"status": @"success",
             @"appleID": appleID,
+            @"identity": userIdentity,
             @"timestamp": @([[NSDate date] timeIntervalSince1970])
         };
     }
+
+    if (error) *error = [NSError errorWithDomain:@"RePro"
+                                             code:-1
+                                         userInfo:@{NSLocalizedDescriptionKey: @"登录失败：未返回有效凭证"}];
     return nil;
 }
 

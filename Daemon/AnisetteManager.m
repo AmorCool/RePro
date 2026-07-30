@@ -74,6 +74,8 @@ static NSString *const kLockdownPlistPath = @"/var/lockdown/device_data.plist";
     self = [super init];
     if (self) {
         [self loadOrGenerateOTPKey];
+        // 启动时立即收集设备信息（确保 isReady 可用）
+        [self collectDeviceInfo];
     }
     return self;
 }
