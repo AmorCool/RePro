@@ -178,9 +178,9 @@ static NSString *const REProtocolVersion = @"QH65B2";
                                   format:nil
                                    error:&parseError];
             } else {
-                plist = [NSJSONObjectWithData:unpacked
-                                       options:0
-                                         error:&parseError];
+                plist = [NSJSONSerialization JSONObjectWithData:unpacked
+                                                       options:0
+                                                         error:&parseError];
             }
 
             if (parseError || !plist) {
@@ -222,7 +222,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
                              method:(NSString *)method
                           systemType:(EESystemType)systemType
                     extraDictionary:(NSDictionary *)extra
-               andCompletionHandler:(void (^)(NSError *, Dictionary *))completionHandler {
+               andCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     // 将字典转换为 URL 编码的查询字符串
     NSMutableArray<NSURLQueryItem *> *queryItems = [NSMutableArray array];
@@ -247,7 +247,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
 - (void)_doActionWithName:(NSString *)action
                systemType:(EESystemType)systemType
            extraDictionary:(NSDictionary *)extra
-      andCompletionHandler:(void (^)(NSError *, Dictionary *))completionHandler {
+      andCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     // 根据系统类型确定 URL 路径前缀
     NSString *os = @"";
@@ -329,7 +329,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
 - (void)signInWithUsername:(NSString *)username
                   password:(NSString *)password
        andCompletionHandler:(void (^)(NSError *,
-                                      Dictionary *,
+                                      NSDictionary *,
                                       NSURLCredential *))completionHandler {
 
     // 新项目不再直接处理登录，需通过 AnisetteManager 获取凭证后调用 ensureSessionWithIdentity
@@ -352,7 +352,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
 /// 验证登录代码（兼容性保留）
 - (void)validateLoginCode:(NSString *)code
       andCompletionHandler:(void (^)(NSError *,
-                                     Dictionary *,
+                                     NSDictionary *,
                                      NSURLCredential *))completionHandler {
 
     NSDictionary *userInfo = @{
@@ -367,7 +367,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
 
 /// 双因素认证备用请求（兼容性保留）
 - (void)fallback2FACodeRequest:(void (^)(NSError *,
-                                        Dictionary *,
+                                        NSDictionary *,
                                         NSURLCredential *))completionHandler {
 
     NSDictionary *userInfo = @{
@@ -448,7 +448,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
 withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"deviceNumber"] = udid;
     extra[@"name"] = name;
 
@@ -464,7 +464,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
       withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"pageSize"] = @"500";
     extra[@"pageNumber"] = @"1";
     extra[@"sort"] = @"name=asc";
@@ -484,7 +484,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
               withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
 
     [self _doActionWithName:@"listAppIds.action"
                  systemType:systemType
@@ -530,7 +530,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
        withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"appIdId"] = appIdId;
     extra[@"type"] = @"explicit";
 
@@ -555,7 +555,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
        withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"appIdId"] = appIdId;
 
     [self _doActionWithName:@"deleteAppId.action"
@@ -572,7 +572,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                    withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
 
     [self _doActionWithName:@"listApplicationGroups.action"
                  systemType:systemType
@@ -588,7 +588,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                    withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"identifier"] = identifier;
     extra[@"name"] = groupName;
 
@@ -625,7 +625,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                              withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
 
     if (useFilter) {
         extra[@"filter[certificateType]"] = @"IOS_DEVELOPMENT";
@@ -657,7 +657,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                      withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
 
     [self _doActionWithName:@"listProvisioningProfiles.action"
                  systemType:systemType
@@ -672,7 +672,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                   andCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"appIdId"] = appIdId;
 
     [self _doActionWithName:@"downloadTeamProvisioningProfile.action"
@@ -702,7 +702,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
         // 查找匹配的描述文件
         for (NSDictionary *profile in profiles) {
-            NSDictionary *appId = profile[@"identifier"];
+            NSString *appId = profile[@"identifier"];
             BOOL matches = [appId rangeOfString:applicationId].location != NSNotFound;
 
             if (matches) {
@@ -714,7 +714,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
         if (profileId.length > 0) {
             // 执行删除操作
             NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-            extra[@"teamId"] = teamID;
+            extra[@"teamId"] = teamId;
             extra[@"provisioningProfileId"] = profileId;
 
             [self _doActionWithName:@"deleteProvisioningProfile.action"
@@ -745,7 +745,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                   withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
     extra[@"serialNumber"] = serialNumber;
 
     [self _doActionWithName:@"revokeDevelopmentCert.action"
@@ -761,7 +761,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                 withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamID;
+    extra[@"teamId"] = teamId;
 
     [self _sendServiceRequestWithName:[NSString stringWithFormat:@"certificates/%@", identifier]
                                method:@"DELETE"

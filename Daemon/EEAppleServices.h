@@ -85,7 +85,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler;
                        teamID:(NSString *)teamID
                  entitlements:(NSDictionary *)entitlements
                    systemType:(EESystemType)systemType
-       withCompletionHandler:(void (^)(NSError *, Dictionary *))completionHandler;
+       withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler;
 
 /// 删除 App ID
 - (void)deleteApplicationIdId:(NSString *)appIdId

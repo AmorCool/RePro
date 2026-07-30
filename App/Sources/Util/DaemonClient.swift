@@ -28,9 +28,6 @@ class DaemonClient: NSObject {
         connection?.invalidationHandler = { [weak self] in
             self?.handleDisconnection()
         }
-        connection?.interruptedHandler = { [weak self] in
-            self?.handleDisconnection()
-        }
         connection?.resume()
     }
 
@@ -49,15 +46,13 @@ class DaemonClient: NSObject {
 
     func checkConnection() {
         guard let conn = connection else { return }
-        conn.remoteObjectProxy as? RZDaemonProtocol { [weak self] proxy in
-            if let proxy = proxy {
-                proxy.ping { response in
-                    DispatchQueue.main.async {
-                        self?.isConnected = true
-                    }
-                }
-            } else {
-                self?.isConnected = false
+        guard let proxy = conn.remoteObjectProxy as? RZDaemonProtocol else {
+            isConnected = false
+            return
+        }
+        proxy.ping { response in
+            DispatchQueue.main.async {
+                self?.isConnected = true
             }
         }
     }
@@ -76,9 +71,11 @@ class DaemonClient: NSObject {
             completion(nil)
             return
         }
-        conn.remoteObjectProxy as? RZDaemonProtocol { proxy in
-            completion(proxy)
+        guard let proxy = conn.remoteObjectProxy as? RZDaemonProtocol else {
+            completion(nil)
+            return
         }
+        completion(proxy)
     }
 
     // MARK: 公共 API
