@@ -18,9 +18,10 @@ class SigningViewModel: ObservableObject {
 
     // MARK: 加载已安装应用
     func loadInstalledApps() {
-        // 通过 LSApplicationWorkspace 获取已安装应用
-        // 实际实现需要调用私有 API 或通过 Daemon 获取
-        refreshApps()
+        // 通过 Daemon 获取已安装应用（异步加载）
+        Task {
+            await refreshApps()
+        }
     }
 
     func refreshApps() async {

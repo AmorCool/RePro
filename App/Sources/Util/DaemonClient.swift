@@ -23,7 +23,16 @@ class DaemonClient: NSObject {
 
     // MARK: 建立 XPC 连接
     private func setupConnection() {
-        connection = NSXPCConnection(machServiceName: "com.reprovision.daemon", options: .privileged)
+        // NSXPCConnection(machServiceName:options:) 在 iOS SDK 标记为 unavailable，
+        // 但越狱环境运行时实际可用。通过 ObjC 运行时绕过编译器检查。
+        let selector = NSSelectorFromString("initWithMachServiceName:options:")
+        let rawConn = (NSXPCConnection.self as AnyObject).perform(
+            selector,
+            with: "com.reprovision.daemon",
+            with: NSXPCConnection.ConnectionOptions.privileged.rawValue
+        )?.takeUnretainedValue()
+        guard let conn = rawConn as? NSXPCConnection else { return }
+        connection = conn
         connection?.remoteObjectInterface = NSXPCInterface(with: RZDaemonProtocol.self)
         connection?.invalidationHandler = { [weak self] in
             self?.handleDisconnection()
@@ -50,9 +59,9 @@ class DaemonClient: NSObject {
             isConnected = false
             return
         }
-        proxy.ping { response in
+        proxy.pingWithReply { _ in
             DispatchQueue.main.async {
-                self?.isConnected = true
+                self.isConnected = true
             }
         }
     }

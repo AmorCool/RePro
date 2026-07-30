@@ -417,7 +417,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
             return;
         }
 
-        self.teamid = teamId;
+        self.teamid = teamID;
         completionHandler(error, self.teamid);
     }];
 }
@@ -448,7 +448,7 @@ static NSString *const REProtocolVersion = @"QH65B2";
 withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"deviceNumber"] = udid;
     extra[@"name"] = name;
 
@@ -464,7 +464,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
       withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"pageSize"] = @"500";
     extra[@"pageNumber"] = @"1";
     extra[@"sort"] = @"name=asc";
@@ -484,7 +484,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
               withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
 
     [self _doActionWithName:@"listAppIds.action"
                  systemType:systemType
@@ -530,7 +530,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
        withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"appIdId"] = appIdId;
     extra[@"type"] = @"explicit";
 
@@ -555,7 +555,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
        withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"appIdId"] = appIdId;
 
     [self _doActionWithName:@"deleteAppId.action"
@@ -572,7 +572,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                    withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
 
     [self _doActionWithName:@"listApplicationGroups.action"
                  systemType:systemType
@@ -588,7 +588,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                    withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"identifier"] = identifier;
     extra[@"name"] = groupName;
 
@@ -625,7 +625,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                              withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
 
     if (useFilter) {
         extra[@"filter[certificateType]"] = @"IOS_DEVELOPMENT";
@@ -657,7 +657,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                      withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
 
     [self _doActionWithName:@"listProvisioningProfiles.action"
                  systemType:systemType
@@ -672,7 +672,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                   andCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"appIdId"] = appIdId;
 
     [self _doActionWithName:@"downloadTeamProvisioningProfile.action"
@@ -714,7 +714,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
         if (profileId.length > 0) {
             // 执行删除操作
             NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-            extra[@"teamId"] = teamId;
+            extra[@"teamId"] = teamID;
             extra[@"provisioningProfileId"] = profileId;
 
             [self _doActionWithName:@"deleteProvisioningProfile.action"
@@ -745,7 +745,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                   withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
     extra[@"serialNumber"] = serialNumber;
 
     [self _doActionWithName:@"revokeDevelopmentCert.action"
@@ -761,7 +761,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
                 withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
 
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
-    extra[@"teamId"] = teamId;
+    extra[@"teamId"] = teamID;
 
     [self _sendServiceRequestWithName:[NSString stringWithFormat:@"certificates/%@", identifier]
                                method:@"DELETE"
@@ -787,7 +787,7 @@ withCompletionHandler:(void (^)(NSError *, NSDictionary *))completionHandler {
     // 构建请求体（JSON API 格式）
     NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
     attributes[@"certificateType"] = @"DEVELOPMENT";
-    attributes[@"teamId"] = teamId;
+    attributes[@"teamId"] = teamID;
     attributes[@"csrContent"] = stringifiedCSR;
     attributes[@"machineId"] = machineID;
     attributes[@"machineName"] = machineName;
