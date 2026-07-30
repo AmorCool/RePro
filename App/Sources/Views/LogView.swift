@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - 日志管理页面（参考 SideStore）
 
 struct LogView: View {
-    @StateObject private var logManager = LogManager.shared
+    @ObservedObject private var logManager = LogManager.shared
     @State private var searchText = ""
     @State private var selectedFilter: LogLevel? = nil
     @State private var showingClearAlert = false

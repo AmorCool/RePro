@@ -25,13 +25,23 @@ class DaemonClient: NSObject, ObservableObject {
     private func setupConnection() {
         // NSXPCConnection(machServiceName:options:) 在 iOS SDK 标记为 unavailable，
         // 但越狱环境运行时实际可用。通过 ObjC 运行时绕过编译器检查。
-        let selector = NSSelectorFromString("initWithMachServiceName:options:")
-        let rawConn = (NSXPCConnection.self as AnyObject).perform(
-            selector,
+        // 注意：必须先 alloc 再 init（两步创建），不能直接对类对象发 init 消息
+        let allocSel = NSSelectorFromString("alloc")
+        let initSel = NSSelectorFromString("initWithMachServiceName:options:")
+
+        let allocated = (NSXPCConnection.self as AnyObject).perform(allocSel)?.takeUnretainedValue()
+        guard let alloced = allocated else { return }
+
+        let rawConn = alloced.perform(
+            initSel,
             with: "com.reprovision.daemon",
             with: NSXPCConnection.Options.privileged.rawValue
         )?.takeUnretainedValue()
-        guard let conn = rawConn as? NSXPCConnection else { return }
+
+        guard let conn = rawConn as? NSXPCConnection else {
+            // daemon 可能还没启动或 mach service 未注册，静默失败
+            return
+        }
         connection = conn
         connection?.remoteObjectInterface = NSXPCInterface(with: RZDaemonProtocol.self)
         connection?.invalidationHandler = { [weak self] in

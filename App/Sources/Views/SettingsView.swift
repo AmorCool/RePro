@@ -108,7 +108,9 @@ struct SettingsView: View {
                         Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
                             .foregroundColor(.secondary)
                     }
-                    Link("开源项目", destination: URL(string: "https://github.com/AmorCool/RePro")!)
+                    if let url = URL(string: "https://github.com/AmorCool/RePro") {
+                        Link("开源项目", destination: url)
+                    }
                 }
             }
             .navigationTitle("设置")

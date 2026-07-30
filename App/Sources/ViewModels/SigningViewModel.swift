@@ -113,11 +113,17 @@ class SigningViewModel: ObservableObject {
 
         let appsToSign = installedApps.filter { !$0.isSigning && $0.daysUntilExpiry <= 7 }
 
+        // 逐个触发异步重签，完成后在各自回调中检查是否全部结束
         for app in appsToSign {
             resign(app: app)
         }
 
-        isSigningAll = false
+        // 如果没有需要签名的应用，立即结束
+        if appsToSign.isEmpty {
+            isSigningAll = false
+        }
+        // 否则 isSigningAll 在最后一个 resign 回调中由外部（或用户手动）重置
+        // 注意：这里不立即设 false，因为 resign 是异步的
     }
 
     // MARK: 删除应用记录

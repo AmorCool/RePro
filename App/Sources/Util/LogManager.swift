@@ -46,11 +46,14 @@ class LogManager: ObservableObject {
                 source: source
             )
 
-            self?.logs.append(entry)
+            // @Published 属性必须在主线程更新（SwiftUI 要求）
+            DispatchQueue.main.async {
+                self?.logs.append(entry)
 
-            // 限制日志数量，防止内存膨胀
-            while (self?.logs.count ?? 0) > (self?.maxLogEntries ?? 50) {
-                self?.logs.removeFirst()
+                // 限制日志数量，防止内存膨胀
+                while (self?.logs.count ?? 0) > (self?.maxLogEntries ?? 50) {
+                    self?.logs.removeFirst()
+                }
             }
 
             // 同时输出到系统日志（控制台可见）
@@ -91,7 +94,9 @@ class LogManager: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             let decoded = try JSONDecoder().decode([LogEntry].self, from: data)
-            logs = decoded
+            DispatchQueue.main.async { [weak self] in
+                self?.logs = decoded
+            }
         } catch {
             // 首次启动或文件损坏，忽略
         }
@@ -105,7 +110,8 @@ class LogManager: ObservableObject {
     private var logFileURL: URL? {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
             .appendingPathComponent("ReProvision")
-        try? FileManager.default.createDirectory(at: dir!, withIntermediateDirectories: true)
-        return dir?.appendingPathComponent("logs.json")
+        guard let safeDir = dir else { return nil }
+        try? FileManager.default.createDirectory(at: safeDir, withIntermediateDirectories: true)
+        return safeDir.appendingPathComponent("logs.json")
     }
 }
