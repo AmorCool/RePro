@@ -154,6 +154,59 @@ jobs:
           chmod +x build/reprovisiond
           echo "Daemon built successfully"
 
+      - name: Cross-compile zsign for iOS (arm64)
+        # zsign 是设备端签名后端（纯 C/C++，仅依赖 OpenSSL）。
+        # zlib/minizip 已内嵌在其源码树中。交叉编译为 iOS arm64 静态链接版，
+        # 输出 /tmp/zsign，后续打包阶段复制到三套 deb 的正确路径。
+        run: |
+          set -e
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "iPhoneOS SDK: $SDK"
+
+          OPENSSL_DIR=/tmp/openssl-ios
+
+          # zsign 源码（pinned commit 保证可重现构建）
+          ZSIGN_COMMIT=d6e929c97b5b564c2cc1f82afe226a44da7149a0
+          ZS_OBJ=/tmp/zsign-obj
+          rm -rf /tmp/zsign-src "$ZS_OBJ"
+          git clone --depth 1 https://github.com/zhlynn/zsign.git /tmp/zsign-src
+          cd /tmp/zsign-src
+          git fetch --depth 1 origin "${ZSIGN_COMMIT}"
+          git checkout "${ZSIGN_COMMIT}"
+          mkdir -p "$ZS_OBJ"
+
+          CFLAGS="-isysroot $SDK -arch arm64 -mios-version-min=12.0 -O3"
+          CXXFLAGS="-isysroot $SDK -arch arm64 -mios-version-min=12.0 -O3 -std=c++11"
+
+          # zlib（C 模式——minizip 的 zip.c 传 void* 给 crc32()，C++ 下隐式转换非法）
+          for f in src/third-party/zlib/*.c; do
+            clang $CFLAGS -I src/third-party/zlib -c "$f" -o "$ZS_OBJ/$(echo "$f" | tr '/' '_').o"
+          done
+
+          # minizip（C 模式）
+          for f in src/third-party/minizip/ioapi.c src/third-party/minizip/zip.c src/third-party/minizip/unzip.c; do
+            clang $CFLAGS -I src -I src/common -I src/third-party/zlib -c "$f" -o "$ZS_OBJ/$(echo "$f" | tr '/' '_').o"
+          done
+
+          # zsign 核心 + common（C++）
+          for f in src/*.cpp src/common/*.cpp; do
+            clang++ $CXXFLAGS -I src -I src/common -I src/third-party/zlib \
+              -I ${OPENSSL_DIR}/include -DZSIGN_VERSION="${ZSIGN_COMMIT:0:8}" \
+              -c "$f" -o "$ZS_OBJ/$(echo "$f" | tr '/' '_').o"
+          done
+
+          # 链接（静态链接 OpenSSL）
+          clang++ $CXXFLAGS "$ZS_OBJ"/*.o \
+            -L ${OPENSSL_DIR}/lib -lssl -lcrypto \
+            -o /tmp/zsign
+          cd -
+
+          echo "=== zsign binary (expect Mach-O arm64 for iOS) ==="
+          file /tmp/zsign
+          lipo -info /tmp/zsign
+          ls -lh /tmp/zsign
+          echo "zsign built successfully"
+
       - name: Sign with entitlements + 打包资源
         run: |
           set -e
@@ -166,31 +219,40 @@ jobs:
                    "$RL/Library/LaunchDaemons" "$RL/usr/share/reprovision/certificates"
           cp -R $(find build -name "RePro.app" -type d | head -1) "$RL/Applications/"
           cp build/reprovisiond "$RL/usr/libexec/"
+          cp /tmp/zsign "$RL/usr/local/bin/zsign"
+          chmod 0755 "$RL/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
           "$LDID" -SResources/entitlements-base.plist "$RL/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$RL/usr/libexec/reprovisiond"
+          "$LDID" -S "$RL/usr/local/bin/zsign"
 
           # --- Rootful deb ---
           PKG2="Packages/rootful"
-          mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/Library/LaunchDaemons" \
-                   "$PKG2/usr/share/reprovision/certificates"
+          mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/usr/local/bin" \
+                   "$PKG2/Library/LaunchDaemons" "$PKG2/usr/share/reprovision/certificates"
           cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG2/Applications/"
           cp build/reprovisiond "$PKG2/usr/libexec/"
+          cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
+          chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
           "$LDID" -SResources/entitlements-base.plist "$PKG2/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$PKG2/usr/libexec/reprovisiond"
+          "$LDID" -S "$PKG2/usr/local/bin/zsign"
 
           # --- RootHide deb ---
           PKG3="Packages/roothide"
-          mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/Library/LaunchDaemons" \
-                   "$PKG3/usr/share/reprovision/certificates"
+          mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/usr/local/bin" \
+                   "$PKG3/Library/LaunchDaemons" "$PKG3/usr/share/reprovision/certificates"
           cp -R $(find build -name "RePro.app" -type d | head -1) "$PKG3/Applications/"
           cp build/reprovisiond "$PKG3/usr/libexec/"
+          cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
+          chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           "$LDID" -SResources/entitlements-roothide.plist "$PKG3/Applications/RePro.app/RePro"
           "$LDID" -SResources/entitlements-daemon.plist "$PKG3/usr/libexec/reprovisiond"
+          "$LDID" -S "$PKG3/usr/local/bin/zsign"
 
-          echo "Signing + packaging complete for all 3 packages"
+          echo "Signing + packaging complete for all 3 packages (with zsign)"
 
       - name: Package debs
         run: |
