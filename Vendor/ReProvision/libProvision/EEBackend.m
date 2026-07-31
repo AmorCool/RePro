@@ -113,7 +113,7 @@ static void RZThinArm64eInBundle(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
         includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-        options:NSDirectoryEnumerationSkipsSymbolicLinks | NSDirectoryEnumerationSkipsHiddenFiles
+        options:NSDirectoryEnumerationSkipsHiddenFiles
         errorHandler:nil];
     for (NSURL *url in enumerator) {
         NSNumber *isDir = nil;
