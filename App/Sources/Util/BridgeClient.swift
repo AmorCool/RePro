@@ -241,6 +241,15 @@ final class BridgeClient: ObservableObject {
             }
         }
     }
+
+    // MARK: - 系统操作
+
+    /// 通过 sysctl 枚举进程找到 SpringBoard 并发送 SIGTERM。
+    /// 参考 RebootTools / TrollStore TSUtil.m，不依赖任何外部二进制。
+    /// 返回 true 表示成功找到并发送了信号。
+    func respring() -> Bool {
+        return bridge.respring()
+    }
 }
 
 // MARK: - RPVAppInfo -> InstalledApp

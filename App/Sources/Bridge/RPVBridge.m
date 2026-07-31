@@ -23,6 +23,8 @@
 #import "RPVResources.h"
 #import "RZSignRunner.h"
 #import "EEAppleServices.h"
+#import <sys/sysctl.h>   // respring: sysctl 枚举进程
+#import <signal.h>       // respring: kill(SIGTERM)
 
 #include <spawn.h>
 #include <sys/wait.h>
@@ -706,10 +708,14 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
                     [result addObject:appId];
                 }
 
-                // 按过期时间升序排列（与原版一致）
-                NSSortDescriptor *sortByDate = [NSSortDescriptor sortDescriptorWithKey:@"applicationExpiryDate"
-                                                                         ascending:YES];
-                [result sortUsingDescriptors:@[sortByDate]];
+                // 按过期时间升序排列（nil 日期排最后，避免 [NSDate compare:nil] 崩溃）
+                [result sortUsingComparator:^NSComparisonResult(RPVRegisteredAppID *a, RPVRegisteredAppID *b) {
+                    NSDate *da = a.applicationExpiryDate, *db = b.applicationExpiryDate;
+                    if (!da && !db) return NSOrderedSame;
+                    if (!da) return NSOrderedDescending; // 无日期的排最后
+                    if (!db) return NSOrderedAscending;
+                    return [da compare:db];
+                }];
 
                 RPVBridgeCallOnMain(^{ if (completion) completion([result copy], nil); });
             }];
@@ -809,6 +815,62 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     }];
 }
 
+// MARK: - Respring（sysctl 枚举进程方案）
+//
+// 参考 RebootTools / TrollStore TSUtil.m：
+//   通过 sysctl(KERN_PROC_ALL) 获取所有进程列表，
+//   用 KERN_PROCARGS2 取出每个进程的 executable path，
+//   匹配 "SpringBoard" 后直接 kill(pid, SIGTERM)。
+// 不依赖 killall / sbreload / notify_post 等任何外部二进制或 API。
+
+- (BOOL)respring {
+    // 1. 获取 KERN_ARGMAX
+    int maxArgumentSize = 0;
+    size_t size = sizeof(maxArgumentSize);
+    if (sysctl((int[]){ CTL_KERN, KERN_ARGMAX }, 2, &maxArgumentSize, &size, NULL, 0) == -1) {
+        maxArgumentSize = 4096; // 默认值
+    }
+
+    // 2. 枚举所有进程（KERN_PROC_ALL）
+    int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
+    struct kinfo_proc *info = NULL;
+    size_t length = 0;
+
+    if (sysctl(mib, 3, NULL, &length, NULL, 0) < 0) return NO;
+    if (!(info = malloc(length))) return NO;
+    if (sysctl(mib, 3, info, &length, NULL, 0) < 0) {
+        free(info);
+        return NO;
+    }
+
+    int count = (int)(length / sizeof(struct kinfo_proc));
+    BOOL found = NO;
+
+    for (int i = 0; i < count; i++) {
+        pid_t pid = info[i].kp_proc.p_pid;
+        if (pid == 0) continue;
+
+        size_t argSize = maxArgumentSize;
+        char *buffer = malloc(maxArgumentSize);
+        if (!buffer) continue;
+
+        if (sysctl((int[]){ CTL_KERN, KERN_PROCARGS2, pid }, 3, buffer, &argSize, NULL, 0) == 0) {
+            // KERN_PROCARGS2: 前 sizeof(int) 是 argc，之后是 executable path（以 \0 结尾）
+            NSString *executablePath = [NSString stringWithUTF8String:(buffer + sizeof(int))];
+            if ([executablePath.lastPathComponent isEqualToString:@"SpringBoard"]) {
+                kill(pid, SIGTERM);
+                found = YES;
+                free(buffer);
+                break; // 找到一个就够了
+            }
+        }
+        free(buffer);
+    }
+
+    free(info);
+    return found;
+}
+
 @end
 
 #pragma mark - 已注册 AppID 实现
@@ -818,23 +880,34 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
     if (self) {
-        _identifier = [dict[@"identifier"] copy] ?: @"";
-        _applicationName = [dict[@"name"] copy] ?: _identifier;
+        _identifier = [dict[@"identifier"] isKindOfClass:[NSString class]] ? [dict[@"identifier"] copy] : @"";
+        _applicationName = [dict[@"name"] isKindOfClass:[NSString class]] ? [dict[@"name"] copy] : _identifier;
 
-        NSString *expiryStr = dict[@"expirationDate"];
-        if (expiryStr && [expiryStr length] > 0) {
-            // Apple API 返回的日期可能是 Unix 时间戳或 ISO 格式
-            double timestamp = [expiryStr doubleValue];
-            if (timestamp > 0) {
-                _applicationExpiryDate = [NSDate dateWithTimeIntervalSince1970:timestamp];
+        // ⚠️ Apple 的 listAppIds.action 通过 NSPropertyListSerialization 反序列化，
+        //   <date> 节点会变成 NSDate 对象（不是 NSString！）。
+        //   对 NSDate 调用 -length 会触发 unrecognized selector → 闪退（用户实机已验证）。
+        //   必须用 isKindOfClass 做类型自适应。
+        id expiry = dict[@"expirationDate"];
+        if ([expiry isKindOfClass:[NSDate class]]) {
+            // plist 反序列化的 <date> → 直接使用
+            _applicationExpiryDate = expiry;
+        } else if ([expiry isKindOfClass:[NSNumber class]]) {
+            // Unix 时间戳（数字格式）
+            double ts = [expiry doubleValue];
+            if (ts > 0) _applicationExpiryDate = [NSDate dateWithTimeIntervalSince1970:ts];
+        } else if ([expiry isKindOfClass:[NSString class]] && [(NSString *)expiry length] > 0) {
+            // ISO 8601 字符串（罕见但兼容）
+            double ts = [(NSString *)expiry doubleValue];
+            if (ts > 0) {
+                _applicationExpiryDate = [NSDate dateWithTimeIntervalSince1970:ts];
             } else {
-                // 尝试 ISO 8601 解析
                 NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
                 fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
                 fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
-                _applicationExpiryDate = [fmt dateFromString:expiryStr];
+                _applicationExpiryDate = [fmt dateFromString:(NSString *)expiry];
             }
         }
+        // else: nil / NSNull → _applicationExpiryDate 保持 nil
     }
     return self;
 }

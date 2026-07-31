@@ -1,43 +1,45 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - UIDocumentPicker 包装器（open 模式，解决 .fileImporter copy 模式下第三方文件被静默忽略的问题）
+// MARK: - IPA 文件选择器（UIDocumentPickerViewController 包装）
 //
-// 原版 RPVInstalledViewController.m:1163-1197 明确指出：
-//   "在 copy 模式下，点击会被静默忽略（长按却仍然有效）"
-// SwiftUI 的 .fileImporter 无法控制 asCopy 参数，因此必须手写 UIViewControllerRepresentable。
+// 使用 UIViewControllerRepresentable 包装系统文档选择器，
+// 支持 .ipa 文件的选择（带勾选圈和完成按钮，如图二）。
+// 必须用 .sheet 而非 .fullScreenCover，否则在越狱环境下可能无法正常选择文件。
 
 struct IPADocumentPicker: UIViewControllerRepresentable {
     let onPick: (URL) -> Void
+    @Environment(\.presentationMode) var presentationMode
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        var types: [UTType] = []
-        if let ipaType = UTType(filenameExtension: "ipa") {
-            types.append(ipaType)
-        }
-        // 原版还声明了自定义 UTI jp.soh.reprovision.ipa，这里用动态类型兜底
-        types.append(.archive)
-        types.append(.item)
+        // 显式声明 IPA 的 UTType（iOS 不内置 .ipa 类型，需要动态创建）
+        let ipaType = UTType(filenameExtension: "ipa") ?? UTType.data
 
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [ipaType, .archive, .item], asCopy: false)
         picker.delegate = context.coordinator
         return picker
     }
 
     func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onDismiss: { presentationMode.dismissed() }) }
 
     class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        let onDismiss: () -> Void
+        init(onPick: @escaping (URL) -> Void, onDismiss: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onDismiss = onDismiss
+        }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             if let url = urls.first { onPick(url) }
+            onDismiss()
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             LogManager.shared.info("用户取消了文件选择", source: "AppsView")
+            onDismiss()
         }
     }
 }
@@ -87,7 +89,7 @@ struct AppsView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) { statusBar }
-            .fullScreenCover(isPresented: $showingFileImporter) {
+            .sheet(isPresented: $showingFileImporter) {
                 IPADocumentPicker { url in
                     viewModel.importIPA(url: url)
                 }
@@ -160,28 +162,22 @@ struct AppsView: View {
         }
     }
 
-    // MARK: 已注册 AppIDs（独立于应用列表，确保登录后始终可见）
+    // MARK: 已注册 AppIDs（精简版 —— 单行入口，无冗余文字）
 
     private var appIDsSection: some View {
-        Section {
-            NavigationLink(destination: AppIDsView()) {
-                HStack(spacing: 10) {
-                    Image(systemName: "number")
-                        .foregroundColor(.blue)
-                    Text("已注册 App IDs")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+        NavigationLink(destination: AppIDsView()) {
+            HStack(spacing: 10) {
+                Image(systemName: "number")
+                    .foregroundColor(.blue)
+                    .frame(width: 24)
+                Text("查询已注册 AppID")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
-        } header: {
-            Text("开发者账号")
-        } footer: {
-            Text("查看当前 Apple 开发者账号下已注册的应用标识符及其过期时间")
         }
-        .listStyle(.insetGrouped)
-        .padding(.top, 8)
+        .padding(.vertical, 4)
     }
 
     // MARK: 应用列表

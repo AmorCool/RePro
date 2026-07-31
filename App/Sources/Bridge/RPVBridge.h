@@ -208,6 +208,12 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 - (void)revokeAllCertificatesWithCompletion:(void (^)(NSError *_Nullable error))completion
     NS_SWIFT_NAME(revokeAllCertificates(completion:));
 
+/// 重启 SpringBoard（respring）。
+/// 通过 sysctl(KERN_PROC_ALL) 枚举进程，按 executable name 匹配 SpringBoard，发送 SIGTERM。
+/// 参考 RebootTools / TrollStore TSUtil.m 方案，不依赖任何外部二进制。
+/// 返回 YES 表示成功找到并发送了信号。
+- (BOOL)respring;
+
 #pragma mark root helper 注入点
 
 /// 注册需要 root 权限的两个回调（写系统描述文件、跨沙箱复制文件）。

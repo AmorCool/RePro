@@ -158,6 +158,18 @@ struct SettingsView: View {
 
     private var systemSection: some View {
         Section {
+            NavigationLink(destination: AppIDsView()) {
+                HStack {
+                    Image(systemName: "number")
+                    Text("查询已注册 AppID")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .disabled(!account.isSignedIn)
+
             NavigationLink(destination: CertificatesView()) {
                 HStack {
                     Image(systemName: "lock.shield")
@@ -321,68 +333,16 @@ struct SettingsView: View {
     }
 
     /// 重启 SpringBoard（兼容 rootless / RootHide / rootful）。
-    /// iOS 没有 /bin/sh，不能走 shell 中间层；必须直接找到 killall 并 spawn。
-    /// 回退方案：通过 notify_post 发送 SpringBoard 重启通知（无需任何二进制）。
+    /// 参考 RebootTools / TrollStore TSUtil.m 方案：
+    ///   通过 sysctl(KERN_PROC_ALL) 枚举所有进程，按 executable name 匹配 SpringBoard，
+    ///   直接 kill(pid, SIGTERM)。不依赖任何外部二进制（不需要 killall / sbreload / notify_post）。
     private func performRespring() {
-        // 候选路径：按越狱类型优先级排列
-        let killallCandidates = [
-            "/var/jb/usr/bin/killall",    // Dopamine rootless
-            "/var/jb/bin/killall",         // Dopamine rootless (备用)
-            "/usr/bin/killall",            // RootHide (标准根路径，dpkg 映射后可命中)
-            "/usr/local/bin/killall",      // 通用越狱
-        ]
-
-        var foundKillall: String? = nil
-        for path in killallCandidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                foundKillall = path
-                break
-            }
-        }
-
-        if let killall = foundKillall {
-            // 方案 A：直接 spawn killall（无需 /bin/sh）
-            var pid: pid_t = 0
-            var attr: posix_spawnattr_t?
-            posix_spawnattr_init(&attr)
-            posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
-
-            let argv: [UnsafeMutablePointer<CChar>?] = [
-                strdup(killall),
-                strdup("SpringBoard"),
-                nil
-            ]
-            let result = posix_spawn(&pid, killall, nil, &attr, argv, nil)
-
-            for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
-            posix_spawnattr_destroy(&attr)
-
-            if result == 0 {
-                LogManager.shared.info("已发送 killall SpringBoard (pid=\(pid), path=\(killall))", source: "SettingsView")
-                return
-            } else {
-                LogManager.shared.warning("posix_spawn(\(killall)) 失败: errno=\(result)，尝试 notify_post 回退", source: "SettingsView")
-            }
+        let result = BridgeClient.shared.respring()
+        if result {
+            LogManager.shared.info("已发送 SIGTERM 给 SpringBoard（sysctl 枚举方案）", source: "SettingsView")
+            exit(0)
         } else {
-            LogManager.shared.warning("未找到 killall 二进制，尝试 notify_post 回退", source: "SettingsView")
-        }
-
-        // 方案 B：通过 dlopen/dlsym 调用 notify_post（纯 Darwin API，无需外部二进制）
-        // com.apple.springboard.restart 是 SpringBoard 监听的标准通知名
-        if let handle = dlopen("libsystem_notify.dylib", RTLD_NOW),
-           let sym = dlsym(handle, "notify_post") {
-            typealias NotifyPostFunc = @convention(c) (UnsafePointer<CChar>) -> UInt32
-            let notifyPost = unsafeBitCast(sym, to: NotifyPostFunc.self)
-            let name = "com.apple.springboard.restart"
-            let notifyResult = name.withCString { notifyPost($0) }
-
-            if notifyResult == 0 {
-                LogManager.shared.info("已通过 notify_post 发送 SpringBoard 重启通知", source: "SettingsView")
-            } else {
-                LogManager.shared.error("重启 SpringBoard 失败：killall 未找到且 notify_post 返回 \(notifyResult)", source: "SettingsView")
-            }
-        } else {
-            LogManager.shared.error("重启 SpringBoard 失败：killall 未找到且无法加载 libsystem_notify", source: "SettingsView")
+            LogManager.shared.error("重启 SpringBoard 失败：未找到 SpringBoard 进程", source: "SettingsView")
         }
     }
 }
