@@ -367,13 +367,22 @@ struct SettingsView: View {
             LogManager.shared.warning("未找到 killall 二进制，尝试 notify_post 回退", source: "SettingsView")
         }
 
-        // 方案 B：notify_post 回退（不需要任何外部二进制，纯 Darwin API）
+        // 方案 B：通过 dlopen/dlsym 调用 notify_post（纯 Darwin API，无需外部二进制）
         // com.apple.springboard.restart 是 SpringBoard 监听的标准通知名
-        let notifyResult = notify_post("com.apple.springboard.restart")
-        if notifyResult == 0 {
-            LogManager.shared.info("已通过 notify_post 发送 SpringBoard 重启通知", source: "SettingsView")
+        if let handle = dlopen("libsystem_notify.dylib", RTLD_NOW),
+           let sym = dlsym(handle, "notify_post") {
+            typealias NotifyPostFunc = @convention(c) (UnsafePointer<CChar>) -> UInt32
+            let notifyPost = unsafeBitCast(sym, to: NotifyPostFunc.self)
+            let name = "com.apple.springboard.restart"
+            let notifyResult = name.withCString { notifyPost($0) }
+
+            if notifyResult == 0 {
+                LogManager.shared.info("已通过 notify_post 发送 SpringBoard 重启通知", source: "SettingsView")
+            } else {
+                LogManager.shared.error("重启 SpringBoard 失败：killall 未找到且 notify_post 返回 \(notifyResult)", source: "SettingsView")
+            }
         } else {
-            LogManager.shared.error("重启 SpringBoard 失败：killall 未找到且 notify_post 返回 \(notifyResult)", source: "SettingsView")
+            LogManager.shared.error("重启 SpringBoard 失败：killall 未找到且无法加载 libsystem_notify", source: "SettingsView")
         }
     }
 }
