@@ -6,6 +6,7 @@ struct HealthView: View {
     @ObservedObject private var daemonClient = DaemonClient.shared
     @State private var healthStatus: DaemonHealthStatus?
     @State private var isLoading = false
+    @State private var connectionError: String?  // 连接错误信息
 
     var body: some View {
         NavigationView {
@@ -13,8 +14,20 @@ struct HealthView: View {
                 // MARK: 守护进程状态
                 Section("守护进程") {
                     HealthRow(label: "运行状态",
-                             value: healthStatus?.daemonRunning == true ? "运行中" : "未运行",
-                             status: healthStatus?.daemonRunning == true ? .good : .bad)
+                             value: {
+                                 if let status = healthStatus {
+                                     return status.daemonRunning ? "运行中" : "已停止"
+                                 } else if connectionError != nil {
+                                     return "连接失败"
+                                 }
+                                 return isLoading ? "检测中..." : "未知"
+                             }(),
+                             status: {
+                                 if healthStatus?.daemonRunning == true { return .good }
+                                 if healthStatus?.daemonRunning == false { return .bad }
+                                 if connectionError != nil { return .bad }
+                                 return .unknown
+                             }())
 
                     HealthRow(label: "版本号",
                              value: healthStatus?.daemonVersion ?? "未知",
@@ -31,10 +44,16 @@ struct HealthView: View {
                                      } else {
                                          return "PID=\(pid), uid=\(uid) (非root)"
                                      }
+                                 } else if connectionError != nil {
+                                     return "连接失败"
                                  }
                                  return "未知"
                              }(),
-                             status: (healthStatus?.uid ?? -1) == 0 ? .good : .bad)
+                             status: {
+                                 if healthStatus != nil { return (healthStatus?.uid ?? -1) == 0 ? .good : .bad }
+                                 if connectionError != nil { return .bad }
+                                 return .unknown
+                             }())
 
                     HealthRow(label: "沙盒限制",
                              value: healthStatus?.isSandboxed == true ? "存在" : "不受限制",
@@ -58,12 +77,15 @@ struct HealthView: View {
                                      return path
                                  } else if healthStatus != nil {
                                      return "未找到"
+                                 } else if connectionError != nil {
+                                     return "连接失败"
                                  }
                                  return "检测中..."
                              }(),
                              status: {
                                  if healthStatus?.zsignPath != nil { return .good }
                                  if healthStatus != nil { return .bad }
+                                 if connectionError != nil { return .bad }
                                  return .unknown
                              }())
                 }
@@ -71,12 +93,12 @@ struct HealthView: View {
                 // MARK: Token 与 Anisette
                 Section("缓存状态") {
                     HealthRow(label: "有效 Token",
-                             value: "\(healthStatus?.validTokenCount ?? 0) 个",
-                             status: (healthStatus?.validTokenCount ?? 0) > 0 ? .good : .bad)
+                             value: healthStatus != nil ? "\(healthStatus?.validTokenCount ?? 0) 个" : (connectionError != nil ? "连接失败" : "未知"),
+                             status: (healthStatus?.validTokenCount ?? 0) > 0 ? .good : (connectionError != nil ? .bad : .unknown))
 
                     HealthRow(label: "Anisette",
-                             value: healthStatus?.anisetteReady == true ? "就绪" : "未初始化",
-                             status: healthStatus?.anisetteReady == true ? .good : .unknown)
+                             value: healthStatus?.anisetteReady == true ? "就绪" : (healthStatus != nil ? "未初始化" : (connectionError != nil ? "连接失败" : "未知")),
+                             status: healthStatus?.anisetteReady == true ? .good : (connectionError != nil ? .bad : .unknown))
                 }
 
                 // MARK: 操作按钮
@@ -106,15 +128,19 @@ struct HealthView: View {
 
     private func refreshHealth() {
         isLoading = true
+        connectionError = nil
         daemonClient.getHealth { result in
             DispatchQueue.main.async(execute: {
                 self.isLoading = false
                 switch result {
                 case .success(let status):
                     self.healthStatus = status
+                    self.connectionError = nil
                 case .failure(let error):
-                    LogManager.shared.error("获取健康状态失败: \(error)", source: "HealthView")
+                    let errMsg = error.localizedDescription
+                    LogManager.shared.error("获取健康状态失败: \(errMsg)", source: "HealthView")
                     self.healthStatus = nil
+                    self.connectionError = errMsg
                 }
             })
         }

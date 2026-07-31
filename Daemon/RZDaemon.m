@@ -23,7 +23,7 @@ NSString *const kRZDaemonMachServiceName = @"com.reprovision.daemon";
 NSString *const kRZDaemonLogPath = @"/var/mobile/Library/Logs/RePro/daemon.log";
 NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.err";
 // daemon 版本号（与 PackageVersion.plist 保持同步）
-NSString *const kRZDaemonVersion = @"1.0.47";
+NSString *const kRZDaemonVersion = @"1.0.52";
 
 @interface RZDaemon ()
 @property (nonatomic, strong) NSXPCListener *listener;
@@ -154,14 +154,35 @@ NSString *const kRZDaemonVersion = @"1.0.47";
 }
 
 - (void)restartWithReply:(void (^)(BOOL))reply {
-    NSLog(@"[RePro] 收到重启请求");
+    NSLog("[RePro] 收到重启请求");
     // 通过 launchctl kickstart 重启自己（system() 在 iOS 不可用）
-    // 注意：kickstart 参数格式是 system/<Label>，Label 来自 plist
+    // ★ RootHide 的 daemon 在 gui/501 域，标准环境在 system 域
+    // 依次尝试多个域，确保在所有越狱环境下都能工作
     pid_t pid = 0;
-    const char *argv[] = { "/bin/launchctl", "kickstart", "system/jp.soh.reprovisiond", NULL };
-    int status = posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, NULL);
-    if (status == 0) waitpid(pid, NULL, 0);
-    reply(status == 0);
+    int status = -1;
+
+    // 尝试的域列表（按优先级排序）
+    const char *kickstart_args[][4] = {
+        { "/bin/launchctl", "kickstart", "gui/501/jp.soh.reprovisiond", NULL },   // RootHide
+        { "/bin/launchctl", "kickstart", "user/501/jp.soh.reprovisiond", NULL },  // RootHide 备选
+        { "/bin/launchctl", "kickstart", "system/jp.soh.reprovisiond", NULL },     // 标准 rootless/rootful
+    };
+
+    int num_domains = sizeof(kickstart_args) / sizeof(kickstart_args[0]);
+    for (int i = 0; i < num_domains; i++) {
+        status = posix_spawn(&pid, kickstart_args[i][0], NULL, NULL, (char *const *)kickstart_args[i], NULL);
+        if (status == 0) {
+            NSLog(@"[RePro] kickstart 成功 (域=%s)", kickstart_args[i][2]);
+            waitpid(pid, NULL, 0);
+            reply(YES);
+            return;
+        }
+        NSLog(@"[RePro] kickstart 失败 (域=%s): errno=%d", kickstart_args[i][2], status);
+    }
+
+    // 所有域都失败
+    NSLog(@"[RePro] 所有 kickstart 域都失败");
+    reply(NO);
 }
 
 - (void)installProvisioningProfileAtPath:(NSString *)path
@@ -201,15 +222,21 @@ NSString *const kRZDaemonVersion = @"1.0.47";
         waitpid(pid, NULL, 0);
         reply(YES, nil);
     } else {
-        // fallback: launchctl 方式
-        const char *argv2[] = { "/bin/launchctl", "kickstart", "gui/$(id -u)/com.apple.SpringBoard", NULL };
-        status = posix_spawn(&pid, argv2[0], NULL, NULL, (char *const *)argv2, NULL);
-        if (status == 0) {
-            waitpid(pid, NULL, 0);
-            reply(YES, @"使用 kickstart 重启");
-        } else {
-            reply(NO, @"重启失败: 权限不足或命令不可用");
+        // fallback: launchctl kickstart 方式（尝试多个域）
+        const char *sb_args[][4] = {
+            { "/bin/launchctl", "kickstart", "gui/501/com.apple.SpringBoard", NULL },
+            { "/bin/launchctl", "kickstart", "system/com.apple.SpringBoard", NULL },
+        };
+        int num_domains = sizeof(sb_args) / sizeof(sb_args[0]);
+        for (int i = 0; i < num_domains; i++) {
+            status = posix_spawn(&pid, sb_args[i][0], NULL, NULL, (char *const *)sb_args[i], NULL);
+            if (status == 0) {
+                waitpid(pid, NULL, 0);
+                reply(YES, @"使用 kickstart 重启");
+                return;
+            }
         }
+        reply(NO, @"重启失败: 权限不足或命令不可用");
     }
 }
 
