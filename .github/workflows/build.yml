@@ -30,23 +30,22 @@ jobs:
             brew install dpkg
           fi
 
-      # zsign 需要链接 iOS arm64 版 OpenSSL，brew 的是 macOS 版无法链接，必须交叉编译
-      - name: Cache OpenSSL (iOS arm64)
-        id: openssl-cache
+      # App 用 OpenSSL 1.1.x（CSR/签名兼容性），zsign 用 3.x（需要 provider API）
+      - name: Cache OpenSSL 1.1.x for App (iOS arm64)
+        id: openssl11-cache
         uses: actions/cache@v4
         with:
           path: /tmp/openssl-ios
-          key: openssl-ios-arm64-1.1.1w-${{ runner.os }}
+          key: openssl-ios-1.1.1w-${{ runner.os }}
 
-      - name: Build OpenSSL for iOS arm64
-        if: steps.openssl-cache.outputs.cache-hit != 'true'
+      - name: Build OpenSSL 1.1.x for iOS arm64 (App)
+        if: steps.openssl11-cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          # OpenSSL 1.1.x (1.1.1w) — CSR/签名需要 1.1.x 兼容性，
+          # OpenSSL 1.1.1w — 最后一个 1.1.x LTS，CSR/签名需要此版本。
           # 3.x 静态链接 default provider 不自动激活导致 CSR 生成失败。
-          OPENSSL_TAG=OpenSSL_1_1_1w
           rm -rf /tmp/openssl-ios-src
-          git clone --depth 1 --branch "${OPENSSL_TAG}" https://github.com/openssl/openssl.git /tmp/openssl-ios-src
+          git clone --depth 1 --branch OpenSSL_1_1_1w https://github.com/openssl/openssl.git /tmp/openssl-ios-src
           cd /tmp/openssl-ios-src
           export CROSS_TOP=$(xcrun --sdk iphoneos --show-sdk-platform-path)/Developer
           export CROSS_SDK=$(basename $(xcrun --sdk iphoneos --show-sdk-path))
@@ -54,6 +53,29 @@ jobs:
           make -j$(sysctl -n hw.ncpu) > /dev/null 2>&1
           make install_sw > /dev/null 2>&1
           ls -la /tmp/openssl-ios/lib/
+
+      - name: Cache OpenSSL 3.x for zsign (iOS arm64)
+        id: openssl3-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/openssl3-ios
+          key: openssl3-ios-3.4.1-${{ runner.os }}
+
+      - name: Build OpenSSL 3.x for iOS arm64 (zsign)
+        if: steps.openssl3-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          # zsign 需要 OpenSSL 3.x 的 OSSL_PROVIDER_load 等 API。
+          OPENSSL_VER=3.4.1
+          rm -rf /tmp/openssl3-ios-src
+          git clone --depth 1 --branch "openssl-${OPENSSL_VER}" https://github.com/openssl/openssl.git /tmp/openssl3-ios-src
+          cd /tmp/openssl3-ios-src
+          export CROSS_TOP=$(xcrun --sdk iphoneos --show-sdk-platform-path)/Developer
+          export CROSS_SDK=$(basename $(xcrun --sdk iphoneos --show-sdk-path))
+          ./Configure ios64-xcrun no-shared no-tests no-asm --prefix=/tmp/openssl3-ios > /dev/null
+          make -j$(sysctl -n hw.ncpu) > /dev/null 2>&1
+          make install_sw > /dev/null 2>&1
+          ls -la /tmp/openssl3-ios/lib/
 
       - name: Build iOS App (RePro)
         run: |
@@ -125,7 +147,7 @@ jobs:
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           echo "iPhoneOS SDK: $SDK"
 
-          OPENSSL_DIR=/tmp/openssl-ios
+          OPENSSL_DIR=/tmp/openssl3-ios
 
           # zsign 源码（pinned commit 保证可重现构建）
           ZSIGN_COMMIT=d6e929c97b5b564c2cc1f82afe226a44da7149a0
