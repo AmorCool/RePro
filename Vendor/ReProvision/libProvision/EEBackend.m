@@ -12,6 +12,112 @@
 #import "EESigning.h"
 #import "RZSignRunner.h"
 #import "SSZipArchive.h"
+#import <mach-o/fat.h>
+#import <mach-o/loader.h>
+#import <mach-o/arch.h>
+#import <mach/machine.h>
+#import <libkern/OSByteOrder.h>
+#import <stdio.h>
+#import <sys/stat.h>
+
+#pragma mark - ARM64e thinning (fixes SIGBUS on arm64e devices after re-sign)
+
+// After re-signing, arm64e binaries keep their pointer-authentication (PAC) /
+// chained-fixup pointers, which dyld cannot re-authenticate against the new
+// signature and therefore SIGBUS (KERN_PROTECTION_FAILURE) at launch on arm64e
+// hardware (e.g. iPhone 16,2 / iOS 17.2.1). Running the app as a plain arm64
+// slice sidesteps pointer authentication entirely and is universally compatible,
+// so we drop the arm64e slice (keeping arm64) before handing the bundle to zsign.
+//
+// arm64e is identified by the 0x80000000 capability bit in the Mach-O cpusubtype
+// (independent of the exact low subtype value), which is robust across SDKs.
+#define RZ_ARM64E_BIT 0x80000000u
+
+static BOOL RZFileLooksLikeMachO(NSString *path) {
+    FILE *f = fopen(path.UTF8String, "rb");
+    if (!f) return NO;
+    uint32_t magic = 0;
+    size_t n = fread(&magic, 1, 4, f);
+    fclose(f);
+    if (n != 4) return NO;
+    return (magic == FAT_MAGIC || magic == FAT_CIGAM ||
+            magic == MH_MAGIC_64 || magic == MH_CIGAM_64 ||
+            magic == MH_MAGIC || magic == MH_CIGAM);
+}
+
+// Drops the arm64e slice of a single Mach-O file if a non-arm64e arm64 slice
+// exists. Returns YES if the file was rewritten as a thin arm64 binary.
+static BOOL RZThinArm64eSliceInFile(NSString *path) {
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data.length < sizeof(uint32_t)) return NO;
+    uint32_t magic = *(const uint32_t *)data.bytes;
+
+    if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
+        // FAT archive (fields are big-endian on disk).
+        if (data.length < sizeof(struct fat_header)) return NO;
+        const struct fat_header *fh = (const struct fat_header *)data.bytes;
+        uint32_t nfat = OSSwapBigToHost32(fh->nfat_arch);
+        if (nfat == 0 || data.length < sizeof(struct fat_header) + (size_t)nfat * sizeof(struct fat_arch)) return NO;
+        const struct fat_arch *archs = (const struct fat_arch *)((const char *)data.bytes + sizeof(struct fat_header));
+
+        int64_t arm64Off = -1, arm64Size = -1;
+        BOOL sawArm64e = NO;
+        for (uint32_t i = 0; i < nfat; i++) {
+            uint32_t ct = OSSwapBigToHost32(archs[i].cputype);
+            uint32_t st = OSSwapBigToHost32(archs[i].cpusubtype);
+            if (ct != CPU_TYPE_ARM64) continue;
+            if (st & RZ_ARM64E_BIT) { sawArm64e = YES; continue; }  // arm64e slice -> drop
+            if (arm64Off < 0) {                             // first plain arm64 slice -> keep
+                arm64Off = OSSwapBigToHost32(archs[i].offset);
+                arm64Size = OSSwapBigToHost32(archs[i].size);
+            }
+        }
+        if (arm64Off < 0 && sawArm64e) {
+            NSLog(@"*** [ReProvision] WARN: %@ is arm64e-only (FAT); cannot thin to arm64, kept arm64e.", [path lastPathComponent]);
+        }
+        if (arm64Off >= 0 && arm64Size > 0 && (int64_t)data.length >= arm64Off + arm64Size) {
+            NSData *thin = [data subdataWithRange:NSMakeRange((NSUInteger)arm64Off, (NSUInteger)arm64Size)];
+            const struct mach_header_64 *h = (const struct mach_header_64 *)thin.bytes;
+            if (thin.length == (NSUInteger)arm64Size && h->magic == MH_MAGIC_64 &&
+                (h->cputype == CPU_TYPE_ARM64)) {
+                NSError *werr = nil;
+                if ([thin writeToFile:path options:NSDataWritingAtomic error:&werr] && !werr) {
+                    chmod(path.UTF8String, 0755);
+                    NSLog(@"*** [ReProvision] thinned arm64e -> arm64: %@", [path lastPathComponent]);
+                    return YES;
+                }
+            }
+        }
+        // No plain arm64 slice present (arm64e-only binary): leave as-is.
+        return NO;
+    }
+
+    if (magic == MH_MAGIC_64) {
+        const struct mach_header_64 *h = (const struct mach_header_64 *)data.bytes;
+        if ((h->cputype == CPU_TYPE_ARM64) && (h->cpusubtype & RZ_ARM64E_BIT)) {
+            NSLog(@"*** [ReProvision] WARN: %@ is arm64e-only; cannot thin to arm64 (kept arm64e).", [path lastPathComponent]);
+        }
+        return NO;
+    }
+    return NO;
+}
+
+static void RZThinArm64eInBundle(NSString *bundlePath) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
+        includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+        options:NSDirectoryEnumerationSkipsSymbolicLinks | NSDirectoryEnumerationSkipsHiddenFiles
+        errorHandler:nil];
+    for (NSURL *url in enumerator) {
+        NSNumber *isDir = nil;
+        [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
+        if (isDir.boolValue) continue;
+        NSString *path = url.path;
+        if (RZFileLooksLikeMachO(path)) {
+            RZThinArm64eSliceInFile(path);
+        }
+    }
+}
 
 /* Private headers */
 @interface LSApplicationWorkspace : NSObject
@@ -113,6 +219,12 @@
         // was crashing — gets the specific application-identifier + cs.* safety
         // entitlements, which is what fixes the iOS 17 re-sign launch crash.
         NSString *rootEntitlementsPath = context[@"entitlementsPath"];
+
+        // ARM64e fix (v1.1.10): drop the arm64e slice so dyld doesn't SIGBUS at
+        // launch. Must run after provisioning (which reads the original binary for
+        // entitlements) but before zsign signs the bundle.
+        RZThinArm64eInBundle(path);
+
         NSError *signError = nil;
         RZSignResult *result = [[RZSignRunner sharedRunner] signBundleAtPath:path
                                                                   outputPath:nil

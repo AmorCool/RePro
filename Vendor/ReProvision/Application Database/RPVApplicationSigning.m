@@ -699,11 +699,11 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         NSLog(@"*** [ReProvision] installing with bundle id '%@' (original '%@')", bundleIdentifier, [application bundleIdentifier]);
 
         // 诊断：确认待安装的 IPA 文件存在且非空
-        NSDictionary *ipaAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:ipaPath error:nil];
+        NSDictionary *ipaAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outputIpaPath error:nil];
         NSLog(@"*** [ReProvision] === 安装前诊断 ===");
-        NSLog(@"*** [ReProvision] IPA path: %@", ipaPath);
+        NSLog(@"*** [ReProvision] IPA path: %@", outputIpaPath);
         NSLog(@"*** [ReProvision] IPA exists: %d, size: %@ bytes",
-              [[NSFileManager defaultManager] fileExistsAtPath:ipaPath],
+              [[NSFileManager defaultManager] fileExistsAtPath:outputIpaPath],
               [ipaAttrs objectForKey:NSFileSize]);
 
         // Register the freshly-signed provisioning profile with the system so iOS
