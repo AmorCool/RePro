@@ -38,9 +38,20 @@ struct CertificatesView: View {
                 .frame(maxWidth: .infinity)
                 .padding()
             } else if certificates.isEmpty && !isLoading {
-                ContentUnavailableView("暂无开发证书",
-                                       systemImage: "lock.shield",
-                                       description: Text("登录后可查看和管理 Apple 开发者账号下的签名证书"))
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "lock.shield")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("暂无开发证书")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Text("登录后可查看和管理 Apple 开发者账号下的签名证书")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
             } else {
                 Section {
                     ForEach(certificates) { cert in

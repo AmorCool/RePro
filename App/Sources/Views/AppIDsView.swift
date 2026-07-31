@@ -35,9 +35,20 @@ struct AppIDsView: View {
                 .frame(maxWidth: .infinity)
                 .padding()
             } else if appIDs.isEmpty && !isLoading {
-                ContentUnavailableView("暂无已注册的 AppID",
-                                       systemImage: "number",
-                                       description: Text("登录后在 Apple Developer 注册的应用会显示在这里"))
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "number")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("暂无已注册的 AppID")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Text("登录后在 Apple Developer 注册的应用会显示在这里")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
             } else {
                 ForEach(appIDs) { appID in
                     AppIDRowView(appID: appID)

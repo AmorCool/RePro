@@ -157,7 +157,7 @@ struct SettingsView: View {
     // MARK: - 系统操作
 
     private var systemSection: some View {
-        Section("系统操作") {
+        Section {
             NavigationLink(destination: CertificatesView()) {
                 HStack {
                     Image(systemName: "lock.shield")
@@ -183,6 +183,8 @@ struct SettingsView: View {
                 }
             }
             .foregroundColor(.red)
+        } header: {
+            Text("系统操作")
         } footer: {
             Text("证书管理可查看和撤销 Apple 开发者账号下的签名证书。免费账号最多 2 个活跃证书，超出后签名会失败。")
         }

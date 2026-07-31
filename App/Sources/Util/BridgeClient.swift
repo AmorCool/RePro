@@ -203,7 +203,7 @@ final class BridgeClient: ObservableObject {
     func fetchAppIDs(completion: @escaping (Result<[RegisteredAppID], Error>) -> Void) {
         bridge.fetchAppIDs { appIds, error in
             if let appIds = appIds {
-                completion(.success(appIds.map(RegisteredAppID.init))))
+                completion(.success(appIds.map { RegisteredAppID(from: $0) }))
             } else {
                 completion(.failure(error ?? ReProError.notSignedIn))
             }
@@ -215,7 +215,7 @@ final class BridgeClient: ObservableObject {
     func fetchCertificates(completion: @escaping (Result<[DevCertificate], Error>) -> Void) {
         bridge.fetchCertificates { certs, error in
             if let certs = certs {
-                completion(.success(certs.map(DevCertificate.init))))
+                completion(.success(certs.map { DevCertificate(from: $0) }))
             } else {
                 completion(.failure(error ?? ReProError.notSignedIn))
             }
