@@ -2,133 +2,191 @@ import Foundation
 import Combine
 
 // MARK: - 签名逻辑协调 ViewModel
+//
+// 所有实际工作都交给 BridgeClient -> RPVBridge -> Vendor/ReProvision，
+// 这里只负责维护界面状态。桥接层同一时间只允许一条签名流水线，
+// 所以「全部重签」走 resignAllExpiring，而不是在这里循环发起多次请求。
+//
+// 线程约定：RPVBridge 的所有回调都已经切回主队列（RPVBridgeCallOnMain），
+// 因此本类里对 @Published 的写入不再额外 dispatch。
 
-class SigningViewModel: ObservableObject {
+final class SigningViewModel: ObservableObject {
+
     @Published var installedApps: [InstalledApp] = []
-    @Published var isSigningAll: Bool = false
+    @Published var isBusy: Bool = false
     @Published var progressMessage: String = ""
-    @Published var currentSigningBundleID: String?
+    @Published var lastError: String?
 
-    private let daemonClient = DaemonClient.shared
-    private var cancellables = Set<AnyCancellable>()
+    private let client = BridgeClient.shared
 
     init() {
-        loadInstalledApps()
+        bindSigningCallbacks()
+        Task { await refreshApps() }
     }
 
-    // MARK: 加载已安装应用
-    func loadInstalledApps() {
-        // 通过 Daemon 获取已安装应用（异步加载）
-        Task {
-            await refreshApps()
+    // MARK: - 进度订阅
+
+    private func bindSigningCallbacks() {
+        client.observeSigningProgress { [weak self] bundleID, progress in
+            guard let self = self else { return }
+            self.applyProgress(progress, to: bundleID)
+        }
+        client.observeSigningError { [weak self] bundleID, error in
+            guard let self = self else { return }
+            LogManager.shared.error("签名出错 [\(bundleID)]: \(error.localizedDescription)",
+                                    source: "SigningViewModel")
         }
     }
+
+    private func applyProgress(_ progress: Int, to bundleID: String) {
+        if let index = installedApps.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
+            installedApps[index].isSigning = progress < 100
+            installedApps[index].signingProgress = progress
+            progressMessage = "\(installedApps[index].displayName) \(progress)%"
+        } else {
+            progressMessage = "\(bundleID) \(progress)%"
+        }
+    }
+
+    // MARK: - 应用列表
 
     func refreshApps() async {
-        daemonClient.getInstalledApps { [weak self] result in
-            DispatchQueue.main.async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            client.fetchInstalledApps { [weak self] result in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
                 switch result {
                 case .success(let apps):
-                    self?.installedApps = apps.sorted { ($0.daysUntilExpiry) < ($1.daysUntilExpiry) }
+                    // 保留正在签名的 UI 状态，避免刷新时进度条被清掉
+                    let signing = Dictionary(uniqueKeysWithValues:
+                        self.installedApps.filter { $0.isSigning }
+                            .map { ($0.bundleIdentifier, $0.signingProgress) })
+                    self.installedApps = apps.map { app in
+                        var app = app
+                        if let progress = signing[app.bundleIdentifier] {
+                            app.isSigning = true
+                            app.signingProgress = progress
+                        }
+                        return app
+                    }
                 case .failure(let error):
-                    LogManager.shared.error("获取应用列表失败: \(error)", source: "SigningViewModel")
+                    self.lastError = error.localizedDescription
+                    LogManager.shared.error("获取应用列表失败: \(error.localizedDescription)",
+                                            source: "SigningViewModel")
                 }
+                continuation.resume()
             }
         }
     }
 
-    // MARK: 导入 IPA
+    // MARK: - 导入 IPA
+
+    /// url 来自 fileImporter，是 security-scoped 的；
+    /// Vendor 侧 RPVIpaBundleApplication 会自己 startAccessingSecurityScopedResource,
+    /// 所以这里不再手动往 tmp 复制一份。
     func importIPA(url: URL) {
+        guard beginWork("正在导入 \(url.lastPathComponent)…") else { return }
         LogManager.shared.info("导入 IPA: \(url.lastPathComponent)", source: "SigningViewModel")
 
-        // 复制到临时目录，然后发送给 Daemon 处理
-        let tempDir = FileManager.default.temporaryDirectory
-        let destURL = tempDir.appendingPathComponent(url.lastPathComponent)
-
-        do {
-            if FileManager.default.fileExists(atPath: destURL.path) {
-                try FileManager.default.removeItem(at: destURL)
+        client.importIPA(url: url) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let app):
+                LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                self.endWork(message: "\(app.displayName) 安装完成")
+            case .failure(let error):
+                LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
+                self.endWork(message: "导入失败", error: error)
             }
-            try FileManager.default.copyItem(at: url, to: destURL)
-
-            daemonClient.importIPA(path: destURL.path) { [weak self] result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let app):
-                        self?.installedApps.insert(app, at: 0)
-                        LogManager.shared.info("IPA 导入成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                    case .failure(let error):
-                        LogManager.shared.error("IPA 导入失败: \(error)", source: "SigningViewModel")
-                    }
-                }
-            }
-        } catch {
-            LogManager.shared.error("复制 IPA 失败: \(error)", source: "SigningViewModel")
+            Task { await self.refreshApps() }
         }
     }
 
-    // MARK: 重签单个应用
+    // MARK: - 重签
+
     func resign(app: InstalledApp) {
         guard !app.isSigning else { return }
+        guard beginWork("正在签名 \(app.displayName)…") else { return }
 
-        // 更新本地状态
-        if let index = installedApps.firstIndex(where: { $0.id == app.id }) {
-            installedApps[index].isSigning = true
-        }
-        currentSigningBundleID = app.bundleIdentifier
-        progressMessage = "正在签名 \(app.displayName)..."
-
+        markSigning(true, for: app.bundleIdentifier)
         LogManager.shared.info("开始重签: \(app.bundleIdentifier)", source: "SigningViewModel")
 
-        daemonClient.resign(bundleID: app.bundleIdentifier) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-
-                // 重置状态
-                if let index = self.installedApps.firstIndex(where: { $0.id == app.id }) {
-                    self.installedApps[index].isSigning = false
-                }
-                self.currentSigningBundleID = nil
-
-                switch result {
-                case .success:
-                    self.progressMessage = "签名完成"
-                    LogManager.shared.info("重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                    // 刷新应用列表以更新过期时间
-                    Task { await self.refreshApps() }
-                case .failure(let error):
-                    self.progressMessage = "签名失败"
-                    LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error)", source: "SigningViewModel")
-                }
+        client.resign(bundleID: app.bundleIdentifier) { [weak self] result in
+            guard let self = self else { return }
+            self.markSigning(false, for: app.bundleIdentifier)
+            switch result {
+            case .success:
+                LogManager.shared.info("重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                self.endWork(message: "签名完成")
+            case .failure(let error):
+                LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
+                                        source: "SigningViewModel")
+                self.endWork(message: "签名失败", error: error)
             }
+            Task { await self.refreshApps() }
         }
     }
 
-    // MARK: 全部重签
-    func resignAll() {
-        guard !isSigningAll else { return }
-        isSigningAll = true
+    /// 重签所有临近过期的应用。阈值取设置页里的「提前 N 天重签」。
+    func resignAllExpiring() {
+        let threshold = UserDefaults.standard.object(forKey: "resignThreshold") as? Int ?? 2
+        guard beginWork("正在批量重签…") else { return }
 
-        LogManager.shared.info("开始全部重签 (\(installedApps.count) 个应用)", source: "SigningViewModel")
+        LogManager.shared.info("开始批量重签（阈值 \(threshold) 天）", source: "SigningViewModel")
 
-        let appsToSign = installedApps.filter { !$0.isSigning && $0.daysUntilExpiry <= 7 }
-
-        // 逐个触发异步重签，完成后在各自回调中检查是否全部结束
-        for app in appsToSign {
-            resign(app: app)
+        client.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success:
+                LogManager.shared.info("批量重签完成", source: "SigningViewModel")
+                self.endWork(message: "批量重签完成")
+            case .failure(let error):
+                LogManager.shared.error("批量重签失败: \(error.localizedDescription)", source: "SigningViewModel")
+                self.endWork(message: "批量重签失败", error: error)
+            }
+            Task { await self.refreshApps() }
         }
-
-        // 如果没有需要签名的应用，立即结束
-        if appsToSign.isEmpty {
-            isSigningAll = false
-        }
-        // 否则 isSigningAll 在最后一个 resign 回调中由外部（或用户手动）重置
-        // 注意：这里不立即设 false，因为 resign 是异步的
     }
 
-    // MARK: 删除应用记录
-    func removeApp(app: InstalledApp) {
-        installedApps.removeAll { $0.id == app.id }
-        LogManager.shared.info("移除应用记录: \(app.bundleIdentifier)", source: "SigningViewModel")
+    // MARK: - 卸载
+
+    func uninstall(app: InstalledApp) {
+        let ok = client.remove(bundleID: app.bundleIdentifier)
+        if ok {
+            installedApps.removeAll { $0.bundleIdentifier == app.bundleIdentifier }
+            LogManager.shared.info("已卸载: \(app.bundleIdentifier)", source: "SigningViewModel")
+        } else {
+            lastError = "卸载失败: \(app.displayName)"
+            LogManager.shared.error("卸载失败: \(app.bundleIdentifier)", source: "SigningViewModel")
+        }
+        Task { await refreshApps() }
+    }
+
+    // MARK: - 状态小工具
+
+    /// 桥接层同一时间只跑一条流水线，这里先在 UI 层挡一道，减少无谓的报错弹窗
+    private func beginWork(_ message: String) -> Bool {
+        guard !isBusy else {
+            lastError = ReProError.busy.errorDescription
+            return false
+        }
+        isBusy = true
+        lastError = nil
+        progressMessage = message
+        return true
+    }
+
+    private func endWork(message: String, error: Error? = nil) {
+        isBusy = false
+        progressMessage = message
+        lastError = error?.localizedDescription
+    }
+
+    private func markSigning(_ signing: Bool, for bundleID: String) {
+        guard let index = installedApps.firstIndex(where: { $0.bundleIdentifier == bundleID }) else { return }
+        installedApps[index].isSigning = signing
+        if !signing { installedApps[index].signingProgress = 0 }
     }
 }

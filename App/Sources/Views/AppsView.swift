@@ -1,10 +1,13 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - 已安装应用列表
 
 struct AppsView: View {
     @StateObject private var viewModel = SigningViewModel()
+    @ObservedObject private var account = BridgeClient.shared
     @State private var showingFileImporter = false
+    @State private var pendingUninstall: InstalledApp?
 
     var body: some View {
         NavigationView {
@@ -17,15 +20,28 @@ struct AppsView: View {
             }
             .navigationTitle("RePro")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        viewModel.resignAllExpiring()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(viewModel.isBusy || !account.isSignedIn)
+                }
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: { showingFileImporter = true }) {
+                    Button {
+                        showingFileImporter = true
+                    } label: {
                         Image(systemName: "plus")
                     }
+                    .disabled(viewModel.isBusy)
                 }
             }
+            .safeAreaInset(edge: .bottom) { statusBar }
             .fileImporter(
                 isPresented: $showingFileImporter,
-                allowedContentTypes: [.archive],
+                // .ipa 没有系统 UTI，用 archive + item 兜底，否则文件选择器会把 ipa 灰掉
+                allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .archive, .archive, .item],
                 allowsMultipleSelection: false
             ) { result in
                 switch result {
@@ -34,9 +50,52 @@ struct AppsView: View {
                         viewModel.importIPA(url: url)
                     }
                 case .failure(let error):
-                    LogManager.shared.error("导入 IPA 失败: \(error.localizedDescription)", source: "AppsView")
+                    LogManager.shared.error("选择 IPA 失败: \(error.localizedDescription)", source: "AppsView")
                 }
             }
+            .confirmationDialog("卸载应用",
+                                isPresented: Binding(get: { pendingUninstall != nil },
+                                                     set: { if !$0 { pendingUninstall = nil } }),
+                                titleVisibility: .visible) {
+                Button("卸载 \(pendingUninstall?.displayName ?? "")", role: .destructive) {
+                    if let app = pendingUninstall { viewModel.uninstall(app: app) }
+                    pendingUninstall = nil
+                }
+                Button("取消", role: .cancel) { pendingUninstall = nil }
+            } message: {
+                Text("该应用及其数据会从设备上移除。")
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    // MARK: 底部状态条
+    @ViewBuilder
+    private var statusBar: some View {
+        if viewModel.isBusy || viewModel.lastError != nil || !account.isSignedIn {
+            HStack(spacing: 8) {
+                if viewModel.isBusy {
+                    ProgressView().scaleEffect(0.7)
+                    Text(viewModel.progressMessage)
+                        .font(.caption)
+                        .lineLimit(1)
+                } else if let error = viewModel.lastError {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .lineLimit(2)
+                } else {
+                    Image(systemName: "person.crop.circle.badge.exclamationmark")
+                        .foregroundColor(.orange)
+                    Text("未登录 Apple ID，无法重签")
+                        .font(.caption)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.regularMaterial)
         }
     }
 
@@ -47,13 +106,17 @@ struct AppsView: View {
             Image(systemName: "square.stack.3d.up.slash")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
-            Text("暂无已安装的应用")
+            Text("暂无旁加载的应用")
                 .font(.headline)
+                .foregroundColor(.secondary)
+            Text("导入一个 .ipa，或下拉刷新重新扫描设备")
+                .font(.caption)
                 .foregroundColor(.secondary)
             Button("导入 IPA") {
                 showingFileImporter = true
             }
             .buttonStyle(.borderedProminent)
+            .disabled(viewModel.isBusy)
             Spacer()
         }
     }
@@ -62,18 +125,16 @@ struct AppsView: View {
     private var appList: some View {
         List {
             ForEach(viewModel.installedApps) { app in
-                AppRowView(app: app, viewModel: viewModel)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        viewModel.resign(app: app)
+                AppRowView(app: app) {
+                    viewModel.resign(app: app)
+                }
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        pendingUninstall = app
+                    } label: {
+                        Label("卸载", systemImage: "trash")
                     }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            viewModel.removeApp(app: app)
-                        } label: {
-                            Label("删除", systemImage: "trash")
-                        }
-                    }
+                }
             }
         }
         .refreshable {
@@ -86,24 +147,12 @@ struct AppsView: View {
 
 struct AppRowView: View {
     let app: InstalledApp
-    @ObservedObject var viewModel: SigningViewModel
+    let onResign: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            // 图标
-            if let icon = app.icon {
-                Image(uiImage: icon)
-                    .resizable()
-                    .frame(width: 48, height: 48)
-                    .cornerRadius(10)
-            } else {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.secondary.opacity(0.3))
-                    .frame(width: 48, height: 48)
-                    .overlay(Image(systemName: "app").foregroundColor(.secondary))
-            }
+            icon
 
-            // 信息列
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.displayName)
                     .font(.body.weight(.medium))
@@ -113,68 +162,69 @@ struct AppRowView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
 
-                HStack(spacing: 8) {
+                if app.isSigning {
+                    ProgressView(value: Double(app.signingProgress), total: 100)
+                        .frame(maxWidth: 160)
+                } else {
                     expiryBadge
-                    signingStatus
                 }
             }
 
             Spacer()
 
-            // 签名按钮
             if app.isSigning {
-                ProgressView()
-                    .scaleEffect(0.8)
+                Text("\(app.signingProgress)%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.secondary)
             } else {
-                Button("重签") {
-                    viewModel.resign(app: app)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                Button("重签", action: onResign)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
         }
         .padding(.vertical, 4)
     }
 
-    // MARK: 过期状态标签
     @ViewBuilder
-    private var expiryBadge: some View {
-        let daysLeft = app.daysUntilExpiry
-
-        if daysLeft < 0 {
-            Text("已过期")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.red.opacity(0.15))
-                .foregroundColor(.red)
-                .cornerRadius(4)
-        } else if daysLeft <= 3 {
-            Text("\(daysLeft) 天后过期")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.orange.opacity(0.15))
-                .foregroundColor(.orange)
-                .cornerRadius(4)
+    private var icon: some View {
+        if let icon = app.icon {
+            Image(uiImage: icon)
+                .resizable()
+                .frame(width: 48, height: 48)
+                .cornerRadius(10)
         } else {
-            Text("有效 (\(daysLeft) 天)")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.green.opacity(0.15))
-                .foregroundColor(.green)
-                .cornerRadius(4)
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 48, height: 48)
+                .overlay(Image(systemName: "app").foregroundColor(.secondary))
         }
     }
 
-    // MARK: 签名状态
+    // MARK: 过期状态标签
     @ViewBuilder
-    private var signingStatus: some View {
-        if app.isSigning {
-            Text("签名中...")
-                .font(.caption2)
-                .foregroundColor(.blue)
+    private var expiryBadge: some View {
+        if let daysLeft = app.daysUntilExpiry {
+            if daysLeft < 0 {
+                badge("已过期", color: .red)
+            } else if daysLeft <= 3 {
+                badge("\(daysLeft) 天后过期", color: .orange)
+            } else {
+                badge("有效 (\(daysLeft) 天)", color: .green)
+            }
+        } else if app.hasEmbeddedProvision {
+            badge("到期时间未知", color: .secondary)
+        } else {
+            badge("无描述文件", color: .secondary)
         }
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundColor(color)
+            .cornerRadius(4)
     }
 }

@@ -240,7 +240,8 @@ def check_semantics(root):
                 errors.append("target %s 的 productReference %s 类型 %s 非法" % (oid, pr, isa(pr)))
         elif t == "PBXBuildFile":
             fr = obj.get("fileRef")
-            if fr and isa(fr) != "PBXFileReference":
+            # 资源阶段的 PBXBuildFile 允许直接引用 PBXVariantGroup（本地化 .strings 的标准写法）
+            if fr and isa(fr) not in ("PBXFileReference", "PBXVariantGroup"):
                 errors.append("PBXBuildFile %s 的 fileRef %s 类型 %s 非法" % (oid, fr, isa(fr)))
         elif t and t.endswith("BuildPhase"):
             for f in obj.get("files", []):

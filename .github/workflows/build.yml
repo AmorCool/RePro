@@ -30,7 +30,7 @@ jobs:
             brew install dpkg
           fi
 
-      # daemon 需要链接 iOS arm64 版 OpenSSL，brew 的是 macOS 版无法链接，必须交叉编译
+      # zsign 需要链接 iOS arm64 版 OpenSSL，brew 的是 macOS 版无法链接，必须交叉编译
       - name: Cache OpenSSL (iOS arm64)
         id: openssl-cache
         uses: actions/cache@v4
@@ -87,88 +87,32 @@ jobs:
           fi
           echo "Built app at $APP_PATH"
 
-      - name: Build Daemon (reprovisiond)
+      - name: Build root helper (repro-helper)
+        # 本项目已经没有常驻守护进程。需要 root 的两件事（跨沙箱复制 IPA、
+        # 把描述文件写进 /var/Managed Preferences/mobile）交给一个 setuid root
+        # 的一次性小工具 repro-helper，由 App 用 posix_spawn 按需拉起。
+        # 它只依赖 Foundation + CommonCrypto（在 libSystem 里），一条 clang 就够。
         run: |
           set -e
+          mkdir -p build
 
-          mkdir -p build/obj
-          : > daemon_build.log
-
-          # 交叉编译得到的 iOS arm64 OpenSSL
-          OPENSSL_DIR=/tmp/openssl-ios
-
-          # 注意：不能把 -I Daemon/libplist 加进公共头文件路径。
-          # libplist 自带与系统头同名的 String.h/Array.h 等，加进 -I 后
-          # #include <string.h> 会被大小写不敏感地解析成 libplist 的 String.h（C++ 头），
-          # 进而拉入 Node.h 的 <cstddef> 导致 C 编译失败。
-          # libplist/ldid 内部均用相对路径引用彼此的头文件（如 "../libplist/plist.h"），
-          # 因此无需 -I Daemon/libplist。
-          # -DHAVE_CONFIG_H 让 libplist 的 plist.h 真正包含我们手写的精简 config.h
-          # （autotools 由 ./configure 在命令行注入该宏，手动构建需自行补上）。
-          COMMON_FLAGS="-arch arm64 -miphoneos-version-min=15.0 -DHAVE_CONFIG_H \
-            -I Daemon -I Daemon/ldid -I Daemon/include \
-            -I ${OPENSSL_DIR}/include"
-
-          # C 源码必须用 C 模式编译（clang++ 会把 .c 当 C++，导致 libplist/lookup2 报类型错误）
-          C_SOURCES=$(find Daemon/libplist -name '*.c' ! -path '*test*' ! -path '*tools*')
-          C_SOURCES="$C_SOURCES Daemon/ldid/lookup2.c"
-          # C++ 源码
-          CXX_SOURCES=$(find Daemon/libplist -name '*.cpp' ! -path '*test*' ! -path '*tools*')
-          CXX_SOURCES="$CXX_SOURCES Daemon/ldid/ldid.cpp"
-          # ObjC 源码
-          OBJC_SOURCES=$(ls Daemon/*.m)
-          # ObjC++ 源码
-          OBJCXX_SOURCES=$(ls Daemon/*.mm 2>/dev/null || true)
-
-          echo "=== 编译 C 源码（C 模式）==="
-          for f in $C_SOURCES; do
-            o="build/obj/$(echo "$f" | tr '/' '_').o"
-            xcrun -sdk iphoneos clang -x c -std=gnu11 $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
-          done
-
-          echo "=== 编译 C++ 源码 ==="
-          for f in $CXX_SOURCES; do
-            o="build/obj/$(echo "$f" | tr '/' '_').o"
-            xcrun -sdk iphoneos clang++ -x c++ -std=gnu++17 $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
-          done
-
-          echo "=== 编译 ObjC 源码 ==="
-          for f in $OBJC_SOURCES; do
-            o="build/obj/$(echo "$f" | tr '/' '_').o"
-            xcrun -sdk iphoneos clang -x objective-c -fobjc-arc $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
-          done
-
-          echo "=== 编译 ObjC++ 源码 ==="
-          for f in $OBJCXX_SOURCES; do
-            o="build/obj/$(echo "$f" | tr '/' '_').o"
-            xcrun -sdk iphoneos clang++ -x objective-c++ -std=gnu++17 -fobjc-arc $COMMON_FLAGS -c "$f" -o "$o" >> daemon_build.log 2>&1 || \
-              { echo "FAILED: $f"; tail -200 daemon_build.log; exit 1; }
-          done
-
-          echo "=== 链接 reprovisiond ==="
-          xcrun -sdk iphoneos clang++ \
+          xcrun -sdk iphoneos clang \
+            -x objective-c -fobjc-arc \
             -arch arm64 -miphoneos-version-min=15.0 \
-            -framework Foundation -framework Security -framework CoreFoundation \
-            -L "${OPENSSL_DIR}/lib" -lssl -lcrypto -lz \
-            -Wl,-undefined,dynamic_lookup \
-            -o build/reprovisiond \
-            build/obj/*.o >> daemon_build.log 2>&1 || true
+            -O2 \
+            -framework Foundation \
+            -o build/repro-helper \
+            Helper/repro-helper.m 2>&1 | tee helper_build.log
 
-          if [ ! -f build/reprovisiond ]; then
-            echo "error: reprovisiond build failed"
-            echo "=== 所有编译错误行 ==="
-            grep -nE "error:|fatal error:|Undefined symbol" daemon_build.log || true
-            echo "=== Daemon 构建日志（尾部 150 行）==="
-            tail -150 daemon_build.log
+          if [ ! -f build/repro-helper ]; then
+            echo "error: repro-helper build failed"
+            cat helper_build.log
             exit 1
           fi
 
-          file build/reprovisiond
-          chmod +x build/reprovisiond
-          echo "Daemon built successfully"
+          file build/repro-helper
+          chmod +x build/repro-helper
+          echo "root helper built successfully"
 
       - name: Cross-compile zsign for iOS (arm64)
         # zsign 是设备端签名后端（纯 C/C++，仅依赖 OpenSSL）。
@@ -258,11 +202,10 @@ jobs:
           PKG="Packages/rootless"
           RL="$PKG/var/jb"
           mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" \
-                   "$RL/Library/LaunchDaemons" "$RL/usr/share/reprovision/certificates"
+                   "$RL/usr/share/reprovision/certificates"
           APP_DIR=$(find build -name "RePro.app" -type d | head -1)
           cp -R "$APP_DIR" "$RL/Applications/"
-          cp build/reprovisiond "$RL/usr/libexec/"
-          chmod 0755 "$RL/usr/libexec/reprovisiond"
+          cp build/repro-helper "$RL/usr/libexec/"
           cp /tmp/zsign "$RL/usr/local/bin/zsign"
           chmod 0755 "$RL/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
@@ -282,40 +225,41 @@ jobs:
           # 签名：先签二进制，不破坏 Assets.car
           # 设置正确的权限：root 可执行
           chmod 0755 "$RL/Applications/RePro.app/RePro"
-          chmod 0755 "$RL/usr/libexec/reprovisiond"
           do_sign "$RL/Applications/RePro.app/RePro" Resources/entitlements-base.plist
-          do_sign "$RL/usr/libexec/reprovisiond" Resources/entitlements-daemon.plist
+          do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           do_sign_bare "$RL/usr/local/bin/zsign"
+          # 4755 = setuid root。postinst 里还会再设一次（CI 非 root，dpkg-deb 存不住属主）
+          chmod 4755 "$RL/usr/libexec/repro-helper"
 
           # --- Rootful deb ---
           PKG2="Packages/rootful"
           mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/usr/local/bin" \
-                   "$PKG2/Library/LaunchDaemons" "$PKG2/usr/share/reprovision/certificates"
+                   "$PKG2/usr/share/reprovision/certificates"
           cp -R "$APP_DIR" "$PKG2/Applications/"
-          cp build/reprovisiond "$PKG2/usr/libexec/"
-          chmod 0755 "$PKG2/usr/libexec/reprovisiond"
+          cp build/repro-helper "$PKG2/usr/libexec/"
           cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG2/Applications/RePro.app/Icon.png"
           do_sign "$PKG2/Applications/RePro.app/RePro" Resources/entitlements-base.plist
-          do_sign "$PKG2/usr/libexec/reprovisiond" Resources/entitlements-daemon.plist
+          do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           do_sign_bare "$PKG2/usr/local/bin/zsign"
+          chmod 4755 "$PKG2/usr/libexec/repro-helper"
 
           # --- RootHide deb ---
           PKG3="Packages/roothide"
           mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/usr/local/bin" \
-                   "$PKG3/Library/LaunchDaemons" "$PKG3/usr/share/reprovision/certificates"
+                   "$PKG3/usr/share/reprovision/certificates"
           cp -R "$APP_DIR" "$PKG3/Applications/"
-          cp build/reprovisiond "$PKG3/usr/libexec/"
-          chmod 0755 "$PKG3/usr/libexec/reprovisiond"
+          cp build/repro-helper "$PKG3/usr/libexec/"
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
-          do_sign "$PKG3/usr/libexec/reprovisiond" Resources/entitlements-rothide-daemon.plist
+          do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign_bare "$PKG3/usr/local/bin/zsign"
+          chmod 4755 "$PKG3/usr/libexec/repro-helper"
 
           echo "Signing + packaging complete for all 3 packages (with zsign)"
 

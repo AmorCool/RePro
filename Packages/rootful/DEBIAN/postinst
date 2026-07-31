@@ -1,11 +1,14 @@
 #!/bin/bash
 #
-# ReProvision (rootful) postinst — 照搬原版 ReProvision 源码
+# RePro (rootful) postinst
+#
+# 本版本已经没有常驻守护进程。需要 root 的两件事（跨沙箱复制 IPA、
+# 把描述文件写进 /var/Managed Preferences/mobile）由 App 按需 posix_spawn
+# 拉起 repro-helper 完成，做完即退出，所以这里不再有任何 launchctl 操作。
 #
 
 # Rootful layout: binaries live at the real root, not under /var/jb.
 JB_PREFIX=""
-PLIST="${JB_PREFIX}/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
 
 function finish() {
 	f="${1}"
@@ -20,24 +23,21 @@ if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.i
 	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
 fi
 
-# Locate launchctl
-LAUNCHCTL=""
+# 从旧版本（带 reprovisiond 守护进程）升级时的兜底清理。
 for c in "/bin/launchctl" "/usr/bin/launchctl"; do
-	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
+	if [ -x "$c" ]; then
+		"$c" bootout system/jp.soh.reprovisiond 2>/dev/null || true
+		break
+	fi
 done
+pkill -x reprovisiond 2>/dev/null || true
 
-# Handle the daemon
-echo "(Re)-loading daemon..."
-
-if [ -f "$PLIST" ]; then
-	chown root:wheel "$PLIST" 2>/dev/null || true
-	chmod 644 "$PLIST" 2>/dev/null || true
-fi
-
-DAEMON_BIN="${JB_PREFIX}/usr/libexec/reprovisiond"
-if [ -f "$DAEMON_BIN" ]; then
-	chown root:wheel "$DAEMON_BIN" 2>/dev/null || true
-	chmod 0755 "$DAEMON_BIN" 2>/dev/null || true
+# 按需 root helper：必须 root:wheel + setuid（4755）。
+HELPER_BIN="${JB_PREFIX}/usr/libexec/repro-helper"
+if [ -f "$HELPER_BIN" ]; then
+	chown root:wheel "$HELPER_BIN" 2>/dev/null || true
+	chmod 4755 "$HELPER_BIN" 2>/dev/null || true
+	echo "root helper: $(ls -l "$HELPER_BIN")"
 fi
 
 ZSIGN_BIN="${JB_PREFIX}/usr/local/bin/zsign"
@@ -50,21 +50,6 @@ fi
 APP_BIN="${JB_PREFIX}/Applications/RePro.app/RePro"
 if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
-fi
-
-if [ -n "$LAUNCHCTL" ]; then
-	BOOT_LOG="${JB_PREFIX}/tmp/reprovision_bootstrap.log"
-	: > "$BOOT_LOG" 2>/dev/null || BOOT_LOG="/tmp/reprovision_bootstrap.log"
-	{
-		echo "== bootout/unload =="
-		"$LAUNCHCTL" bootout system "$PLIST" 2>&1 || "$LAUNCHCTL" unload "$PLIST" 2>&1 || true
-		echo "== bootstrap/load =="
-		"$LAUNCHCTL" bootstrap system "$PLIST" 2>&1 || "$LAUNCHCTL" load "$PLIST" 2>&1 || true
-		echo "== enable =="
-		"$LAUNCHCTL" enable system/jp.soh.reprovisiond 2>&1 || true
-		echo "== kickstart =="
-		"$LAUNCHCTL" kickstart -k system/jp.soh.reprovisiond 2>&1 || true
-	} >> "$BOOT_LOG" 2>&1
 fi
 
 # Reload application cache via uicache

@@ -4,24 +4,85 @@ import SwiftUI
 
 // MARK: - 已安装应用模型
 
-struct InstalledApp: Identifiable, Codable, Hashable {
-    let id: UUID
+/// 界面层使用的应用快照。数据全部来自 RPVBridge（Vendor/ReProvision），
+/// 这里不再做任何本地持久化，所以不需要 Codable。
+struct InstalledApp: Identifiable, Hashable {
     let bundleIdentifier: String
     let displayName: String
     let version: String
     let iconData: Data?
     let certificateExpiryDate: Date?
+    let hasEmbeddedProvision: Bool
+
+    /// 是否正在签名（仅 UI 状态，由 SigningViewModel 维护）
     var isSigning: Bool = false
+    /// 签名进度 0-100（仅 UI 状态）
+    var signingProgress: Int = 0
+
+    /// bundle identifier 在设备上唯一，直接当作 Identifiable 的 id，
+    /// 这样列表刷新后 SwiftUI 仍能把同一个应用对上号。
+    var id: String { bundleIdentifier }
 
     var icon: UIImage? {
         guard let data = iconData else { return nil }
         return UIImage(data: data)
     }
 
-    var daysUntilExpiry: Int {
-        guard let expiry = certificateExpiryDate else { return -999 }
-        return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day ?? -999
+    /// 距离证书过期还剩几天；没有到期日时返回 nil
+    var daysUntilExpiry: Int? {
+        guard let expiry = certificateExpiryDate else { return nil }
+        return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
     }
+}
+
+// MARK: - 开发者 Team
+
+/// 登录后 Apple 返回的可选 Team
+struct DeveloperTeam: Identifiable, Hashable {
+    let teamID: String
+    let name: String
+    let membership: String?
+
+    var id: String { teamID }
+}
+
+// MARK: - 越狱类型
+
+enum JailbreakType: String, CaseIterable {
+    case dopamine, roothide, rootful, unknown
+
+    var displayName: String {
+        switch self {
+        case .dopamine: return "Dopamine (rootless)"
+        case .roothide: return "RootHide"
+        case .rootful: return "Rootful"
+        case .unknown: return "未识别"
+        }
+    }
+
+    /// 桥接层返回的是字符串标识，这里做一次映射
+    init(kind: String?) {
+        self = JailbreakType(rawValue: kind ?? "") ?? .unknown
+    }
+}
+
+// MARK: - 运行环境快照
+
+/// 「状态」页展示的环境体检结果，全部由 RPVBridge 在进程内直接探测得出，
+/// 不依赖任何常驻服务。
+struct EnvironmentSnapshot {
+    let jailbreak: JailbreakType
+    let jailbreakRoot: String?
+    let zsignPath: String?
+    let certificatesBundled: Bool
+    let rootHelperAvailable: Bool
+    let rootHelperPath: String?
+    let signedIn: Bool
+    let username: String?
+    let teamID: String?
+    let deviceUDID: String?
+    let sideloadedAppCount: Int
+    let nearestExpiryDate: Date?
 }
 
 // MARK: - 日志级别
@@ -58,51 +119,12 @@ struct LogEntry: Identifiable, Codable, Equatable {
     let source: String
 }
 
-// MARK: - 越狱类型
-
-enum JailbreakType: String, CaseIterable, Codable {
-    case dopamine, roothide, rootful, unknown
-
-    var displayName: String {
-        switch self {
-        case .dopamine: return "Dopamine"
-        case .roothide: return "RootHide"
-        case .rootful: return "Rootful"
-        case .unknown: return "未知"
-        }
-    }
-}
-
-// MARK: - 守护进程健康状态
-
-struct DaemonHealthStatus: Codable {
-    let daemonRunning: Bool
-    let hasRootPrivileges: Bool
-    let isSandboxed: Bool
-    let zsignPath: String?
-    let lastResignTime: Date?
-    let validTokenCount: Int
-    let anisetteReady: Bool
-    let jailbreakType: JailbreakType
-    let uptimeSeconds: TimeInterval?
-    let daemonVersion: String?  // daemon 报告的版本号（用于确认用户是否正确更新）
-    let pid: Int?               // daemon 进程 PID
-    let uid: Int?               // daemon 实际 uid (0=root)
-    let effectiveUid: Int?      // daemon 有效 uid
-}
-
-// MARK: - 签名结果
-
-enum SigningResult {
-    case success(installedApp: InstalledApp)
-    case failure(error: Error)
-}
-
 // MARK: - RePro 错误类型
 
 enum ReProError: LocalizedError {
-    case daemonNotRunning
-    case daemonConnectionFailed(String)
+    case notSignedIn
+    case busy
+    case appNotFound
     case signingFailed(String)
     case installFailed(String)
     case certNotFound
@@ -115,8 +137,9 @@ enum ReProError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .daemonNotRunning: return "守护进程未运行"
-        case .daemonConnectionFailed(let reason): return "无法连接守护进程: \(reason)"
+        case .notSignedIn: return "请先登录 Apple ID"
+        case .busy: return "已有签名任务正在进行"
+        case .appNotFound: return "找不到该应用"
         case .signingFailed(let reason): return "签名失败: \(reason)"
         case .installFailed(let reason): return "安装失败: \(reason)"
         case .certNotFound: return "未找到有效证书"

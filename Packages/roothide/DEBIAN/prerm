@@ -1,25 +1,10 @@
 #!/bin/bash
 set -e
 
-# ReProvision RootHide 包 prerm
-# RootHide 的 daemon 在 gui/501 或 user/501 域（非 system 域）
-
-DAEMON_LABEL="jp.soh.reprovisiond"
+# RePro RootHide 包 prerm
+# 本版本没有常驻守护进程，repro-helper 是一次性进程，不需要停服务。
 
 echo "[RePro] RootHide prerm 开始 $(date)"
-
-# 停止守护进程 — 尝试所有可能的域（RootHide 用 gui/501，标准用 system）
-for domain in "gui/501" "user/501" "system"; do
-    launchctl bootout "$domain/$DAEMON_LABEL" 2>/dev/null || true
-done
-
-# 额外：直接 kill 进程（防止 launchctl 残留）
-if pgrep -x reprovisiond > /dev/null 2>&1; then
-    pkill -x reprovisiond 2>/dev/null || true
-    sleep 1
-fi
-
-echo "[RePro] 守护进程已停止"
 
 # 清理残留数据
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true

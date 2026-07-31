@@ -1,13 +1,10 @@
 #!/bin/bash
 set -e
 
-# ReProvision Dopamine/rootless 包 prerm
+# RePro Dopamine/rootless 包 prerm
+# 本版本没有常驻守护进程，repro-helper 是一次性进程，不需要停服务。
 
 echo "[RePro] rootless prerm 开始 $(date)"
-
-# 停止守护进程
-launchctl bootout system/jp.soh.reprovisiond 2>/dev/null || true
-echo "[RePro] 守护进程已停止"
 
 # 清理残留数据
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true

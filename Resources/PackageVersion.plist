@@ -5,12 +5,12 @@
 	<key>Major</key>
 	<integer>1</integer>
 	<key>Minor</key>
-	<integer>0</integer>
+	<integer>1</integer>
 	<key>BugFix</key>
-	<integer>55</integer>
+	<integer>0</integer>
 	<key>Stage</key>
 	<string></string>
 	<key>PackageRevision</key>
-	<string>55</string>
+	<string>110</string>
 </dict>
 </plist>

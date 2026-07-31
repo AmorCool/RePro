@@ -1,0 +1,174 @@
+//
+//  RPVBridge.h
+//  RePro
+//
+//  Swift <-> ReProvision 业务层桥接。
+//
+//  设计原则：
+//  1. Swift 侧只依赖本文件里的纯数据对象（RPVAppInfo / RPVLoginResult），
+//     绝不直接接触 RPVApplication / LSApplicationProxy 等私有类型。
+//  2. 所有耗时操作在后台队列执行，回调统一切回主队列。
+//  3. 业务实现全部复用 Vendor/ReProvision（原版 ReProvision 源码），
+//     本桥接层不重新实现任何签名 / 登录逻辑。
+//
+
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+#pragma mark - 数据对象
+
+/// 设备上一个已安装（旁加载）应用的快照
+@interface RPVAppInfo : NSObject
+@property (nonatomic, copy) NSString *bundleIdentifier;
+@property (nonatomic, copy) NSString *displayName;
+@property (nonatomic, copy) NSString *version;
+@property (nonatomic, strong, nullable) NSDate *expiryDate;
+/// 图标的 PNG 数据（在后台队列取好，避免 Swift 侧再触碰 UIImage 渲染）
+@property (nonatomic, strong, nullable) NSData *iconPNGData;
+@property (nonatomic, assign) BOOL hasEmbeddedProvision;
+@end
+
+/// 登录结果分类
+typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
+    /// 登录成功，teams 里是可选的开发者 Team 列表
+    RPVLoginOutcomeSuccess      NS_SWIFT_NAME(succeeded)      = 0,
+    /// 账号开了两步验证，需要走 App 专用密码回退流程
+    RPVLoginOutcomeNeeds2FA     NS_SWIFT_NAME(needsTwoFactor) = 1,
+    /// 登录失败，failureReason 为原因
+    RPVLoginOutcomeFailure      NS_SWIFT_NAME(failed)         = 2,
+};
+
+@interface RPVLoginResult : NSObject
+@property (nonatomic, assign) RPVLoginOutcome outcome;
+@property (nonatomic, copy, nullable) NSString *failureReason;
+@property (nonatomic, copy, nullable) NSString *resultCode;
+/// Apple 返回的原始 Team 字典数组，元素含 teamId / name 等键
+@property (nonatomic, copy, nullable) NSArray<NSDictionary *> *teams;
+@end
+
+/// 运行环境体检快照（「状态」页展示用）。
+/// 全部为进程内可直接探测的事实，不依赖任何常驻服务。
+@interface RPVEnvironmentInfo : NSObject
+/// 越狱类型标识：dopamine / roothide / rootful / unknown
+@property (nonatomic, copy) NSString *jailbreakKind;
+/// 解析出的越狱根目录（rootful 为 "/"，未越狱为 nil）
+@property (nonatomic, copy, nullable) NSString *jailbreakRoot;
+/// zsign 可执行文件的绝对路径；只在 $PATH 兜底时为 nil
+@property (nonatomic, copy, nullable) NSString *zsignPath;
+/// 三张 Apple 根证书是否已随 App 打包（EESigning 依赖 mainBundle 读取）
+@property (nonatomic, assign) BOOL certificatesBundled;
+/// 按需 root helper 是否已安装
+@property (nonatomic, assign) BOOL rootHelperAvailable;
+@property (nonatomic, copy, nullable) NSString *rootHelperPath;
+/// 账号信息
+@property (nonatomic, assign) BOOL signedIn;
+@property (nonatomic, copy, nullable) NSString *username;
+@property (nonatomic, copy, nullable) NSString *teamID;
+@property (nonatomic, copy, nullable) NSString *deviceUDID;
+/// 扫描到的旁加载应用数量与最近的一个到期时间
+@property (nonatomic, assign) NSInteger sideloadedAppCount;
+@property (nonatomic, strong, nullable) NSDate *nearestExpiryDate;
+@end
+
+#pragma mark - 桥接主类
+
+@interface RPVBridge : NSObject
+
++ (instancetype)sharedInstance;
+
+#pragma mark 账号状态
+
+/// 已保存的 Apple ID（未登录为 nil）
+@property (nonatomic, readonly, copy, nullable) NSString *username;
+/// 已保存的 Team ID（未登录为 nil）
+@property (nonatomic, readonly, copy, nullable) NSString *teamID;
+/// 三要素（账号 / 密码 / TeamID）齐全才算已登录
+@property (nonatomic, readonly) BOOL isSignedIn;
+/// 当前设备 UDID（供界面展示 / 排障）
+@property (nonatomic, readonly, copy, nullable) NSString *deviceUDID;
+
+#pragma mark 登录流程（照搬原版 RPVAccountViewController 的调用顺序）
+
+/// 第一步：用 Apple ID + 密码登录。
+/// 返回 Success 时 teams 非空，需要调用 -selectTeamID: 落库；
+/// 返回 Needs2FA 时需要接着调用 -continueTwoFactorAuthenticationWithCompletion:。
+- (void)loginWithUsername:(NSString *)username
+                 password:(NSString *)password
+               completion:(void (^)(RPVLoginResult *result))completion
+    NS_SWIFT_NAME(login(username:password:completion:));
+
+/// 第二步（仅 2FA 账号）：走原版 RPVAccount2FAViewController 的回退通道。
+///
+/// 注意：这里**不需要**用户在 App 里输入验证码或 App 专用密码。
+/// RPVAuthentication.fallback2FACodeRequest 会复用上一步缓存的账号密码，
+/// 通过 AuthKit 触发系统级的 Apple ID 验证界面，用户在系统弹窗里完成
+/// 验证之后本回调才会返回。原版就是 viewWillAppear 里直接调用它的。
+- (void)continueTwoFactorAuthenticationWithCompletion:(void (^)(RPVLoginResult *result))completion
+    NS_SWIFT_NAME(continueTwoFactorAuthentication(completion:));
+
+/// 第三步：选定 Team 并持久化账号信息（写入钥匙串）。
+/// 内部会顺带把当前设备注册到该 Team 下（原版 RPVAccountFinalController 的行为）。
+- (void)selectTeamID:(NSString *)teamID
+          completion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(selectTeamID(_:completion:));
+
+/// 退出登录，清除钥匙串中的账号信息
+- (void)signOut;
+
+#pragma mark 应用列表
+
+/// 拉取设备上的旁加载应用。
+/// 已登录时优先按当前 Team ID 过滤；结果为空或未登录时回退列出全部带
+/// embedded.mobileprovision 的应用，保证登录前界面也不是空白。
+- (void)fetchInstalledAppsWithCompletion:(void (^)(NSArray<RPVAppInfo *> *apps,
+                                                   NSError *_Nullable error))completion
+    NS_SWIFT_NAME(fetchInstalledApps(completion:));
+
+#pragma mark 重签名
+
+/// 签名进度回调（0-100），在主队列触发
+@property (nonatomic, copy, nullable) void (^signingProgressHandler)(NSString *bundleIdentifier, int progress);
+/// 单个应用出错，在主队列触发
+@property (nonatomic, copy, nullable) void (^signingErrorHandler)(NSString *bundleIdentifier, NSError *error);
+/// 整条流水线结束，在主队列触发（error 为 nil 表示全部成功）
+@property (nonatomic, copy, nullable) void (^signingCompletionHandler)(NSError *_Nullable error);
+
+/// 重签指定 bundle identifier 的应用
+- (void)resignApplicationWithBundleIdentifier:(NSString *)bundleIdentifier
+                                   completion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(resignApplication(bundleIdentifier:completion:));
+
+/// 重签所有临近过期的应用（threshold 单位为天）
+- (void)resignAllExpiringApplicationsWithThreshold:(int)thresholdDays
+                                        completion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(resignAllExpiringApplications(thresholdDays:completion:));
+
+/// 卸载指定应用
+- (BOOL)removeApplicationWithBundleIdentifier:(NSString *)bundleIdentifier
+    NS_SWIFT_NAME(removeApplication(bundleIdentifier:));
+
+#pragma mark IPA 导入
+
+/// 解析并安装一个 .ipa（等价于原版「导入 → 详情页点 INSTALL」两步）
+- (void)importAndInstallIPAAtURL:(NSURL *)url
+                      completion:(void (^)(RPVAppInfo *_Nullable info, NSError *_Nullable error))completion
+    NS_SWIFT_NAME(importAndInstallIPA(url:completion:));
+
+#pragma mark 环境体检
+
+/// 采集运行环境快照（磁盘 IO 在后台队列，回调在主队列）
+- (void)fetchEnvironmentInfoWithCompletion:(void (^)(RPVEnvironmentInfo *info))completion
+    NS_SWIFT_NAME(fetchEnvironmentInfo(completion:));
+
+#pragma mark root helper 注入点
+
+/// 注册需要 root 权限的两个回调（写系统描述文件、跨沙箱复制文件）。
+/// 目前为空实现：Vendor 侧在 handler 未注册时会退回直接写 / MCProfileConnection。
+/// Phase 3 会在这里 posix_spawn 按需 root helper。
++ (void)installRootHelperHandlers;
+
+@end
+
+NS_ASSUME_NONNULL_END

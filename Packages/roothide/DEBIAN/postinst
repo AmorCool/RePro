@@ -1,14 +1,18 @@
 #!/bin/bash
 #
-# ReProvision (RootHide) postinst — 照搬原版 ReProvision 源码
+# RePro (RootHide) postinst
 #
-# RootHide 的 dpkg 维护脚本运行在 vroot shell 中——脚本的 "/" 就是 jbroot。
-# 所以 /Library/LaunchDaemons/xxx 实际是 <jbroot>/Library/LaunchDaemons/xxx，
-# /usr/libexec/reprovisiond 实际是 <jbroot>/usr/libexec/reprovisiond。
+# 本版本已经没有常驻守护进程，所以过去那套「用 jbroot 工具把路径转成 rootfs
+# 真实路径再喂给 launchctl bootstrap system」的复杂流程全部不需要了 ——
+# 那正是 RootHide 下 daemon 起不来的根源。
 #
-# 但 launchctl 是系统域工具（system launchd），它只认 rootfs 真实路径。
-# 必须用 RootHide 自带的 'jbroot' 命令行工具把 jbroot 路径转成 rootfs 路径
-# 再传给 launchctl，否则守护进程无法被加载。
+# 需要 root 的两件事（跨沙箱复制 IPA、把描述文件写进真实的
+# /var/Managed Preferences/mobile）改由 App 按需 posix_spawn 拉起
+# repro-helper 完成，做完即退出。
+#
+# RootHide 的 dpkg 维护脚本运行在 vroot shell 中——脚本里的 "/" 就是 jbroot，
+# 下面这些标准根路径会被自动映射到 <jbroot>/... ，直接用即可。
+#
 
 function finish() {
 	f="${1}"
@@ -23,22 +27,28 @@ if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.i
 	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
 fi
 
-# jbroot 路径（vroot shell 中这些就是 jbroot 下的真实位置）
-PLIST="/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
-DAEMON="/usr/libexec/reprovisiond"
+# 从旧版本（带 reprovisiond 守护进程）升级时的兜底清理：
+# 旧包在 RootHide 下可能装在 gui/501、user/501 或 system 域，全试一遍。
+for c in /bin/launchctl /usr/bin/launchctl; do
+	if [ -x "$c" ]; then
+		for domain in "gui/501" "user/501" "system"; do
+			"$c" bootout "$domain/jp.soh.reprovisiond" 2>/dev/null || true
+		done
+		break
+	fi
+done
+pkill -x reprovisiond 2>/dev/null || true
+
+# 按需 root helper：必须 root:wheel + setuid（4755），
+# 否则 mobile 身份的 App 拉起它时拿不到 root。
+HELPER="/usr/libexec/repro-helper"
+if [ -f "$HELPER" ]; then
+	chown root:wheel "$HELPER" 2>/dev/null || true
+	chmod 4755 "$HELPER" 2>/dev/null || true
+	echo "root helper: $(ls -l "$HELPER")"
+fi
+
 ZSIGN="/usr/local/bin/zsign"
-
-echo "(Re)-loading daemon..."
-
-# 属主/权限（jbroot 路径在 vroot shell 中可直接操作）
-if [ -f "$PLIST" ]; then
-	chown root:wheel "$PLIST" 2>/dev/null || true
-	chmod 644 "$PLIST" 2>/dev/null || true
-fi
-if [ -f "$DAEMON" ]; then
-	chown root:wheel "$DAEMON" 2>/dev/null || true
-	chmod 0755 "$DAEMON" 2>/dev/null || true
-fi
 if [ -f "$ZSIGN" ]; then
 	chown root:wheel "$ZSIGN" 2>/dev/null || true
 	chmod 0755 "$ZSIGN" 2>/dev/null || true
@@ -48,48 +58,6 @@ fi
 APP_BIN="/Applications/RePro.app/RePro"
 if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
-fi
-
-# 查找 jbroot 命令行工具（用于 jbroot→rootfs 路径转换）
-JBROOT_CMD=""
-for c in /usr/bin/jbroot /bin/jbroot; do
-	if [ -x "$c" ]; then JBROOT_CMD="$c"; break; fi
-done
-
-LAUNCHCTL=""
-for c in /bin/launchctl /usr/bin/launchctl; do
-	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
-done
-
-if [ -n "$LAUNCHCTL" ] && [ -f "$PLIST" ]; then
-	BOOT_LOG="/tmp/reprovision_bootstrap.log"
-
-	# 关键：用 jbroot 工具把 plist 的 jbroot 路径转换成 rootfs 真实路径
-	# launchctl bootstrap system 需要的是系统级（rootfs）路径
-	if [ -n "$JBROOT_CMD" ] && [ -x "$JBROOT_CMD" ]; then
-		REAL_PLIST=$("$JBROOT_CMD" "$PLIST" 2>/dev/null)
-		if [ -z "$REAL_PLIST" ] || [ ! -f "$REAL_PLIST" ]; then
-			echo "WARNING: jbroot('$PLIST')='$REAL_PLIST' not a valid file, falling back to raw path" >> "$BOOT_LOG"
-			REAL_PLIST="$PLIST"
-		fi
-	else
-		echo "WARNING: jbroot tool not found, using raw path for launchctl (may fail on RootHide)" >> "$BOOT_LOG"
-		REAL_PLIST="$PLIST"
-	fi
-
-	{
-		echo "== jbroot path conversion =="
-		echo "  jbroot PLIST = $PLIST"
-		echo "  rootfs PLIST  = $REAL_PLIST"
-		echo "== bootout =="
-		"$LAUNCHCTL" bootout system "$REAL_PLIST" 2>&1 || true
-		echo "== bootstrap =="
-		"$LAUNCHCTL" bootstrap system "$REAL_PLIST" 2>&1 || true
-		echo "== kickstart =="
-		"$LAUNCHCTL" kickstart -k system/jp.soh.reprovisiond 2>&1 || true
-	} >> "$BOOT_LOG" 2>&1 || true
-
-	echo "Bootstrap log written to $BOOT_LOG"
 fi
 
 # Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- repro-helper 按需 root 助手（rootful / Dopamine rootless 通用）
+
+         它只做两件事：以 root 复制文件、把描述文件写进
+         /var/Managed Preferences/mobile 并踢一下 profiled。
+         做完立刻退出，所以不需要 launchd、mach-service、网络、Keychain
+         这些常驻守护进程才用得上的权限。 -->
+
+    <!-- 平台二进制，绕过 AMFI 对非 App Store 签名的限制 -->
+    <key>platform-application</key>
+    <true/>
+
+    <!-- 不进沙箱容器，才能看到真实的 /var/Managed Preferences -->
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+
+    <!-- posix_spawn 调 /usr/bin/killall -HUP profiled -->
+    <key>com.apple.private.posix-spawn</key>
+    <true/>
+
+    <!-- 写入系统描述文件库 -->
+    <key>com.apple.private.storage-managedpreferences</key>
+    <true/>
+</dict>
+</plist>

@@ -1,160 +1,146 @@
 import SwiftUI
 
-// MARK: - 系统健康状态检查页面
+// MARK: - 系统状态页
+//
+// 这里展示的全部是 App 进程内可以直接探测到的事实（越狱形态、zsign 位置、
+// 证书是否随包、账号状态、旁加载应用概况）。没有守护进程，也就没有
+// 「守护进程运行状态 / PID / uid」这类需要跨进程询问的指标。
 
 struct HealthView: View {
-    @ObservedObject private var daemonClient = DaemonClient.shared
-    @State private var healthStatus: DaemonHealthStatus?
+    @State private var snapshot: EnvironmentSnapshot?
     @State private var isLoading = false
-    @State private var connectionError: String?  // 连接错误信息
 
     var body: some View {
         NavigationView {
             List {
-                // MARK: 守护进程状态
-                Section("守护进程") {
-                    HealthRow(label: "运行状态",
-                             value: {
-                                 if let status = healthStatus {
-                                     return status.daemonRunning ? "运行中" : "已停止"
-                                 } else if connectionError != nil {
-                                     return "连接失败"
-                                 }
-                                 return isLoading ? "检测中..." : "未知"
-                             }(),
-                             status: {
-                                 if healthStatus?.daemonRunning == true { return .good }
-                                 if healthStatus?.daemonRunning == false { return .bad }
-                                 if connectionError != nil { return .bad }
-                                 return .unknown
-                             }())
-
-                    HealthRow(label: "版本号",
-                             value: healthStatus?.daemonVersion ?? "未知",
-                             status: healthStatus?.daemonVersion != nil ? .neutral : .unknown)
-
-                    HealthRow(label: "二进制权限",
-                             value: {
-                                 if let status = healthStatus {
-                                     let pid = status.pid ?? 0
-                                     let uid = status.uid ?? -1
-                                     let euid = status.effectiveUid ?? -1
-                                     if uid == 0 {
-                                         return "PID=\(pid), root (uid=\(uid))"
-                                     } else {
-                                         return "PID=\(pid), uid=\(uid) (非root)"
-                                     }
-                                 } else if connectionError != nil {
-                                     return "连接失败"
-                                 }
-                                 return "未知"
-                             }(),
-                             status: {
-                                 if healthStatus != nil { return (healthStatus?.uid ?? -1) == 0 ? .good : .bad }
-                                 if connectionError != nil { return .bad }
-                                 return .unknown
-                             }())
-
-                    HealthRow(label: "沙盒限制",
-                             value: healthStatus?.isSandboxed == true ? "存在" : "不受限制",
-                             status: healthStatus?.isSandboxed == true ? .warning : .good)
-
-                    HealthRow(label: "上次重签",
-                             value: healthStatus?.lastResignTime.map(formatTime) ?? "从未",
-                             status: .neutral)
-                }
-
-                // MARK: 越狱环境
-                Section("越狱环境") {
-                    let jbType = JailbreakDetect.current()
-                    HealthRow(label: "环境类型",
-                             value: jbType.displayName,
-                             status: .good)
-
-                    HealthRow(label: "zsign 路径",
-                             value: {
-                                 if let path = healthStatus?.zsignPath {
-                                     return path
-                                 } else if healthStatus != nil {
-                                     return "未找到"
-                                 } else if connectionError != nil {
-                                     return "连接失败"
-                                 }
-                                 return "检测中..."
-                             }(),
-                             status: {
-                                 if healthStatus?.zsignPath != nil { return .good }
-                                 if healthStatus != nil { return .bad }
-                                 if connectionError != nil { return .bad }
-                                 return .unknown
-                             }())
-                }
-
-                // MARK: Token 与 Anisette
-                Section("缓存状态") {
-                    HealthRow(label: "有效 Token",
-                             value: healthStatus != nil ? "\(healthStatus?.validTokenCount ?? 0) 个" : (connectionError != nil ? "连接失败" : "未知"),
-                             status: (healthStatus?.validTokenCount ?? 0) > 0 ? .good : (connectionError != nil ? .bad : .unknown))
-
-                    HealthRow(label: "Anisette",
-                             value: healthStatus?.anisetteReady == true ? "就绪" : (healthStatus != nil ? "未初始化" : (connectionError != nil ? "连接失败" : "未知")),
-                             status: healthStatus?.anisetteReady == true ? .good : (connectionError != nil ? .bad : .unknown))
-                }
-
-                // MARK: 操作按钮
-                Section {
-                    Button("刷新状态") {
-                        refreshHealth()
-                    }
-                    .disabled(isLoading)
-
-                    Button("重启守护进程") {
-                        restartDaemon()
-                    }
-                    .disabled(isLoading)
-
-                    if isLoading {
-                        ProgressView("正在检测...")
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                }
+                jailbreakSection
+                signingSection
+                accountSection
+                applicationsSection
+                actionsSection
             }
             .navigationTitle("系统状态")
-            .onAppear {
-                refreshHealth()
+            .onAppear { refresh() }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    // MARK: 越狱环境
+
+    private var jailbreakSection: some View {
+        Section("越狱环境") {
+            HealthRow(label: "环境类型",
+                      value: snapshot?.jailbreak.displayName ?? placeholder,
+                      status: statusForJailbreak)
+
+            HealthRow(label: "越狱根目录",
+                      value: snapshot?.jailbreakRoot ?? placeholder,
+                      status: .neutral)
+        }
+    }
+
+    private var statusForJailbreak: HealthStatus {
+        guard let snapshot = snapshot else { return .unknown }
+        return snapshot.jailbreak == .unknown ? .bad : .good
+    }
+
+    // MARK: 签名后端
+
+    private var signingSection: some View {
+        Section {
+            HealthRow(label: "zsign",
+                      value: snapshot?.zsignPath ?? (snapshot == nil ? placeholder : "未找到"),
+                      status: snapshot == nil ? .unknown : (snapshot?.zsignPath != nil ? .good : .bad))
+
+            HealthRow(label: "Apple 根证书",
+                      value: snapshot == nil ? placeholder
+                                             : (snapshot!.certificatesBundled ? "已随包" : "缺失"),
+                      status: snapshot == nil ? .unknown
+                                              : (snapshot!.certificatesBundled ? .good : .bad))
+
+            HealthRow(label: "root helper",
+                      value: snapshot == nil ? placeholder
+                                             : (snapshot!.rootHelperPath ?? "未安装"),
+                      status: snapshot == nil ? .unknown
+                                              : (snapshot!.rootHelperAvailable ? .good : .warning))
+        } header: {
+            Text("签名后端")
+        } footer: {
+            Text("root helper 只在需要写系统描述文件时按需拉起，用完即退；缺失时会退回直接写文件，部分越狱环境下可能失败。")
+        }
+    }
+
+    // MARK: 账号
+
+    private var accountSection: some View {
+        Section("账号") {
+            HealthRow(label: "登录状态",
+                      value: snapshot == nil ? placeholder : (snapshot!.signedIn ? "已登录" : "未登录"),
+                      status: snapshot == nil ? .unknown : (snapshot!.signedIn ? .good : .warning))
+
+            HealthRow(label: "Apple ID",
+                      value: snapshot?.username ?? placeholder,
+                      status: .neutral)
+
+            HealthRow(label: "Team ID",
+                      value: snapshot?.teamID ?? placeholder,
+                      status: .neutral)
+
+            HealthRow(label: "设备 UDID",
+                      value: snapshot?.deviceUDID ?? placeholder,
+                      status: snapshot == nil ? .unknown : (snapshot?.deviceUDID != nil ? .good : .bad))
+        }
+    }
+
+    // MARK: 应用概况
+
+    private var applicationsSection: some View {
+        Section("旁加载应用") {
+            HealthRow(label: "已扫描",
+                      value: snapshot == nil ? placeholder : "\(snapshot!.sideloadedAppCount) 个",
+                      status: .neutral)
+
+            HealthRow(label: "最近到期",
+                      value: snapshot?.nearestExpiryDate.map(formatExpiry) ?? (snapshot == nil ? placeholder : "无"),
+                      status: expiryStatus)
+        }
+    }
+
+    private var expiryStatus: HealthStatus {
+        guard let date = snapshot?.nearestExpiryDate else { return .neutral }
+        let days = Calendar.current.dateComponents([.day], from: Date(), to: date).day ?? 0
+        if days < 0 { return .bad }
+        if days <= 3 { return .warning }
+        return .good
+    }
+
+    // MARK: 操作
+
+    private var actionsSection: some View {
+        Section {
+            Button("刷新状态") { refresh() }
+                .disabled(isLoading)
+
+            if isLoading {
+                ProgressView("正在检测…")
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
 
-    private func refreshHealth() {
+    // MARK: 辅助
+
+    private var placeholder: String { isLoading ? "检测中…" : "未知" }
+
+    private func refresh() {
         isLoading = true
-        connectionError = nil
-        daemonClient.getHealth { result in
-            DispatchQueue.main.async(execute: {
-                self.isLoading = false
-                switch result {
-                case .success(let status):
-                    self.healthStatus = status
-                    self.connectionError = nil
-                case .failure(let error):
-                    let errMsg = error.localizedDescription
-                    LogManager.shared.error("获取健康状态失败: \(errMsg)", source: "HealthView")
-                    self.healthStatus = nil
-                    self.connectionError = errMsg
-                }
-            })
+        BridgeClient.shared.fetchEnvironment { result in
+            snapshot = result
+            isLoading = false
         }
     }
 
-    private func restartDaemon() {
-        daemonClient.restartDaemon { _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                refreshHealth()
-            }
-        }
-    }
-
-    private func formatTime(_ date: Date) -> String {
+    private func formatExpiry(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
@@ -169,12 +155,13 @@ struct HealthRow: View {
     let status: HealthStatus
 
     var body: some View {
-        HStack {
+        HStack(alignment: .top) {
             Text(label)
-            Spacer()
+            Spacer(minLength: 12)
             Text(value)
                 .foregroundColor(statusColor)
                 .multilineTextAlignment(.trailing)
+                .font(.callout)
             statusIcon
         }
     }
@@ -185,7 +172,7 @@ struct HealthRow: View {
         case .bad: return .red
         case .warning: return .orange
         case .unknown: return .secondary
-        case .neutral: return .primary
+        case .neutral: return .secondary
         }
     }
 
