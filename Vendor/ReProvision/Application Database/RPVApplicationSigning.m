@@ -415,17 +415,21 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     // the file is the reliable cross-environment guarantee (profiled scans this dir).
     BOOL fileOK = [self _registerProfileViaFileAtPath:profilePath];
     if (!success) {
-        NSLog(@"*** [ReProvision] MCProfileConnection did not register profile (report: %@); relying on file fallback", report);
+        NSLog(@"*** [ReProvision] MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
         success = fileOK;
     } else if (fileOK) {
-        NSLog(@"*** [ReProvision] profile registered via MCProfileConnection; file fallback also written");
+        NSLog(@"*** [ReProvision] profile registered via MCProfileConnection; file/daemon fallback also written");
     }
 
     NSLog(@"*** [ReProvision] profile register report:\n%@", report);
 
     if (success) {
-        // Give profiled a moment to pick up the new/updated profile before install.
-        [NSThread sleepForTimeInterval:0.5];
+        // Give profiled time to pick up the new/updated profile before install.
+        // RootHide 下 profiled 扫描 /var/Managed Preferences/mobile 可能需要更长时间，
+        // 因为 repro-helper 通过 setuid 写入后 profiled 不一定立即被唤醒。
+        NSTimeInterval sleepTime = fileOK ? 2.0 : 0.5;
+        NSLog(@"*** [ReProvision] sleeping %.1fs for profiled to pick up new profile", sleepTime);
+        [NSThread sleepForTimeInterval:sleepTime];
     }
     return success;
 }
@@ -622,6 +626,18 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
             [observer applicationSigningUpdateProgress:50 forBundleIdentifier:[application bundleIdentifier]];
         }
 
+        // 诊断：验证签名后的 bundle 是否包含有效的 embedded.mobileprovision
+        NSString *diagEmbeddedPath = [[applicationBundleURL path] stringByAppendingPathComponent:@"embedded.mobileprovision"];
+        NSData *diagProfileData = [NSData dataWithContentsOfFile:diagEmbeddedPath];
+        NSDictionary *diagInfoPlist = [NSDictionary dictionaryWithContentsOfFile:[[applicationBundleURL path] stringByAppendingPathComponent:@"Info.plist"]];
+        NSLog(@"*** [ReProvision] === 签名后诊断 ===");
+        NSLog(@"*** [ReProvision] signed bundle path: %@", [applicationBundleURL path]);
+        NSLog(@"*** [ReProvision] embedded.mobileprovision exists: %d, size: %lu bytes",
+              [[NSFileManager defaultManager] fileExistsAtPath:diagEmbeddedPath],
+              (unsigned long)diagProfileData.length);
+        NSLog(@"*** [ReProvision] signed CFBundleIdentifier: %@", [diagInfoPlist objectForKey:@"CFBundleIdentifier"]);
+        NSLog(@"*** [ReProvision] extractedArchiveURL exists: %d", [[NSFileManager defaultManager] fileExistsAtPath:[extractedArchiveURL path]]);
+
         //////////////////////////////////////////////////////////////////////////////////////
         // 3. Build IPA
         //////////////////////////////////////////////////////////////////////////////////////
@@ -681,6 +697,14 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
             bundleIdentifier = signedBundleIdentifier;
         }
         NSLog(@"*** [ReProvision] installing with bundle id '%@' (original '%@')", bundleIdentifier, [application bundleIdentifier]);
+
+        // 诊断：确认待安装的 IPA 文件存在且非空
+        NSDictionary *ipaAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:ipaPath error:nil];
+        NSLog(@"*** [ReProvision] === 安装前诊断 ===");
+        NSLog(@"*** [ReProvision] IPA path: %@", ipaPath);
+        NSLog(@"*** [ReProvision] IPA exists: %d, size: %@ bytes",
+              [[NSFileManager defaultManager] fileExistsAtPath:ipaPath],
+              [ipaAttrs objectForKey:NSFileSize]);
 
         // Register the freshly-signed provisioning profile with the system so iOS
         // trusts the signed app (misagent/MCProfileConnection). Without this the OS

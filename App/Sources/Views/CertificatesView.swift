@@ -234,6 +234,8 @@ private struct CertificateRowView: View {
                 Spacer(minLength: 0)
             }
 
+            Spacer(minLength: 0)
+
             if isRevoking {
                 ProgressView()
                     .scaleEffect(0.8)
@@ -250,7 +252,7 @@ private struct CertificateRowView: View {
                     .background(Color.red.opacity(0.08))
                     .cornerRadius(8)
                 }
-                .padding(.top, 2)
+                .padding(.leading, 8)
             }
         }
         .padding(.vertical, 6)
