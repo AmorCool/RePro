@@ -21,6 +21,8 @@
 
 #import <Foundation/Foundation.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <objc/runtime.h>
+#import <dlfcn.h>
 #include <spawn.h>
 #include <sys/sysctl.h>
 #include <sys/proc.h>
