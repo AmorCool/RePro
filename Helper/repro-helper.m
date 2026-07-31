@@ -142,9 +142,11 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 
     // 踢一下 profiled 让它立刻重新扫描（best effort；
     // 即便没踢成，MIS 在校验时也会重读一遍 profile 库）。
+    // 用 /bin/sh + PATH 查找 killall，兼容 rootless / RootHide（同 SettingsView 方案）。
     pid_t pid = 0;
-    char *const killallArgv[] = { (char *)"/usr/bin/killall", (char *)"-HUP", (char *)"profiled", NULL };
-    if (posix_spawn(&pid, killallArgv[0], NULL, NULL, killallArgv, NULL) == 0 && pid > 0) {
+    char *const shArgv[] = { (char *)"/bin/sh", (char *)"-c",
+        (char *)"PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin killall -HUP profiled", NULL };
+    if (posix_spawn(&pid, shArgv[0], NULL, NULL, shArgv, NULL) == 0 && pid > 0) {
         int status = 0;
         waitpid(pid, &status, 0);
     }

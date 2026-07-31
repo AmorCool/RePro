@@ -671,4 +671,204 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     }];
 }
 
+#pragma mark - RPVAppID 实现
+
+@implementation RPVAppID
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _identifier = [dict[@"identifier"] copy] ?: @"";
+        _applicationName = [dict[@"name"] copy] ?: _identifier;
+
+        NSString *expiryStr = dict[@"expirationDate"];
+        if (expiryStr && [expiryStr length] > 0) {
+            // Apple API 返回的日期可能是 Unix 时间戳或 ISO 格式
+            double timestamp = [expiryStr doubleValue];
+            if (timestamp > 0) {
+                _applicationExpiryDate = [NSDate dateWithTimeIntervalSince1970:timestamp];
+            } else {
+                // 尝试 ISO 8601 解析
+                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+                fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+                fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
+                _applicationExpiryDate = [fmt dateFromString:expiryStr];
+            }
+        }
+    }
+    return self;
+}
+
+@end
+
+#pragma mark - RPVCertificateInfo 实现
+
+@implementation RPVCertificateInfo
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _identifier = [dict[@"id"] copy] ?: @"";
+
+        NSDictionary *attrs = dict[@"attributes"];
+        _machineName = [attrs[@"machineName"] copy] ?: @"Unknown";
+
+        // 根据机器名推断来源应用（与原版 RPVTroubleshootingCertificatesViewController 一致）
+        NSString *mn = _machineName;
+        if ([mn containsString:@"RPV"]) {
+            _applicationName = @"ReProvision";
+        } else if ([mn containsString:@"AltStore"]) {
+            _applicationName = @"AltStore";
+        } else if ([mn containsString:@"Cydia"]) {
+            _applicationName = @"Cydia Impactor or Extender";
+        } else {
+            _applicationName = @"Xcode";
+        }
+
+        _serialNumber = attrs[@"serialNumber"] ?: @"";
+    }
+    return self;
+}
+
+@end
+
+#pragma mark - AppIDs / 证书 API 实现
+
+- (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVAppID *> *_Nullable, NSError *_Nullable))completion {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *teamID = [self teamID];
+        if (!teamID || teamID.length == 0) {
+            RPVBridgeCallOnMain(^{
+                if (completion) completion(nil, [RPVBridge errorWithCode:RPVBridgeErrorNotSignedIn
+                                                         message:@"请先登录 Apple ID"]);
+            });
+            return;
+        }
+
+        [[EEAppleServices sharedInstance] ensureSessionWithIdentity:[self username]
+                                                            gsToken:[RPVResources getPassword]
+                                                 andCompletionHandler:^(NSError *sessionError, NSDictionary *sessionPlist) {
+            if (sessionError) {
+                RPVBridgeCallOnMain(^{ if (completion) completion(nil, sessionError); });
+                return;
+            }
+
+            [[EEAppleServices sharedInstance] listAllApplicationsForTeamID:teamID
+                                                                 systemType:EESystemTypeiOS
+                                                      withCompletionHandler:^(NSError *error, NSDictionary *dict) {
+                if (error) {
+                    RPVBridgeCallOnMain(^{ if (completion) completion(nil, error); });
+                    return;
+                }
+
+                NSArray *rawApps = dict[@"appIds"];
+                NSMutableArray<RPVAppID *> *result = [NSMutableArray array];
+                for (NSDictionary *appDict in rawApps) {
+                    RPVAppID *appId = [[RPVAppID alloc] initWithDictionary:appDict];
+                    [result addObject:appId];
+                }
+
+                // 按过期时间升序排列（与原版一致）
+                NSSortDescriptor *sortByDate = [NSSortDescriptor sortDescriptorWithKey:@"applicationExpiryDate"
+                                                                         ascending:YES];
+                [result sortUsingDescriptors:@[sortByDate]];
+
+                RPVBridgeCallOnMain(^{ if (completion) completion([result copy], nil); });
+            }];
+        }];
+    });
+}
+
+- (void)fetchCertificatesWithCompletion:(void (^)(NSArray<RPVCertificateInfo *> *_Nullable, NSError *_Nullable))completion {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *teamID = [self teamID];
+        if (!teamID || teamID.length == 0) {
+            RPVBridgeCallOnMain(^{
+                if (completion) completion(nil, [RPVBridge errorWithCode:RPVBridgeErrorNotSignedIn
+                                                         message:@"请先登录 Apple ID"]);
+            });
+            return;
+        }
+
+        [[EEAppleServices sharedInstance] ensureSessionWithIdentity:[self username]
+                                                            gsToken:[RPVResources getPassword]
+                                                 andCompletionHandler:^(NSError *sessionError, NSDictionary *sessionPlist) {
+            if (sessionError) {
+                RPVBridgeCallOnMain(^{ if (completion) completion(nil, sessionError); });
+                return;
+            }
+
+            [[EEAppleServices sharedInstance] listAllDevelopmentCertificatesForTeamID:teamID
+                                                                          systemType:EESystemTypeiOS
+                                                               withCompletionHandler:^(NSError *error, NSDictionary *dict) {
+                if (error) {
+                    RPVBridgeCallOnMain(^{ if (completion) completion(nil, error); });
+                    return;
+                }
+
+                NSArray *dataArray = dict[@"data"];
+                NSMutableArray<RPVCertificateInfo *> *result = [NSMutableArray array];
+                for (NSDictionary *certDict in dataArray) {
+                    RPVCertificateInfo *cert = [[RPVCertificateInfo alloc] initWithDictionary:certDict];
+                    [result addObject:cert];
+                }
+
+                RPVBridgeCallOnMain(^{ if (completion) completion([result copy], nil); });
+            }];
+        }];
+    });
+}
+
+- (void)revokeCertificateWithIdentifier:(NSString *)identifier
+                            completion:(void (^)(NSError *_Nullable))completion {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *teamID = [self teamID];
+        [[EEAppleServices sharedInstance] ensureSessionWithIdentity:[self username]
+                                                            gsToken:[RPVResources getPassword]
+                                                 andCompletionHandler:^(NSError *sessionError, NSDictionary *plist) {
+            if (sessionError) {
+                RPVBridgeCallOnMain(^{ if (completion) completion(sessionError); });
+                return;
+            }
+
+            [[EEAppleServices sharedInstance] revokeCertificateForIdentifier:identifier
+                                                                   andTeamID:teamID
+                                                                  systemType:EESystemTypeiOS
+                                                       withCompletionHandler:^(NSError *error, NSDictionary *resp) {
+                RPVBridgeCallOnMain(^{ if (completion) completion(error); });
+            }];
+        }]);
+    });
+}
+
+- (void)revokeAllCertificatesWithCompletion:(void (^)(NSError *_Nullable))completion {
+    // 先拉取证书列表，再逐个撤销
+    [self fetchCertificatesWithCompletion:^(NSArray<RPVCertificateInfo *> *certs, NSError *error) {
+        if (error) {
+            if (completion) completion(error);
+            return;
+        }
+        if (certs.count == 0) {
+            if (completion) completion(nil);
+            return;
+        }
+
+        // 用 dispatch_group 等待所有撤销完成
+        dispatch_group_t group = dispatch_group_create();
+        __block NSError *firstError = nil;
+
+        for (RPVCertificateInfo *cert in certs) {
+            dispatch_group_enter(group);
+            [self revokeCertificateWithIdentifier:cert.identifier completion:^(NSError *err) {
+                if (!firstError && err) firstError = err;
+                dispatch_group_leave(group);
+            }];
+        }
+
+        dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+            if (completion) completion(firstError);
+        });
+    }];
+}
+
 @end

@@ -72,6 +72,27 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 @property (nonatomic, strong, nullable) NSDate *nearestExpiryDate;
 @end
 
+#pragma mark - 已注册 AppID
+
+/// Apple 开发者账号下已注册的 App ID（来自 listAppIds.action）
+@interface RPVAppID : NSObject
+@property (nonatomic, copy) NSString *identifier;        // bundle identifier
+@property (nonatomic, copy) NSString *applicationName;   // App 名称
+@property (nonatomic, strong, nullable) NSDate *applicationExpiryDate; // 过期时间
+- (instancetype)initWithDictionary:(NSDictionary *)dict;
+@end
+
+#pragma mark - 开发者证书
+
+/// Apple 开发者账号下的开发证书（来自 certificates API）
+@interface RPVCertificateInfo : NSObject
+@property (nonatomic, copy) NSString *identifier;        // 证书 ID（用于撤销）
+@property (nonatomic, copy) NSString *serialNumber;      // 序列号
+@property (nonatomic, copy) NSString *machineName;       // 设备名
+@property (nonatomic, copy) NSString *applicationName;   // 来源应用（ReProvision / AltStore / Xcode 等）
+- (instancetype)initWithDictionary:(NSDictionary *)dict;
+@end
+
 #pragma mark - 桥接主类
 
 @interface RPVBridge : NSObject
@@ -161,6 +182,29 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 /// 采集运行环境快照（磁盘 IO 在后台队列，回调在主队列）
 - (void)fetchEnvironmentInfoWithCompletion:(void (^)(RPVEnvironmentInfo *info))completion
     NS_SWIFT_NAME(fetchEnvironmentInfo(completion:));
+
+#pragma mark 已注册 AppIDs
+
+/// 拉取当前 Team 下已注册的 App ID 列表（来自 Apple listAppIds.action）
+- (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVAppID *> *_Nullable appIds,
+                                          NSError *_Nullable error))completion
+    NS_SWIFT_NAME(fetchAppIDs(completion:));
+
+#pragma mark 证书管理
+
+/// 拉取当前 Team 下的开发证书列表（来自 Apple certificates API）
+- (void)fetchCertificatesWithCompletion:(void (^)(NSArray<RPVCertificateInfo *> *_Nullable certs,
+                                                  NSError *_Nullable error))completion
+    NS_SWIFT_NAME(fetchCertificates(completion:));
+
+/// 撤销指定证书
+- (void)revokeCertificateWithIdentifier:(NSString *)identifier
+                            completion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(revokeCertificate(identifier:completion:));
+
+/// 撤销所有证书（逐个调用 revokeCertificateForIdentifier）
+- (void)revokeAllCertificatesWithCompletion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(revokeAllCertificates(completion:));
 
 #pragma mark root helper 注入点
 

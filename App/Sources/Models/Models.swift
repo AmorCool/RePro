@@ -152,3 +152,54 @@ enum ReProError: LocalizedError {
         }
     }
 }
+
+// MARK: - 已注册 AppID（来自 Apple Developer API）
+
+struct RegisteredAppID: Identifiable, Hashable {
+    let identifier: String          // bundle identifier
+    let applicationName: String     // App 名称
+    let applicationExpiryDate: Date?
+
+    var id: String { identifier }
+
+    /// 距过期还剩几天；已过期返回负数，无日期返回 nil
+    var daysRemaining: Int? {
+        guard let expiry = applicationExpiryDate else { return nil }
+        return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
+    }
+
+    /// 格式化的剩余时间字符串（与原版 RPVResources.getFormattedTimeRemaining 一致）
+    var formattedTimeRemaining: String {
+        guard let days = daysRemaining else { return "未知" }
+        if days < 0 { return "已过期 \(abs(days)) 天" }
+        if days == 0 { return "今天过期" }
+        if days <= 30 { return "\(days) 天后过期" }
+        // 超过 30 天显示具体日期
+        let fmt = DateFormatter()
+        fmt.dateStyle = .medium
+        if let expiry = applicationExpiryDate { return fmt.string(from: expiry) }
+        return "未知"
+    }
+
+    init(from objC: RPVAppID) {
+        self.identifier = objC.identifier ?? ""
+        self.applicationName = objC.applicationName ?? identifier
+        self.applicationExpiryDate = objC.applicationExpiryDate
+    }
+}
+
+// MARK: - 开发者证书（来自 Apple certificates API）
+
+struct DevCertificate: Identifiable, Hashable {
+    let id: String                 // 证书 ID（用于撤销）
+    let serialNumber: String       // 序列号
+    let machineName: String        // 设备名
+    let applicationName: String    // 来源应用（ReProvision / AltStore / Xcode 等）
+
+    init(from objC: RPVCertificateInfo) {
+        self.id = objC.identifier ?? ""
+        self.serialNumber = objC.serialNumber ?? ""
+        self.machineName = objC.machineName ?? "Unknown"
+        self.applicationName = objC.applicationName ?? "Xcode"
+    }
+}

@@ -22,6 +22,7 @@ struct SettingsView: View {
 
     @State private var showingRespringAlert = false
     @State private var showingSignOutAlert = false
+    @State private var showingCertificates = false
     @State private var zsignPath: String?
 
     var body: some View {
@@ -157,6 +158,18 @@ struct SettingsView: View {
 
     private var systemSection: some View {
         Section("系统操作") {
+            NavigationLink(destination: CertificatesView()) {
+                HStack {
+                    Image(systemName: "lock.shield")
+                    Text("管理证书")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .disabled(!account.isSignedIn)
+
             Button {
                 showingRespringAlert = true
             } label: {
@@ -170,6 +183,8 @@ struct SettingsView: View {
                 }
             }
             .foregroundColor(.red)
+        } footer: {
+            Text("证书管理可查看和撤销 Apple 开发者账号下的签名证书。免费账号最多 2 个活跃证书，超出后签名会失败。")
         }
     }
 
@@ -303,31 +318,36 @@ struct SettingsView: View {
         }
     }
 
-    /// posix_spawn 执行 killall SpringBoard（iOS 上没有 Process，只能走系统调用）
+    /// 通过 /bin/sh 执行 killall SpringBoard（兼容 rootless / RootHide）。
+    /// 原版 RPVAccountViewController.m:308-314 的方案：spawn /bin/sh，
+    /// 由 shell 按 PATH 顺序查找 killall，避免硬编码路径在 Dopamine/RootHide 下 ENOENT。
     private func performRespring() {
-        let killallPath = "/usr/bin/killall"
         var pid: pid_t = 0
 
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
 
+        // 越狱 bootstrap 提供的 killall 在 rootless 下位于 /var/jb/usr/bin/，
+        // RootHide 下在随机 jbroot 里。/bin/sh 在 iOS 原生系统里始终存在。
+        let command = "PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin killall SpringBoard"
         let argv: [UnsafeMutablePointer<CChar>?] = [
-            strdup(killallPath),
-            strdup("SpringBoard"),
+            strdup("/bin/sh"),
+            strdup("-c"),
+            strdup(command),
             nil
         ]
         let envp: [UnsafeMutablePointer<CChar>?] = [nil]
 
-        let result = posix_spawn(&pid, killallPath, nil, &attr, argv, envp)
+        let result = posix_spawn(&pid, "/bin/sh", nil, &attr, argv, envp)
 
         for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
         posix_spawnattr_destroy(&attr)
 
         if result == 0 {
-            LogManager.shared.info("已发送 killall SpringBoard (pid=\(pid))", source: "SettingsView")
+            LogManager.shared.info("已发送 killall SpringBoard (sh pid=\(pid))", source: "SettingsView")
         } else {
-            LogManager.shared.error("posix_spawn 失败: errno=\(result)", source: "SettingsView")
+            LogManager.shared.error("posix_spawn(/bin/sh) 失败: errno=\(result)", source: "SettingsView")
         }
     }
 }

@@ -1,6 +1,47 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - UIDocumentPicker 包装器（open 模式，解决 .fileImporter copy 模式下第三方文件被静默忽略的问题）
+//
+// 原版 RPVInstalledViewController.m:1163-1197 明确指出：
+//   "在 copy 模式下，点击会被静默忽略（长按却仍然有效）"
+// SwiftUI 的 .fileImporter 无法控制 asCopy 参数，因此必须手写 UIViewControllerRepresentable。
+
+struct IPADocumentPicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        var types: [UTType] = []
+        if let ipaType = UTType(filenameExtension: "ipa") {
+            types.append(ipaType)
+        }
+        // 原版还声明了自定义 UTI jp.soh.reprovision.ipa，这里用动态类型兜底
+        types.append(.archive)
+        types.append(.item)
+
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first { onPick(url) }
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            LogManager.shared.info("用户取消了文件选择", source: "AppsView")
+        }
+    }
+}
+
 // MARK: - 已安装应用列表
 
 struct AppsView: View {
@@ -8,6 +49,7 @@ struct AppsView: View {
     @ObservedObject private var account = BridgeClient.shared
     @State private var showingFileImporter = false
     @State private var pendingUninstall: InstalledApp?
+    @State private var showingAppIDs = false
 
     var body: some View {
         NavigationView {
@@ -38,19 +80,9 @@ struct AppsView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) { statusBar }
-            .fileImporter(
-                isPresented: $showingFileImporter,
-                // .ipa 没有系统 UTI，用 archive + item 兜底，否则文件选择器会把 ipa 灰掉
-                allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .archive, .archive, .item],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    if let url = urls.first {
-                        viewModel.importIPA(url: url)
-                    }
-                case .failure(let error):
-                    LogManager.shared.error("选择 IPA 失败: \(error.localizedDescription)", source: "AppsView")
+            .fullScreenCover(isPresented: $showingFileImporter) {
+                IPADocumentPicker { url in
+                    viewModel.importIPA(url: url)
                 }
             }
             .confirmationDialog("卸载应用",
@@ -134,6 +166,27 @@ struct AppsView: View {
                     } label: {
                         Label("卸载", systemImage: "trash")
                     }
+                }
+            }
+
+            // 已注册 AppIDs 入口（原版在 Installed tab 内的标签）
+            if account.isSignedIn {
+                Section {
+                    NavigationLink(destination: AppIDsView()) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "number")
+                                .foregroundColor(.blue)
+                            Text("已注册 App IDs")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("开发者账号")
+                } footer: {
+                    Text("查看当前 Apple 开发者账号下已注册的应用标识符及其过期时间")
                 }
             }
         }

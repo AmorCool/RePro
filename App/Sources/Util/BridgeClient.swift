@@ -197,6 +197,50 @@ final class BridgeClient: ObservableObject {
             ))
         }
     }
+
+    // MARK: - 已注册 AppIDs
+
+    func fetchAppIDs(completion: @escaping (Result<[RegisteredAppID], Error>) -> Void) {
+        bridge.fetchAppIDs { appIds, error in
+            if let appIds = appIds {
+                completion(.success(appIds.map(RegisteredAppID.init))))
+            } else {
+                completion(.failure(error ?? ReProError.notSignedIn))
+            }
+        }
+    }
+
+    // MARK: - 证书管理
+
+    func fetchCertificates(completion: @escaping (Result<[DevCertificate], Error>) -> Void) {
+        bridge.fetchCertificates { certs, error in
+            if let certs = certs {
+                completion(.success(certs.map(DevCertificate.init))))
+            } else {
+                completion(.failure(error ?? ReProError.notSignedIn))
+            }
+        }
+    }
+
+    func revokeCertificate(id: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        bridge.revokeCertificate(identifier: id) { error in
+            if let error = error {
+                completion(.failure(error))
+            } else {
+                completion(.success(()))
+            }
+        }
+    }
+
+    func revokeAllCertificates(completion: @escaping (Result<Void, Error>) -> Void) {
+        bridge.revokeAllCertificates { error in
+            if let error = error {
+                completion(.failure(error))
+            } else {
+                completion(.success(()))
+            }
+        }
+    }
 }
 
 // MARK: - RPVAppInfo -> InstalledApp

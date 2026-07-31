@@ -19,6 +19,8 @@
 		52DB7F9DB2D49F92BCB221B4 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44E002F424C520C1E2A4550 /* MainView.swift */; };
 		6BB06C00C038A7C5E59F1947 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A471209E5EBFF39356A5613A /* SettingsView.swift */; };
 		21B255901EA38567F9CA03F7 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB79B642A6C08DC65D68E5FB /* ShareSheet.swift */; };
+		AFD8720C713B149811F2E120 /* AppIDsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4A1606FC62B0FACA8550AA /* AppIDsView.swift */; };
+		FD97537155FAF35157E6B822 /* CertificatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A2115555364E5F669192E6F /* CertificatesView.swift */; };
 		5C46236D97DAE91B7176B83C /* RPVBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 92147DABB7FDBBB5791C8C09 /* RPVBridge.m */; };
 		EF0075E9E8637CFDC886AB4B /* RPVApplication.m in Sources */ = {isa = PBXBuildFile; fileRef = 9DC823649B8DC9449B7EF65D /* RPVApplication.m */; };
 		33401BD4DF0FCAEE178D362F /* RPVApplicationDatabase.m in Sources */ = {isa = PBXBuildFile; fileRef = 2BA51A08CCDD8F74006A6531 /* RPVApplicationDatabase.m */; };
@@ -114,6 +116,8 @@
 		E44E002F424C520C1E2A4550 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
 		A471209E5EBFF39356A5613A /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BB79B642A6C08DC65D68E5FB /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
+		7E4A1606FC62B0FACA8550AA /* AppIDsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIDsView.swift; sourceTree = "<group>"; };
+		4A2115555364E5F669192E6F /* CertificatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificatesView.swift; sourceTree = "<group>"; };
 		6D9CC9E206293C6FCF49C763 /* apple-ios-g3.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = "apple-ios-g3.pem"; sourceTree = "<group>"; };
 		BD0BF4D63EBAC5039F648FE2 /* apple-ios.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = "apple-ios.pem"; sourceTree = "<group>"; };
 		C3639A4A8D0CB921F64877ED /* root.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = root.pem; sourceTree = "<group>"; };
@@ -963,6 +967,8 @@
 				52DB7F9DB2D49F92BCB221B4 /* MainView.swift in Sources */,
 				6BB06C00C038A7C5E59F1947 /* SettingsView.swift in Sources */,
 				21B255901EA38567F9CA03F7 /* ShareSheet.swift in Sources */,
+				FD97537155FAF35157E6B822 /* CertificatesView.swift in Sources */,  /* ADDED */
+				AFD8720C713B149811F2E120 /* AppIDsView.swift in Sources */,  /* ADDED */
 				5C46236D97DAE91B7176B83C /* RPVBridge.m in Sources */,
 				EF0075E9E8637CFDC886AB4B /* RPVApplication.m in Sources */,
 				33401BD4DF0FCAEE178D362F /* RPVApplicationDatabase.m in Sources */,
