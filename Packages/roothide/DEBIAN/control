@@ -2,7 +2,7 @@ Package: jp.soh.reprovision
 Name: RePro
 Description: iOS 应用签名工具 - RootHide 专用版
 Depends: firmware (>= 15.0), zip, unzip
-Version: 1.1.18~release
+Version: 1.1.19~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm64e

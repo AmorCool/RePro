@@ -28,5 +28,22 @@
 	<!-- 写入系统描述文件库（真实路径，不是 jbroot overlay） -->
 	<key>com.apple.private.storage-managedpreferences</key>
 	<true/>
+
+	<!-- 经 MCProfileConnection XPC 把描述文件注册进 profiled 真实库。
+	     RootHide 下「写文件目录 + SIGHUP」不可靠（profiled 不保证重扫目录，
+	     且 App 沙箱把 XPC 重定向到 overlay 假库），必须由本 root+no-sandbox 的
+	     helper 走 MC XPC 注册；profiled 要求调用方持有此数组授权（含 Installation）。
+	     缺它会出现 MCXPCErrorDomain Code=39000 → installd 0xe8008015。
+	     helper 由 ldid 签名，不受免费证书白名单限制，可直接注入此 entitlement。 -->
+	<key>com.apple.managedconfiguration.profiled.provisioningprofiles</key>
+	<array>
+		<string>Read</string>
+		<string>Installation</string>
+		<string>Removal</string>
+	</array>
+
+	<!-- 允许连接 profiled XPC（MCProfileConnection 的前提）。 -->
+	<key>com.apple.managedconfiguration.profiled-access</key>
+	<true/>
 </dict>
 </plist>
