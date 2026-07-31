@@ -1,46 +1,72 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - IPA 文件选择器（UIDocumentPickerViewController 包装）
+// MARK: - IPA 文件选择器
 //
-// 使用 UIViewControllerRepresentable 包装系统文档选择器，
-// 支持 .ipa 文件的选择（带勾选圈和完成按钮，如图二）。
-// 必须用 .sheet 而非 .fullScreenCover，否则在越狱环境下可能无法正常选择文件。
+// 用空 UIViewController 作为宿主，在 viewDidAppear 时真正 present
+// UIDocumentPickerViewController。这样 picker 在 VC 层级链中位置正确，
+// delegate 回调（didPickDocumentsAt / didPickDocumentsAtURLs）才能正常触发。
+//
+// 关键点：
+//  - asCopy: true —— 让系统把选中文件拷贝到沙箱临时目录，避免越狱环境下
+//    安全作用域 URL（security-scoped resource）访问失败
+//  - 不允许选多个文件（我们只需要一个 .ipa）
 
 struct IPADocumentPicker: UIViewControllerRepresentable {
     let onPick: (URL) -> Void
     @Environment(\.presentationMode) var presentationMode
 
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // 显式声明 IPA 的 UTType（iOS 不内置 .ipa 类型，需要动态创建）
-        let ipaType = UTType(filenameExtension: "ipa") ?? UTType.data
-
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [ipaType, .archive, .item], asCopy: false)
-        picker.delegate = context.coordinator
-        return picker
+    func makeUIViewController(context: Context) -> PickerHostController {
+        let host = PickerHostController()
+        host.onPick = onPick
+        host.onDismiss = { [weak host] in
+            host?.dismiss(animated: true) {
+                self.presentationMode.wrappedValue.dismiss()
+            }
+        }
+        return host
     }
 
-    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: PickerHostController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onDismiss: { presentationMode.wrappedValue.dismiss() }) }
+    /// 空 VC：仅用于承载 UIDocumentPickerViewController 的 present
+    class PickerHostController: UIViewController {
+        var onPick: ((URL) -> Void)?
+        var onDismiss: (() -> Void)?
+        var appeared = false
 
-    class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        let onDismiss: () -> Void
-        init(onPick: @escaping (URL) -> Void, onDismiss: @escaping () -> Void) {
-            self.onPick = onPick
-            self.onDismiss = onDismiss
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard !appeared else { return }
+            appeared = true
+            presentPicker()
         }
 
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            if let url = urls.first { onPick(url) }
-            onDismiss()
+        private func presentPicker() {
+            let ipaType = UTType(filenameExtension: "ipa") ?? UTType.data
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [ipaType, .archive, .item], asCopy: true)
+            picker.delegate = self
+            // 允许选择目录（某些 IPA 可能在包内）
+            picker.allowsMultipleSelection = false
+            self.present(picker, animated: true)
         }
+    }
+}
 
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            LogManager.shared.info("用户取消了文件选择", source: "AppsView")
-            onDismiss()
+// MARK: - UIDocumentPickerDelegate
+
+extension IPADocumentPicker.PickerHostController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if let url = urls.first {
+            LogManager.shared.info("用户选择了文件: \(url.lastPathComponent)", source: "AppsView")
+            onPick?(url)
         }
+        onDismiss?()
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        LogManager.shared.info("用户取消了文件选择", source: "AppsView")
+        onDismiss?()
     }
 }
 
@@ -51,7 +77,6 @@ struct AppsView: View {
     @ObservedObject private var account = BridgeClient.shared
     @State private var showingFileImporter = false
     @State private var pendingUninstall: InstalledApp?
-    @State private var showingAppIDs = false
 
     var body: some View {
         NavigationView {
@@ -61,11 +86,6 @@ struct AppsView: View {
                     emptyState
                 } else {
                     appList
-                }
-
-                // 已注册 AppIDs 入口 —— 始终显示（登录后），不受应用列表是否为空影响
-                if account.isSignedIn {
-                    appIDsSection
                 }
             }
             .navigationTitle("RePro")
@@ -160,24 +180,6 @@ struct AppsView: View {
             .disabled(viewModel.isBusy)
             Spacer()
         }
-    }
-
-    // MARK: 已注册 AppIDs（精简版 —— 单行入口，无冗余文字）
-
-    private var appIDsSection: some View {
-        NavigationLink(destination: AppIDsView()) {
-            HStack(spacing: 10) {
-                Image(systemName: "number")
-                    .foregroundColor(.blue)
-                    .frame(width: 24)
-                Text("查询已注册 AppID")
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.vertical, 4)
     }
 
     // MARK: 应用列表

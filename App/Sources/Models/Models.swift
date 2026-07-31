@@ -168,6 +168,41 @@ struct RegisteredAppID: Identifiable, Hashable {
         return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
     }
 
+    /// 详细剩余时间（X天X小时X分钟），与原版 ReProvision 一致
+    var detailedTimeRemaining: String {
+        guard let expiry = applicationExpiryDate else { return "到期时间未知" }
+        let now = Date()
+        if expiry <= now {
+            // 已过期 —— 显示过了多久
+            let components = Calendar.current.dateComponents([.day, .hour, .minute], from: expiry, to: now)
+            if let d = components.day, d > 0 {
+                return "已过期 \(d) 天"
+            } else if let h = components.hour, h > 0 {
+                return "已过期 \(h) 小时"
+            } else {
+                return "已过期"
+            }
+        }
+
+        // 未过期 —— 精确到天/小时/分钟
+        let components = Calendar.current.dateComponents([.day, .hour, .minute], from: now, to: expiry)
+        var parts: [String] = []
+        if let d = components.day, d > 0 {
+            parts.append("\(d)天")
+        }
+        if let h = components.hour, h > 0 {
+            parts.append("\(h)小时")
+        }
+        if let m = components.minute, m > 0, parts.isEmpty {
+            // 只在不足 1 小时时显示分钟
+            parts.append("\(m)分钟")
+        }
+        if parts.isEmpty {
+            return "即将过期"
+        }
+        return parts.joined() + "后过期"
+    }
+
     /// 格式化的剩余时间字符串（与原版 RPVResources.getFormattedTimeRemaining 一致）
     var formattedTimeRemaining: String {
         guard let days = daysRemaining else { return "未知" }
