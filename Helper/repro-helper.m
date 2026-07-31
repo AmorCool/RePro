@@ -203,6 +203,12 @@ static NSString *RPVHelperJbrootProfileDir(void) {
 
 #pragma mark - 经 MCProfileConnection 注册到真实 profiled
 
+// 与 App 端 RPVApplicationSigning.m 保持一致的运行时声明（纯 ObjC runtime 访问，
+// 避免对非 UI target 产生链接期依赖）。
+@interface MCProfileConnection : NSObject
++ (instancetype)sharedConnection;
+@end
+
 /// 通过 ManagedConfiguration 的 MCProfileConnection XPC 把描述文件注册进系统 profile 库。
 /// 关键：本工具以 root 运行且 entitlement 含 platform-application+no-sandbox，
 /// 因此它的 MCProfileConnection 调用走的是「真实系统 profiled」（未被 RootHide 的沙箱
