@@ -36,15 +36,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/openssl-ios
-          key: openssl-ios-arm64-3.4.1-${{ runner.os }}
+          key: openssl-ios-arm64-1.1.1w-${{ runner.os }}
 
       - name: Build OpenSSL for iOS arm64
         if: steps.openssl-cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          OPENSSL_VER=3.4.1
+          # OpenSSL 1.1.x (1.1.1w) — CSR/签名需要 1.1.x 兼容性，
+          # 3.x 静态链接 default provider 不自动激活导致 CSR 生成失败。
+          OPENSSL_TAG=OpenSSL_1_1_1w
           rm -rf /tmp/openssl-ios-src
-          git clone --depth 1 --branch "openssl-${OPENSSL_VER}" https://github.com/openssl/openssl.git /tmp/openssl-ios-src
+          git clone --depth 1 --branch "${OPENSSL_TAG}" https://github.com/openssl/openssl.git /tmp/openssl-ios-src
           cd /tmp/openssl-ios-src
           export CROSS_TOP=$(xcrun --sdk iphoneos --show-sdk-platform-path)/Developer
           export CROSS_SDK=$(basename $(xcrun --sdk iphoneos --show-sdk-path))
