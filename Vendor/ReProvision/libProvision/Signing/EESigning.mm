@@ -7,6 +7,7 @@
 //
 
 #import "EESigning.h"
+#import "RPVOpenSSLInit.h"
 #include "ldid.hpp"
 
 #include <openssl/err.h>
@@ -288,7 +289,8 @@ static std::string RPVSanitizeEntitlementsXML(const std::string &xml, NSSet *all
      * 1.) These function calls are essential to make PEM_read and  *
      *     other openssl functions work.                            *
      * ------------------------------------------------------------ */
-    OpenSSL_add_all_algorithms();
+    // OpenSSL 3.x 静态链接需显式激活 default provider（与 zsign 一致）。
+    RPVEnsureOpenSSLInit();
     ERR_load_crypto_strings();
 
     /*--------------------------------------------------------------*

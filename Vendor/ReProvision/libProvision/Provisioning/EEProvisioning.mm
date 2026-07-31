@@ -9,6 +9,7 @@
 #import "EEProvisioning.h"
 #import "EESigning.h"
 #import "SAMKeychain.h"
+#import "RPVOpenSSLInit.h"
 
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
@@ -531,8 +532,9 @@
 - (int)_generateCodeSigningRequest:(NSData **)privateKey:(NSData **)codeSigningRequest {
     // Code utilised from: http://www.codepool.biz/how-to-use-openssl-to-generate-x-509-certificate-request.html
 
-    // OpenSSL 3.x 需要显式初始化算法表，否则 RSA/X509 操作会静默失败
-    OpenSSL_add_all_algorithms();
+    // OpenSSL 3.x 静态链接时 default provider 不会自动激活，必须显式加载，
+    // 否则 EVP_sha1()/RSA_generate_key_ex 静默失败 → 报 CSR 生成错误。
+    RPVEnsureOpenSSLInit();
 
     int ret = 0;
     RSA *r = NULL;
@@ -635,6 +637,19 @@
 
     // 7. free
 free_all:
+    if (ret != 1) {
+        // 诊断：把 OpenSSL 错误队列打到设备日志，便于排查 CSR 生成失败的根因
+        // （例如 default provider 未激活时 EVP_sha1()/RSA_generate_key_ex 会在这里留痕）。
+        char errBuf[256];
+        unsigned long e = ERR_get_error();
+        if (e != 0) {
+            ERR_error_string_n(e, errBuf, sizeof(errBuf));
+            NSLog(@"[RePro] _generateCodeSigningRequest failed: %s (ret=%d)", errBuf, ret);
+        } else {
+            NSLog(@"[RePro] _generateCodeSigningRequest failed with ret=%d (no OpenSSL error queued)", ret);
+        }
+    }
+
     r = NULL;  // will be free rsa when EVP_PKEY_free(pKey)
 
     X509_REQ_free(x509_req);
