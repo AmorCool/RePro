@@ -123,16 +123,16 @@ private struct AppIDRowView: View {
 
     @ViewBuilder
     private var expiryBadge: some View {
-        guard let days = appID.daysRemaining else {
-            Text("到期时间未知").font(.caption2).foregroundColor(.secondary)
-            return
-        }
-        if days < 0 {
-            badge("已过期 \(abs(days)) 天", color: .red)
-        } else if days <= 30 {
-            badge("\(days) 天后过期", color: .orange)
+        if let days = appID.daysRemaining {
+            if days < 0 {
+                badge("已过期 \(abs(days)) 天", color: .red)
+            } else if days <= 30 {
+                badge("\(days) 天后过期", color: .orange)
+            } else {
+                badge("有效", color: .green)
+            }
         } else {
-            badge("有效", color: .green)
+            Text("到期时间未知").font(.caption2).foregroundColor(.secondary)
         }
     }
 
