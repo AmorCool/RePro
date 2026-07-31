@@ -16,7 +16,6 @@
 #import <mach-o/loader.h>
 #import <mach-o/arch.h>
 #import <mach/machine.h>
-#import <libkern/OSByteOrder.h>
 #import <stdio.h>
 #import <sys/stat.h>
 
@@ -32,6 +31,14 @@
 // arm64e is identified by the 0x80000000 capability bit in the Mach-O cpusubtype
 // (independent of the exact low subtype value), which is robust across SDKs.
 #define RZ_ARM64E_BIT 0x80000000u
+
+// FAT/Mach-O fat_arch fields are big-endian on disk; iOS/arm64 is little-endian.
+// Local swap avoids depending on <libkern/OSByteOrder.h>, which is not reliably
+// exposed under this target's C99 settings.
+static inline uint32_t RZSwapBigToHost32(uint32_t x) {
+    return ((x & 0x000000FFu) << 24) | ((x & 0x0000FF00u) << 8) |
+           ((x & 0x00FF0000u) >> 8)  | ((x & 0xFF000000u) >> 24);
+}
 
 static BOOL RZFileLooksLikeMachO(NSString *path) {
     FILE *f = fopen(path.UTF8String, "rb");
@@ -56,20 +63,20 @@ static BOOL RZThinArm64eSliceInFile(NSString *path) {
         // FAT archive (fields are big-endian on disk).
         if (data.length < sizeof(struct fat_header)) return NO;
         const struct fat_header *fh = (const struct fat_header *)data.bytes;
-        uint32_t nfat = OSSwapBigToHost32(fh->nfat_arch);
+        uint32_t nfat = RZSwapBigToHost32(fh->nfat_arch);
         if (nfat == 0 || data.length < sizeof(struct fat_header) + (size_t)nfat * sizeof(struct fat_arch)) return NO;
         const struct fat_arch *archs = (const struct fat_arch *)((const char *)data.bytes + sizeof(struct fat_header));
 
         int64_t arm64Off = -1, arm64Size = -1;
         BOOL sawArm64e = NO;
         for (uint32_t i = 0; i < nfat; i++) {
-            uint32_t ct = OSSwapBigToHost32(archs[i].cputype);
-            uint32_t st = OSSwapBigToHost32(archs[i].cpusubtype);
+            uint32_t ct = RZSwapBigToHost32(archs[i].cputype);
+            uint32_t st = RZSwapBigToHost32(archs[i].cpusubtype);
             if (ct != CPU_TYPE_ARM64) continue;
             if (st & RZ_ARM64E_BIT) { sawArm64e = YES; continue; }  // arm64e slice -> drop
             if (arm64Off < 0) {                             // first plain arm64 slice -> keep
-                arm64Off = OSSwapBigToHost32(archs[i].offset);
-                arm64Size = OSSwapBigToHost32(archs[i].size);
+                arm64Off = RZSwapBigToHost32(archs[i].offset);
+                arm64Size = RZSwapBigToHost32(archs[i].size);
             }
         }
         if (arm64Off < 0 && sawArm64e) {
