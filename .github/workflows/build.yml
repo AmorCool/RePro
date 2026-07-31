@@ -86,9 +86,6 @@ jobs:
             exit 1
           fi
           echo "Built app at $APP_PATH"
-            exit 1
-          fi
-          echo "Built app at $APP_PATH"
 
       - name: Build Daemon (reprovisiond)
         run: |
