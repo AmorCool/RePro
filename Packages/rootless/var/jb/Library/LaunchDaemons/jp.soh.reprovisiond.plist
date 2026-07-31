@@ -10,6 +10,9 @@
         <string>/var/jb/usr/libexec/reprovisiond</string>
     </array>
 
+    <key>UserName</key>
+    <string>root</string>
+
     <key>RunAtLoad</key>
     <true/>
 

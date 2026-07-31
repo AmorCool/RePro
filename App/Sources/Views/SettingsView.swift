@@ -37,11 +37,11 @@ struct SettingsView: View {
 
                 // MARK: Apple ID 账户
                 Section("Apple ID 账户") {
-                    SecureField("Apple ID", text: $appleID)
+                    TextField("Apple ID", text: $appleID)
                         .textContentType(.username)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
-                    SecureField("密码", text: $password)
+                    TextField("密码", text: $password)
                         .textContentType(.password)
 
                     if isLoggingIn {
