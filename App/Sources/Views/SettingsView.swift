@@ -183,15 +183,45 @@ struct SettingsView: View {
     }
 
     private func performRespringNow() {
+        // 先尝试通过 daemon 执行（推荐方式）
         DaemonClient.shared.respring { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:
                     LogManager.shared.info("SpringBoard 重启中...", source: "SettingsView")
-                case .failure(let error):
-                    self.loginMessage = "重启失败: \(error.localizedDescription)"
-                    LogManager.shared.error("重启 SpringBoard 失败: \(error)", source: "SettingsView")
+                case .failure:
+                    // daemon 不可用时，直接调用 killall（降级方案）
+                    LogManager.shared.info("daemon 不可用，使用降级方案重启 SpringBoard", source: "SettingsView")
+                    self.fallbackRespring()
                 }
+            }
+        }
+    }
+
+    /// 降级方案：不依赖 daemon，直接执行 killall SpringBoard
+    private func fallbackRespring() {
+        let killallPath = "/usr/bin/killall"
+        let processName = "SpringBoard"
+
+        // 使用 NSTask/Process 执行（iOS 15+ 可用）
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: killallPath)
+        task.arguments = [processName]
+
+        do {
+            try task.run()
+            LogManager.shared.info("已发送 killall SpringBoard 命令", source: "SettingsView")
+        } catch {
+            // 最后的兜底：尝试 launchctl kickstart
+            let fallbackTask = Process()
+            fallbackTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            fallbackTask.arguments = ["kickstart", "gui/\(getuid())/com.apple.SpringBoard"]
+            do {
+                try fallbackTask.run()
+                LogManager.shared.info("使用 launchctl kickstart 重启 SpringBoard", source: "SettingsView")
+            } catch {
+                self.loginMessage = "重启失败: \(error.localizedDescription)"
+                LogManager.shared.error("所有重启方案均失败: \(error)", source: "SettingsView")
             }
         }
     }

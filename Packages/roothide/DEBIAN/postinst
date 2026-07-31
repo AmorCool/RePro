@@ -110,3 +110,20 @@ uicache -p /Applications/RePro.app 2>/dev/null || true
     launchctl print system/jp.soh.reprovisiond 2>/dev/null | head -10 || echo "[RePro] 无法查询 launchd 状态"
     ps aux | grep reprovisiond | grep -v grep || echo "[RePro] 进程列表中未找到 reprovisiond"
 } >> "$LOG_FILE" 2>&1
+
+# === 延迟重启 SpringBoard（安装完成后自动刷新）===
+# 使用后台进程延迟执行，不阻塞 postinst（否则 dpkg 无法正常完成）
+(
+    sleep 3
+    echo "[RePro] 延迟重启 SpringBoard..." >> "$LOG_FILE" 2>&1
+    # 先尝试 killall
+    if command -v killall >/dev/null 2>&1; then
+        killall SpringBoard 2>/dev/null || true
+    fi
+    # 如果 killall 失败（权限不足），尝试 launchctl kickstart
+    sleep 1
+    if pgrep -x SpringBoard >/dev/null 2>&1; then
+        launchctl kickstart "gui/$(id -u)/com.apple.SpringBoard" 2>/dev/null || true
+    fi
+) &
+disown $! 2>/dev/null || true
