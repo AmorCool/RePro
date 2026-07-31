@@ -2,8 +2,12 @@
 # ReProvision RootHide 包 postinst
 # RootHide 布局：dpkg 自动映射到 jbroot，/ = jbroot
 #
-# ★★★ 关键：RootHide 的 LaunchDaemons 实际注册在 user/foreground 域，
-#       不是标准 iOS 的 system 域！postinst 必须用正确的域操作。
+# ★★★ 关键 ★★★
+# 1. 必须以 exit 0 结尾（否则 dpkg 认为安装未完成，Sileo 不显示"完成"按钮）
+# 2. 二进制必须 root:wheel / 0755（否则 daemon 无法以 root 身份运行）
+# 3. RootHide 的 LaunchDaemons 在 gui/501 域（非 system 域）
+
+set -e
 
 DAEMON_PLIST="/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
 DAEMON_BIN="/usr/libexec/reprovisiond"
@@ -21,83 +25,69 @@ echo "[RePro] RootHide postinst 开始 $(date)" > "$LOG_FILE"
     echo "[RePro] daemon 路径: $DAEMON_BIN"
     echo "[RePro] plist 存在: $(test -f "$DAEMON_PLIST" && echo YES || echo NO)"
     echo "[RePro] daemon 存在: $(test -f "$DAEMON_BIN" && echo YES || echo NO)"
+    echo "[RePro] zsign 存在: $(test -f "$ZSIGN_BIN" && echo YES || echo NO)"
 } >> "$LOG_FILE" 2>&1
 
-# === 权限修复 ===
-chmod 0755 "$DAEMON_BIN" 2>>"$LOG_FILE" || true
-chmod 0755 "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
-
-# 验证二进制架构
+# === 权限修复（root:wheel + 0755）===
+echo "[RePro] 修复二进制权限..." >> "$LOG_FILE"
 if [ -f "$DAEMON_BIN" ]; then
+    chown root:wheel "$DAEMON_BIN" 2>>"$LOG_FILE" || true
+    chmod 0755 "$DAEMON_BIN" 2>>"$LOG_FILE" || true
+    ls -la "$DAEMON_BIN" >> "$LOG_FILE" 2>&1
     file "$DAEMON_BIN" >> "$LOG_FILE" 2>&1
-    if ! file "$DAEMON_BIN" | grep -q "Mach-O.*arm64"; then
-        echo "[RePro] WARNING: daemon 二进制不是 arm64!" >> "$LOG_FILE"
-    fi
+else
+    echo "[RePro] WARNING: daemon 二进制不存在: $DAEMON_BIN" >> "$LOG_FILE"
+fi
+
+if [ -f "$ZSIGN_BIN" ]; then
+    chown root:wheel "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
+    chmod 0755 "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
+    ls -la "$ZSIGN_BIN" >> "$LOG_FILE" 2>&1
+else
+    echo "[RePro] WARNING: zsign 不存在: $ZSIGN_BIN" >> "$LOG_FILE"
+fi
+
+# App 二进制也设正确权限
+APP_BIN="/Applications/RePro.app/RePro"
+if [ -f "$APP_BIN" ]; then
+    chmod 0755 "$APP_BIN" 2>>"$LOG_FILE" || true
+    echo "[RePro] App 二进制权限已设置" >> "$LOG_FILE"
 fi
 
 # === 确保 log 目录存在 ===
 mkdir -p /var/mobile/Library/Logs/RePro 2>/dev/null
 chown mobile:mobile /var/mobile/Library/Logs/RePro 2>/dev/null || true
 
-# === 判断 launchctl 域 ===
-# RootHide: LaunchDaemons 在 user/foreground（或 gui/501）域
-# 标准 rootless/rootful: 在 system 域
+# === 判断环境 ===
 IS_ROOTHIDE="NO"
 if [ -f /var/jb/.roothide_version ]; then
     IS_ROOTHIDE="YES"
 fi
+echo "[RePro] 环境检测: RootHide=$IS_ROOTHIDE" >> "$LOG_FILE"
 
-# === 启动守护进程（RootHide 专用路径）===
-start_daemon_roothide() {
+# === 启动守护进程 ===
+start_daemon() {
     local method="$1"
-    echo "[RePro] [RootHide] 尝试启动方式: $method" >> "$LOG_FILE"
-
-    case "$method" in
-        bootstrap_gui)
-            # RootHide: 用 gui/501 域 bootstrap
-            launchctl bootstrap gui/501 "$DAEMON_PLIST" 2>>"$LOG_FILE"
-            ;;
-        bootstrap_user)
-            # 备选：user/501 域
-            launchctl bootstrap user/501 "$DAEMON_PLIST" 2>>"$LOG_FILE"
-            ;;
-        load)
-            # load -w 通常能自动判断域
-            launchctl load -w "$DAEMON_PLIST" 2>>"$LOG_FILE"
-            ;;
-        kickstart_gui)
-            # RootHide: gui/501 域 kickstart
-            launchctl kickstart gui/501/"$DAEMON_LABEL" 2>>"$LOG_FILE"
-            ;;
-        kickstart_system)
-            # 最后尝试 system 域（通常失败但记录日志）
-            launchctl kickstart system/"$DAEMON_LABEL" 2>>"$LOG_FILE"
-            ;;
-        direct)
-            # 直接运行（不经过 launchd，调试用）
-            "$DAEMON_BIN" &
-            ;;
-    esac
-    return $?
-}
-
-# === 标准启动方式（rootless/rootful）===
-start_daemon_standard() {
-    local method="$1"
-    echo "[RePro] 尝试启动方式: $method" >> "$LOG_FILE"
+    local domain="$2"
+    echo "[RePro] 尝试 [$method] (域=$domain)" >> "$LOG_FILE"
 
     case "$method" in
         bootstrap)
-            launchctl bootstrap system "$DAEMON_PLIST" 2>>"$LOG_FILE"
+            launchctl bootstrap "$domain" "$DAEMON_PLIST" 2>>"$LOG_FILE"
+            ;;
+        kickstart)
+            launchctl kickstart "$domain/$DAEMON_LABEL" 2>>"$LOG_FILE"
             ;;
         load)
             launchctl load -w "$DAEMON_PLIST" 2>>"$LOG_FILE"
             ;;
-        kickstart)
-            launchctl kickstart system/"$DAEMON_LABEL" 2>>"$LOG_FILE"
-            ;;
         direct)
-            "$DAEMON_BIN" &
+            # 直接以后台进程启动（确保 root 权限）
+            if [ -x "$DAEMON_BIN" ]; then
+                # 用 nohup 确保不被 Sileo 的进程组终止
+                nohup "$DAEMON_BIN" >/dev/null 2>&1 &
+                echo "direct PID: $!" >> "$LOG_FILE"
+            fi
             ;;
     esac
     return $?
@@ -108,58 +98,60 @@ verify_daemon() {
     sleep 1
 
     # 方式1: 通过多个可能的域检查 pid
-    local pid=""
     for domain in "gui/501/$DAEMON_LABEL" "user/501/$DAEMON_LABEL" "system/$DAEMON_LABEL"; do
+        local pid
         pid=$(launchctl print "$domain" 2>/dev/null | grep "pid=" | head -1 | cut -d= -f2 | tr -d ' ')
         if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
-            echo "[RePro] daemon 运行中 (域=$domain), PID=$pid" >> "$LOG_FILE"
+            echo "[RePro] ✅ daemon 运行中 (域=$domain), PID=$pid" >> "$LOG_FILE"
             return 0
         fi
     done
 
     # 方式2: 检查进程名
     if pgrep -x reprovisiond > /dev/null 2>&1; then
-        local found_pid=$(pgrep -x reprovisiond | head -1)
-        echo "[RePro] daemon 运行中 (pgrep), PID=$found_pid" >> "$LOG_FILE"
+        local found_pid
+        found_pid=$(pgrep -x reprovisiond | head -1)
+        echo "[RePro] ✅ daemon 运行中 (pgrep), PID=$found_pid" >> "$LOG_FILE"
         return 0
     fi
 
-    echo "[RePro] daemon 未在运行!" >> "$LOG_FILE"
+    echo "[RePro] ❌ daemon 未运行" >> "$LOG_FILE"
     return 1
 }
 
 # === 主启动逻辑 ===
 if [ -f "$DAEMON_PLIST" ] && [ -f "$DAEMON_BIN" ]; then
+    echo "[RePro] 开始启动守护进程..." >> "$LOG_FILE"
+
+    # RootHide 启动顺序（从最可能成功到最不可能）
     if [ "$IS_ROOTHIDE" = "YES" ]; then
-        echo "[RePro] 检测到 RootHide，使用专用启动流程" >> "$LOG_FILE"
-        # RootHide 优先顺序：bootstrap(gui) → load → kickstart(gui) → kickstart(system) → direct
-        for method in bootstrap_gui load kickstart_gui kickstart_system direct; do
-            if start_daemon_roothide "$method"; then
-                sleep 1
-                if verify_daemon; then
-                    echo "[RePro] 守护进程启动成功 ($method)" >> "$LOG_FILE"
-                    break
-                fi
-            else
-                echo "[RePro] $method 失败，尝试下一种..." >> "$LOG_FILE"
-            fi
-        done
+        # RootHide: gui/501 是主要域
+        METHODS="bootstrap:gui/501 kickstart:gui/501 load: bootstrap:user/501 kickstart:user/501 kickstart:system direct:"
     else
-        echo "[RePro] 标准 rootless/rootful 启动流程" >> "$LOG_FILE"
-        for method in bootstrap load kickstart direct; do
-            if start_daemon_standard "$method"; then
-                sleep 1
-                if verify_daemon; then
-                    echo "[RePro] 守护进程启动成功 ($method)" >> "$LOG_FILE"
-                    break
-                fi
-            else
-                echo "[RePro] $method 失败，尝试下一种..." >> "$LOG_FILE"
+        # 标准 rootless/rootful: system 域
+        METHODS="bootstrap:system kickstart:system load: direct:"
+    fi
+
+    STARTED=0
+    for item in $METHODS; do
+        method="${item%%:*}"
+        domain="${item##*:}"
+        if start_daemon "$method" "$domain"; then
+            sleep 1
+            if verify_daemon; then
+                echo "[RePro] 🎉 守护进程启动成功 (方式=$method)" >> "$LOG_FILE"
+                STARTED=1
+                break
             fi
-        done
+        fi
+        echo "[RePro] → $method 失败，继续尝试..." >> "$LOG_FILE"
+    done
+
+    if [ "$STARTED" -eq 0 ]; then
+        echo "[RePro] ⚠️ 所有启动方式均失败，daemon 可能需要手动启动" >> "$LOG_FILE"
     fi
 else
-    echo "[RePro] 错误: 缺少必要文件" >> "$LOG_FILE"
+    echo "[RePro] ❌ 缺少必要文件!" >> "$LOG_FILE"
     [ ! -f "$DAEMON_PLIST" ] && echo "[RePro]   缺少: $DAEMON_PLIST" >> "$LOG_FILE"
     [ ! -f "$DAEMON_BIN" ] && echo "[RePro]   缺少: $DAEMON_BIN" >> "$LOG_FILE"
 fi
@@ -169,13 +161,19 @@ uicache -p /Applications/RePro.app 2>/dev/null || true
 
 # === 最终状态诊断 ===
 {
+    echo ""
     echo "[RePro] ====== postinst 完成 $(date) ======"
     echo "[RePro] 最终状态:"
-    # 打印所有可能域的状态
     for domain in "gui/501/$DAEMON_LABEL" "user/501/$DAEMON_LABEL" "system/$DAEMON_LABEL"; do
         echo "--- 域: $domain ---"
         launchctl print "$domain" 2>/dev/null | head -15 || echo "  (无法查询)"
     done
     echo "--- 进程列表 ---"
     ps aux | grep reprovisiond | grep -v grep || echo "  未找到 reprovisiond 进程"
+    echo "--- 当前用户/权限 ---"
+    id
+    whoami
 } >> "$LOG_FILE" 2>&1
+
+# ★★★ 必须以 success 退出！dpkg 需要看到 exit 0 才认为安装完成 ★★★
+exit 0

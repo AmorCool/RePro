@@ -17,3 +17,4 @@ rm -rf /tmp/reprovision_*.log 2>/dev/null || true
 echo "[RePro] 残留数据已清理"
 
 echo "[RePro] rootful prerm 完成 $(date)"
+exit 0

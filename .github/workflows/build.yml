@@ -262,6 +262,7 @@ jobs:
           APP_DIR=$(find build -name "RePro.app" -type d | head -1)
           cp -R "$APP_DIR" "$RL/Applications/"
           cp build/reprovisiond "$RL/usr/libexec/"
+          chmod 0755 "$RL/usr/libexec/reprovisiond"
           cp /tmp/zsign "$RL/usr/local/bin/zsign"
           chmod 0755 "$RL/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
@@ -279,6 +280,9 @@ jobs:
           cp Resources/Icon.png "$RL/Applications/RePro.app/Icon.png"
 
           # 签名：先签二进制，不破坏 Assets.car
+          # 设置正确的权限：root 可执行
+          chmod 0755 "$RL/Applications/RePro.app/RePro"
+          chmod 0755 "$RL/usr/libexec/reprovisiond"
           do_sign "$RL/Applications/RePro.app/RePro" Resources/entitlements-base.plist
           do_sign "$RL/usr/libexec/reprovisiond" Resources/entitlements-daemon.plist
           do_sign_bare "$RL/usr/local/bin/zsign"
@@ -289,6 +293,7 @@ jobs:
                    "$PKG2/Library/LaunchDaemons" "$PKG2/usr/share/reprovision/certificates"
           cp -R "$APP_DIR" "$PKG2/Applications/"
           cp build/reprovisiond "$PKG2/usr/libexec/"
+          chmod 0755 "$PKG2/usr/libexec/reprovisiond"
           cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
@@ -303,6 +308,7 @@ jobs:
                    "$PKG3/Library/LaunchDaemons" "$PKG3/usr/share/reprovision/certificates"
           cp -R "$APP_DIR" "$PKG3/Applications/"
           cp build/reprovisiond "$PKG3/usr/libexec/"
+          chmod 0755 "$PKG3/usr/libexec/reprovisiond"
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"

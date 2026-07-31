@@ -2,6 +2,8 @@
 # ReProvision Dopamine/rootless 包 postinst
 # /var/jb/ 前缀布局（Dopamine dpkg 自动映射到 jbroot）
 
+set -e
+
 PLIST="/var/jb/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
 DAEMON_BIN="/var/jb/usr/libexec/reprovisiond"
 ZSIGN_BIN="/var/jb/usr/local/bin/zsign"
@@ -16,9 +18,23 @@ echo "[RePro] rootless postinst 开始 $(date)" > "$LOG_FILE"
     echo "[RePro] daemon 存在: $(test -f "$DAEMON_BIN" && echo YES || echo NO)"
 } >> "$LOG_FILE" 2>&1
 
-# === 权限修复 ===
-chmod 0755 "$DAEMON_BIN" 2>>"$LOG_FILE" || true
-chmod 0755 "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
+# === 权限修复（root:wheel + 0755）===
+echo "[RePro] 修复二进制权限..." >> "$LOG_FILE"
+if [ -f "$DAEMON_BIN" ]; then
+    chown root:wheel "$DAEMON_BIN" 2>>"$LOG_FILE" || true
+    chmod 0755 "$DAEMON_BIN" 2>>"$LOG_FILE" || true
+    ls -la "$DAEMON_BIN" >> "$LOG_FILE" 2>&1
+fi
+if [ -f "$ZSIGN_BIN" ]; then
+    chown root:wheel "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
+    chmod 0755 "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
+fi
+
+# App 二进制
+APP_BIN="/var/jb/Applications/RePro.app/RePro"
+if [ -f "$APP_BIN" ]; then
+    chmod 0755 "$APP_BIN" 2>>"$LOG_FILE" || true
+fi
 
 # === 确保 log 目录存在 ===
 mkdir -p /var/mobile/Library/Logs/RePro 2>/dev/null
@@ -26,25 +42,32 @@ chown mobile:mobile /var/mobile/Library/Logs/RePro 2>/dev/null || true
 
 # === 启动守护进程 ===
 if [ -f "$PLIST" ] && [ -f "$DAEMON_BIN" ]; then
-    # 方式1: bootstrap
+    # Dopamine/rootless: system 域
     if launchctl bootstrap system "$PLIST" 2>>"$LOG_FILE"; then
         sleep 1
         if pgrep -x reprovisiond > /dev/null 2>&1; then
-            echo "[RePro] 守护进程启动成功 (bootstrap)" >> "$LOG_FILE"
+            echo "[RePro] ✅ 守护进程启动成功 (bootstrap)" >> "$LOG_FILE"
         else
-            echo "[RePro] bootstrap 成功但进程未找到，尝试 kickstart..." >> "$LOG_FILE"
             launchctl kickstart system/jp.soh.reprovisiond 2>>"$LOG_FILE"
+            sleep 1
+            if pgrep -x reprovisiond > /dev/null 2>&1; then
+                echo "[RePro] ✅ 守护进程启动成功 (kickstart)" >> "$LOG_FILE"
+            else
+                echo "[RePro] ⚠️ daemon 可能未成功启动" >> "$LOG_FILE"
+            fi
         fi
     else
-        # 方式2: kickstart fallback
         launchctl kickstart system/jp.soh.reprovisiond 2>>"$LOG_FILE"
         echo "[RePro] 使用 kickstart 启动" >> "$LOG_FILE"
     fi
 else
-    echo "[RePro] 错误: 缺少必要文件" >> "$LOG_FILE"
+    echo "[RePro] ❌ 缺少必要文件" >> "$LOG_FILE"
+    [ ! -f "$PLIST" ] && echo "[RePro]   缺少: $PLIST" >> "$LOG_FILE"
+    [ ! -f "$DAEMON_BIN" ] && echo "[RePro]   缺少: $DAEMON_BIN" >> "$LOG_FILE"
 fi
 
 # === 刷新图标缓存 ===
 uicache -p /var/jb/Applications/RePro.app 2>/dev/null || true
 
 echo "[RePro] rootless postinst 完成 $(date)" >> "$LOG_FILE"
+exit 0
