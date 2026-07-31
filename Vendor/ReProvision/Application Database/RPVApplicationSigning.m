@@ -12,6 +12,7 @@
 #import "RPVApplicationDatabase.h"
 
 #import "SSZipArchive.h"
+#import "RPVDiagnostics.h"
 
 #import <dlfcn.h>
 #import <objc/runtime.h>
@@ -353,7 +354,9 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     // 2. Root daemon route (RootHide / locked-down rootless).
     if (_rpvDaemonProfileInstallHandler) {
         BOOL ok = _rpvDaemonProfileInstallHandler(profilePath);
-        NSLog(@"*** [ReProvision] daemon profile install %@", ok ? @"succeeded" : @"failed");
+        RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError,
+                      @"profile",
+                      @"daemon profile install %@", ok ? @"succeeded" : @"failed");
         return ok;
     }
 
@@ -415,13 +418,15 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     // the file is the reliable cross-environment guarantee (profiled scans this dir).
     BOOL fileOK = [self _registerProfileViaFileAtPath:profilePath];
     if (!success) {
-        NSLog(@"*** [ReProvision] MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
+        RPVDiagnostic(RPVDiagWarning, @"profile",
+                      @"MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
         success = fileOK;
     } else if (fileOK) {
-        NSLog(@"*** [ReProvision] profile registered via MCProfileConnection; file/daemon fallback also written");
+        RPVDiagnostic(RPVDiagInfo, @"profile",
+                      @"profile registered via MCProfileConnection; file/daemon fallback also written");
     }
 
-    NSLog(@"*** [ReProvision] profile register report:\n%@", report);
+    RPVDiagnostic(RPVDiagWarning, @"profile", @"profile register report:\n%@", report);
 
     if (success) {
         // Give profiled time to pick up the new/updated profile before install.
@@ -499,7 +504,9 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
             // code 13 - which hid the real reason, so we just surface the truth.)
             NSString *errorMessage = fullError;
 
-            NSLog(@"*** [ReProvision] install failed: domain=%@ code=%ld desc=%@ userInfo=%@", error.domain, (long)error.code, error.localizedDescription, error.userInfo);
+            RPVDiagnostic(RPVDiagError, @"install",
+                          @"install failed: domain=%@ code=%ld desc=%@ userInfo=%@",
+                          error.domain, (long)error.code, error.localizedDescription, error.userInfo);
 
             NSError *err = [self _errorFromString:errorMessage errorCode:RPVErrorFailedToInstallSignedIPA];
             for (id<RPVApplicationSigningProtocol> observer in [self.observers reverseObjectEnumerator]) {

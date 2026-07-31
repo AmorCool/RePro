@@ -15,6 +15,34 @@ class LogManager: ObservableObject {
     // MARK: 初始化
     func initialize() {
         loadFromDisk()
+
+        // 接收 Vendor 业务层（RPVApplicationSigning / RPVBridge / repro-helper 经 RPVBridge
+        // 转发）发来的诊断，使其出现在 App「日志」页，用户可在重签后导出发给开发者。
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDiagnostic(_:)),
+            name: Notification.Name("com.reprovision.diagnostic"),
+            object: nil
+        )
+    }
+
+    /// Vendor 层通过 RPVDiagnostic 转发的诊断（见 RPVDiagnostics.h）。
+    @objc private func handleDiagnostic(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let message = userInfo["message"] as? String else { return }
+        let source = (userInfo["source"] as? String) ?? "Vendor"
+        let levelInt = (userInfo["level"] as? Int) ?? 0
+        switch levelInt {
+        case 1: warning(message, source: source)
+        case 2: error(message, source: source)
+        case 3:
+            #if DEBUG
+            debug(message, source: source)
+            #else
+            info(message, source: source)
+            #endif
+        default: info(message, source: source)
+        }
     }
 
     // MARK: 写入日志

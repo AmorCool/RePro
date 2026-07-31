@@ -191,6 +191,10 @@ int main(int argc, char *argv[]) {
             setuid(0);
         }
 
+        // 诊断：把 setuid 之后的真实 uid/euid 打出来，确认 RootHide 下 setuid 是否生效
+        //（jbroot 分区若 nosuid 挂载，这里 euid 仍是 mobile，会直接导致 0xe8008015）。
+        RPVHelperLog(@"start getuid=%d geteuid=%d", getuid(), geteuid());
+
         if (geteuid() != 0 || getuid() != 0) {
             RPVHelperLog(@"必须以 root 运行（uid=%d euid=%d），请检查安装权限是否为 root:wheel 4755",
                          getuid(), geteuid());

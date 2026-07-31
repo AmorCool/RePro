@@ -31,6 +31,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#import "RPVDiagnostics.h"
+
 #pragma mark - 数据对象
 
 @implementation RPVAppInfo
@@ -70,6 +72,31 @@ typedef NS_ENUM(NSInteger, RPVBridgeErrorCode) {
 @property (nonatomic, strong) dispatch_queue_t workQueue;
 
 @end
+
+#pragma mark - 诊断转发（给 App 日志页）
+
+NSString *const RPVDiagnosticNotification = @"com.reprovision.diagnostic";
+
+/// 既保留系统日志输出，又通过通知把诊断送进 LogManager（App「日志」页）。
+void RPVDiagnostic(RPVDiagLevel level, NSString *source, NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    // 原行为：打到系统日志（接电脑时能在控制台看到）。
+    NSLog(@"*** [ReProvision-Diag] %@: %@", source ?: @"?", message);
+
+    // 新增：转发给 App 日志页，用户无需电脑即可导出。
+    NSDictionary *userInfo = @{
+        @"source": (source ?: @"Vendor"),
+        @"message": message,
+        @"level": @(level),
+    };
+    [[NSNotificationCenter defaultCenter] postNotificationName:RPVDiagnosticNotification
+                                                        object:nil
+                                                      userInfo:userInfo];
+}
 
 @implementation RPVBridge
 
@@ -558,7 +585,7 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     free(argv);
 
     if (spawnRC != 0) {
-        NSLog(@"*** [RePro] repro-helper 启动失败: %d (%@)", spawnRC, helperPath);
+        RPVDiagnostic(RPVDiagError, @"repro-helper", @"repro-helper 启动失败: %d (%@)", spawnRC, helperPath);
         [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
         return NO;
     }
@@ -570,8 +597,10 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     NSString *log = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
 
-    NSLog(@"*** [RePro] repro-helper %@ exit=%d\n%@",
-          [arguments componentsJoinedByString:@" "], exitCode, log.length ? log : @"(无输出)");
+    RPVDiagnostic(exitCode == 0 ? RPVDiagInfo : RPVDiagError,
+                  @"repro-helper",
+                  @"repro-helper %@ exit=%d\n%@",
+                  [arguments componentsJoinedByString:@" "], exitCode, log.length ? log : @"(无输出)");
 
     return exitCode == 0;
 }
@@ -655,11 +684,11 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 + (void)installRootHelperHandlers {
     NSString *helperPath = RPVResolvedRootHelperPath();
     if (helperPath.length == 0) {
-        NSLog(@"*** [RePro] 未找到 repro-helper，需要 root 的操作将由 App 自己尝试");
+        RPVDiagnostic(RPVDiagWarning, @"repro-helper", @"未找到 repro-helper，需要 root 的操作将由 App 自己尝试");
         return;
     }
 
-    NSLog(@"*** [RePro] 已挂载 root helper: %@", helperPath);
+    RPVDiagnostic(RPVDiagInfo, @"repro-helper", @"已挂载 root helper: %@", helperPath);
 
     // 1) 从「文件」App 的安全域读不到 IPA 时，让 root 把它搬进 App 的 tmp。
     [RPVIpaBundleApplication setDaemonFileCopyHandler:^BOOL(NSString *srcPath, NSString *dstPath) {
