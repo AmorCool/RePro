@@ -3,11 +3,14 @@
 <plist version="1.0">
   <dict>
 
-    <!-- RootHide 专属 entitlements（照搬原版 ReProvision 源码）
-         与 Dopamine rootless 的区别：RootHide 默认把越狱二进制关进沙箱，
-         官方文档要求越狱 app 追加 no-sandbox 与两个 storage 权限，
-         否则访问沙箱外路径（如真实 /var/Managed Preferences/mobile）
-         以及到 root 守护进程的 mach-lookup 都会被拒。 -->
+    <!-- RootHide 专属 entitlements
+         注意：本文件刻意【不含 no-sandbox】。RootHide 下拦住 App 访问真实 /var 的是
+         namespace（bind mount / overlay），不是 sandbox；no-sandbox 只逃得出 sandbox、
+         逃不出 namespace，却会把 App 的 MCProfileConnection XPC 路由到 jbroot 内 overlay
+         的 profiled（假成功），导致 installd 校验时读不到 profile → 0xe8008015。
+         能正常重签的 test2源码（rootless 转 roothide）的 App 同样【无 no-sandbox】、
+         仅靠 App 自身 MC 注册到本地库。故与 test2 对齐：去掉 no-sandbox；文件访问走
+         jbroot 内路径（App 以 posix_spawn 拉 repro-helper，不需要 mach-lookup，沙箱下可用）。 -->
 
     <key>com.apple.private.mobileinstall.allowedSPI</key>
     <array>
@@ -60,9 +63,6 @@
     <true/>
 
     <key>com.apple.private.security.no-container</key>
-    <true/>
-
-    <key>com.apple.private.security.no-sandbox</key>
     <true/>
 
     <key>com.apple.private.security.storage.AppBundles</key>

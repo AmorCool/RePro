@@ -429,19 +429,25 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         }
     }
 
-    // Always also drop the profile file into the trusted directory. MCProfileConnection
-    // may report success yet not actually register under RootHide's sandbox, so writing
-    // the file is the reliable cross-environment guarantee (profiled scans this dir).
-    BOOL fileOK = [self _registerProfileViaFileAtPath:profilePath];
+    // RootHide 下：App 进程自身 MC（mobile 身份、无 no-sandbox）已把 profile 注册进
+    // 【本地 provisioning 库】（installd 的 AllowInstallLocalProvisioned 查的正是本地库），
+    // 与能正常工作的 test2源码 完全一致。此处【不再】调用 repro-helper 写文件 + SIGHUP：
+    // helper 跑在 App 的 jbroot namespace 内，写的是 overlay 的 /var/Managed Preferences/mobile，
+    // 且 SIGHUP 会触发 profiled 重载（可能把 App 刚 MC 注册的 profile 冲掉）—— 正是此前反复
+    // 0xe8008015 的隐患。故 RootHide 完全对齐 test2：仅 App MC，不写文件、不 SIGHUP。
+    //（非 RootHide（rootless/rootful）仍走文件/daemon 兜底，保持原行为。）
+    BOOL fileOK = NO;
+    if (!RPVIsRootHideEnvironment()) {
+        fileOK = [self _registerProfileViaFileAtPath:profilePath];
+    }
     if (RPVIsRootHideEnvironment()) {
-        // RootHide 下 App 进程带 no-sandbox，其 in-process MCProfileConnection 直连真实
-        // profiled，并以 mobile 身份把 profile 注册进【本地 provisioning 库】——与能正常
-        // 工作的 test2源码（rootless 转 roothide）完全一致；installd 的
-        // AllowInstallLocalProvisioned 校验查的正是本地库。
-        // 而 root helper 的 MC 注册会进 managed(MSM) 库（installd 不认），不能以其结果为准。
-        // 故以 App 进程 MC 结果为准，repro-helper 文件写入仅作兜底。
-        // （若日后再出现“App MC 报告成功但 installd 仍 0xe8008015”，则说明该 RootHide 版本
-        //  把 App 的 MC XPC 也重定向了，那时需改用常驻 root LaunchDaemon 注册兜底。）
+        // RootHide 下 App 是【沙箱】进程（已移除 no-sandbox，与能正常重签的 test2源码 对齐）：
+        // 作为 mobile 身份、不带 no-sandbox，其 in-process MCProfileConnection 走真实 profiled，
+        // 并把 profile 注册进【本地 provisioning 库】——installd 的 AllowInstallLocalProvisioned
+        // 校验查的正是本地库。
+        // 此前带 no-sandbox 时，App 的 MC XPC 会被路由到 jbroot 内 overlay 的 profiled（假成功）；
+        // 而 repro-helper 跑在 App 的 namespace 内、写 overlay 路径 + SIGHUP 也会干扰本地库。
+        // 故 v1.1.22 起：RootHide 下仅依赖 App 进程 MC（→ 本地库），彻底不再调用 helper 写文件/SIGHUP。
         if (success) {
             RPVDiagnostic(RPVDiagInfo, @"profile",
                           @"[RootHide] App 进程 MCProfileConnection 已注册到【本地库】(installd 真正读取的库)");
