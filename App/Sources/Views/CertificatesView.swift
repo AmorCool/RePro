@@ -15,6 +15,8 @@ struct CertificatesView: View {
     @State private var showingRevokeAllAlert = false
     @State private var revokingID: String? = nil
     @State private var revokeError: String?
+    /// 单个证书撤销确认弹窗
+    @State private var pendingRevokeCert: DevCertificate?
 
     var body: some View {
         List {
@@ -46,9 +48,16 @@ struct CertificatesView: View {
                     Text("暂无开发证书")
                         .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("登录后可查看和管理 Apple 开发者账号下的签名证书")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    if account.isSignedIn {
+                        Text("当前账号下没有活跃的开发证书\n如需签名应用，系统将自动创建新证书")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    } else {
+                        Text("登录后可查看和管理 Apple 开发者账号下的签名证书")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -58,7 +67,7 @@ struct CertificatesView: View {
                         CertificateRowView(
                             cert: cert,
                             isRevoking: revokingID == cert.id,
-                            onRevoke: { revokeCertificate(cert) }
+                            onRevoke: { pendingRevokeCert = cert }
                         )
                     }
 
@@ -112,6 +121,21 @@ struct CertificatesView: View {
             Button("确定", role: .cancel) {}
         } message: {
             Text(revokeError ?? "")
+        }
+        .confirmationDialog("确认撤销证书", isPresented: Binding(get: { pendingRevokeCert != nil }, set: { if !$0 { pendingRevokeCert = nil } }), titleVisibility: .visible) {
+            Button("撤销证书", role: .destructive) {
+                if let cert = pendingRevokeCert {
+                    revokeCertificate(cert)
+                }
+                pendingRevokeCert = nil
+            }
+            Button("取消", role: .cancel) { pendingRevokeCert = nil }
+        } message: {
+            if let cert = pendingRevokeCert {
+                Text("确定要撤销「\(cert.machineName)」的签名证书吗？\n使用该证书签名的应用将无法启动。")
+            } else {
+                Text("")
+            }
         }
     }
 
@@ -217,9 +241,17 @@ private struct CertificateRowView: View {
                 ProgressView()
                     .scaleEffect(0.8)
             } else {
-                Button(role: .destructive, action: onRevoke) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                Button(action: onRevoke) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 16))
+                        Text("撤销")
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.red)
+                    .padding(6)
+                    .background(Color.red.opacity(0.08))
+                    .cornerRadius(8)
                 }
                 .padding(.top, 2)
             }
