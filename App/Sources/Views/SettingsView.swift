@@ -211,9 +211,9 @@ struct SettingsView: View {
 
         // posix_spawn 参数
         var attr: posix_spawnattr_t?
-        posix_spawn_initattr(&attr)
+        posix_spawnattr_init(&attr)
         // 不等待子进程退出
-        var flags: Int16 = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+        let flags = Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
         posix_spawnattr_setflags(&attr, flags)
 
         let argv: [UnsafeMutablePointer<CChar>?] = [
@@ -228,7 +228,7 @@ struct SettingsView: View {
 
         // 释放内存
         for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
-        if let attr = attr { posix_spawn_destroyattr(&attr) }
+        if var attr = attr { posix_spawnattr_destroy(&attr) }
 
         if result == 0 {
             LogManager.shared.info("已发送 killall SpringBoard (pid=\(pid))", source: "SettingsView")
