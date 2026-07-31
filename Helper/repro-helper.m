@@ -155,6 +155,50 @@ static void RPVHelperRefreshProfiled(void) {
     usleep(400000);
 }
 
+#pragma mark - 写描述文件到指定目录
+
+/// 把 profile 写到 dir/<sha1>.mobileprovision（dir 不存在则创建），返回是否成功。
+static BOOL RPVHelperWriteProfileToDir(NSData *data, NSString *fileName, NSString *dir, NSString *profilePath) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *error = nil;
+    if (![fm fileExistsAtPath:dir]) {
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&error];
+        if (error) {
+            RPVHelperLog(@"创建目录失败 %@: %@", dir, error);
+            return NO;
+        }
+    }
+    NSString *dest = [dir stringByAppendingPathComponent:fileName];
+    if (![fm fileExistsAtPath:dest]) {
+        if (![fm copyItemAtPath:profilePath toPath:dest error:&error]) {
+            RPVHelperLog(@"描述文件复制失败 %@: %@", dest, error);
+            return NO;
+        }
+        [fm setAttributes:@{NSFilePosixPermissions          : @(0644),
+                            NSFileOwnerAccountName          : @"root",
+                            NSFileGroupOwnerAccountName     : @"wheel"}
+                 ofItemAtPath:dest
+                        error:nil];
+    }
+    return YES;
+}
+
+/// 解析本 helper 所在 jbroot 的物理真实目录下的 profile 库路径。
+/// helper 自身路径形如 /var/containers/Bundle/Application/.jbroot-XXXX/usr/libexec/repro-helper，
+/// 去掉末尾 /usr/libexec/repro-helper 即得 jbroot 根，拼 var/Managed Preferences/mobile。
+/// 在 RootHide 下 profiled 读的是「jbroot 内的这份」（被 overlay 重定向），
+/// 而本 helper 若因 entitlement 脱离了 overlay、写的是真实 /var/Managed Preferences/mobile/，
+/// 两者就不一致；双写 jbroot 物理目录即可命中 profiled 实际读取的位置。
+static NSString *RPVHelperJbrootProfileDir(void) {
+    NSArray *args = [[NSProcessInfo processInfo] arguments];
+    NSString *argv0 = args.count ? args[0] : @"";
+    NSString *p = [argv0 stringByDeletingLastPathComponent]; // .../usr/libexec
+    p = [p stringByDeletingLastPathComponent];               // .../usr
+    p = [p stringByDeletingLastPathComponent];               // .../.jbroot-XXXX
+    if (p.length == 0) return nil;
+    return [p stringByAppendingPathComponent:@"var/Managed Preferences/mobile"];
+}
+
 #pragma mark - install-profile
 
 /// 把描述文件装进系统 profile 库（对应原 daemon 的 installProvisioningProfileAtPath:withReply:）。
@@ -182,55 +226,52 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
     }
     NSString *fileName = [hex stringByAppendingPathExtension:@"mobileprovision"];
 
-    // 本工具以 root 运行且编译时没有 vroot 路径翻译，所以下面就是三种越狱形态
-    // （rootful / Dopamine rootless / RootHide）下真实的系统描述文件库。
-    // profiled、installd 都是未经修改的系统守护进程，只读这个真实路径；
-    // RootHide jbroot overlay 下的同名目录它们根本看不见，因此故意不用。
+    // 双写两个视图，覆盖 RootHide 下 helper 与 profiled 命名空间不一致的问题：
+    //  - 视图A：本进程看到的 /var/Managed Preferences/mobile/（若 helper 因 entitlement
+    //    脱离了 overlay，这就是真实 rootfs；若仍在 overlay，则底层是 jbroot 内）
+    //  - 视图B：helper 所在 jbroot 的物理真实目录下的同名路径（profiled 在 RootHide 下
+    //    被 overlay 重定向，读的就是 jbroot 内的这份）—— 双写 B 即可命中 profiled 实际读取位置。
     NSString *directory = @"/var/Managed Preferences/mobile";
     NSString *destination = [directory stringByAppendingPathComponent:fileName];
+    NSString *jbrootDir = RPVHelperJbrootProfileDir();
+    NSString *jbrootDest = jbrootDir ? [jbrootDir stringByAppendingPathComponent:fileName] : nil;
 
     NSFileManager *fileManager = [NSFileManager defaultManager];
-    NSError *error = nil;
 
-    if (![fileManager fileExistsAtPath:directory]) {
-        [fileManager createDirectoryAtPath:directory
-               withIntermediateDirectories:YES
-                                attributes:nil
-                                     error:&error];
-        if (error) {
-            RPVHelperLog(@"创建目录失败 %@: %@", directory, error);
-            return 5;
-        }
-    }
-
-    if (![fileManager fileExistsAtPath:destination]) {
-        if (![fileManager copyItemAtPath:profilePath toPath:destination error:&error]) {
-            RPVHelperLog(@"描述文件复制失败 %@: %@", destination, error);
-            return 6;
-        }
-        [fileManager setAttributes:@{NSFilePosixPermissions   : @(0644),
-                                     NSFileOwnerAccountName   : @"root",
-                                     NSFileGroupOwnerAccountName : @"wheel"}
-                      ofItemAtPath:destination
-                             error:nil];
-    }
+    BOOL okMain = RPVHelperWriteProfileToDir(data, fileName, directory, profilePath);
+    BOOL okJbroot = jbrootDest ? RPVHelperWriteProfileToDir(data, fileName, jbrootDir, profilePath) : NO;
+    RPVHelperLog(@"写入视图A(/var/Managed Preferences/mobile): %@；写入视图B(jbroot 物理): %@",
+                 okMain ? @"成功" : @"失败",
+                 jbrootDest ? (okJbroot ? @"成功" : @"失败") : @"跳过(无法解析 jbroot)");
 
     // 踢一下 profiled 让它立刻重新扫描（优先 killall，RootHide 无 killall 时回退 sysctl 直发 SIGHUP）。
     RPVHelperRefreshProfiled();
 
-    // 取证诊断：确认文件确实落进本进程视图的目录，并列出目录内 profile 数
-    // （若本进程在 overlay 命名空间，此目录 ≠ installd 读取的真实目录，可据此区分失败原因）。
+    // 取证诊断：列出两个视图的目录内 profile 数，确认是否写入成功
+    // （若两视图都写入成功但 installd 仍报 0xe8008015，则说明 profiled 读的是第三处路径，
+    //  需改为 root LaunchDaemon 注册）。
     NSError *lsErr = nil;
-    NSArray *existing = [fileManager contentsOfDirectoryAtPath:directory error:&lsErr];
+    NSArray *existingA = [fileManager contentsOfDirectoryAtPath:directory error:&lsErr];
     if (lsErr) {
-        RPVHelperLog(@"读取目录失败 %@: %@", directory, lsErr);
+        RPVHelperLog(@"读取视图A目录失败 %@: %@", directory, lsErr);
     } else {
-        RPVHelperLog(@"目录 %@ 现有 %lu 个描述文件；本文件已写入：%@",
-                     directory, (unsigned long)existing.count,
+        RPVHelperLog(@"视图A 目录现有 %lu 个描述文件；本文件已写入：%@",
+                     (unsigned long)existingA.count,
                      [fileManager fileExistsAtPath:destination] ? @"是" : @"否");
     }
+    if (jbrootDest) {
+        NSError *lsErrB = nil;
+        NSArray *existingB = [fileManager contentsOfDirectoryAtPath:jbrootDir error:&lsErrB];
+        if (lsErrB) {
+            RPVHelperLog(@"读取视图B目录失败 %@: %@", jbrootDir, lsErrB);
+        } else {
+            RPVHelperLog(@"视图B 目录现有 %lu 个描述文件；本文件已写入：%@",
+                         (unsigned long)existingB.count,
+                         [fileManager fileExistsAtPath:jbrootDest] ? @"是" : @"否");
+        }
+    }
 
-    RPVHelperLog(@"描述文件已安装到 %@", destination);
+    RPVHelperLog(@"描述文件已安装（视图A: %@ 视图B: %@）", destination, jbrootDest ? jbrootDest : @"(无)");
     return 0;
 }
 
