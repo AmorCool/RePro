@@ -20,6 +20,8 @@
 
 #import <Foundation/Foundation.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <objc/runtime.h>
+#import <dlfcn.h>
 
 #include <spawn.h>
 #include <sys/wait.h>
@@ -199,6 +201,60 @@ static NSString *RPVHelperJbrootProfileDir(void) {
     return [p stringByAppendingPathComponent:@"var/Managed Preferences/mobile"];
 }
 
+#pragma mark - 经 MCProfileConnection 注册到真实 profiled
+
+/// 通过 ManagedConfiguration 的 MCProfileConnection XPC 把描述文件注册进系统 profile 库。
+/// 关键：本工具以 root 运行且 entitlement 含 platform-application+no-sandbox，
+/// 因此它的 MCProfileConnection 调用走的是「真实系统 profiled」（未被 RootHide 的沙箱
+/// 重定向到 overlay）；注册成功后 installd 的 MIS 在代码签名校验时就能查到这份 profile。
+/// 相比之下 App 进程是 sandboxed mobile，其 MCProfileConnection 会被 RootHide 拦截重定向
+/// 到 overlay 库 —— 这就是之前「注册成功却仍 0xe8008015」的根因。
+/// 返回：注册是否成功（YES 表示 installd 能认到）。
+static BOOL RPVHelperRegisterViaMCProfileConnection(NSData *data) {
+    if (data.length == 0) return NO;
+
+    dlopen("/System/Library/PrivateFrameworks/ManagedConfiguration.framework/ManagedConfiguration", RTLD_LAZY);
+    Class cls = objc_getClass("MCProfileConnection");
+    if (!cls) {
+        RPVHelperLog(@"[MC] MCProfileConnection class 不可用");
+        return NO;
+    }
+    id connection = [cls sharedConnection];
+    if (!connection) {
+        RPVHelperLog(@"[MC] MCProfileConnection sharedConnection 为 nil");
+        return NO;
+    }
+
+    SEL sel = NSSelectorFromString(@"installProvisioningProfileData:managingProfileIdentifier:outError:");
+    if (![connection respondsToSelector:sel]) {
+        RPVHelperLog(@"[MC] installProvisioningProfileData:managingProfileIdentifier:outError: 不可用");
+        return NO;
+    }
+
+    NSMethodSignature *sig = [connection methodSignatureForSelector:sel];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:connection];
+    [inv setSelector:sel];
+    [inv setArgument:&data atIndex:2];
+    NSString *managing = nil;
+    [inv setArgument:&managing atIndex:3];
+    NSError *__autoreleasing outError = nil;
+    NSError *__autoreleasing *outPtr = &outError;
+    [inv setArgument:&outPtr atIndex:4];
+
+    BOOL ret = NO;
+    @try {
+        [inv invoke];
+        if (sig.methodReturnLength == sizeof(BOOL)) [inv getReturnValue:&ret];
+        RPVHelperLog(@"[MC] installProvisioningProfileData: returned %d, error: %@",
+                     ret, outError ?: @"none");
+    } @catch (NSException *e) {
+        RPVHelperLog(@"[MC] install 抛异常: %@", e);
+        return NO;
+    }
+    return ret && (outError == nil);
+}
+
 #pragma mark - install-profile
 
 /// 把描述文件装进系统 profile 库（对应原 daemon 的 installProvisioningProfileAtPath:withReply:）。
@@ -244,6 +300,13 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
                  okMain ? @"成功" : @"失败",
                  jbrootDest ? (okJbroot ? @"成功" : @"失败") : @"跳过(无法解析 jbroot)");
 
+    // 主路径：经 MCProfileConnection XPC 把描述文件注册进真实 profiled 数据库。
+    // 这才是 installd 的 MIS 在校验代码签名时真正查询的 profile 库；
+    // 仅写文件目录 + SIGHUP 在较新 iOS 上不可靠（profiled 不保证重扫目录）。
+    BOOL mcOK = RPVHelperRegisterViaMCProfileConnection(data);
+    RPVHelperLog(@"MCProfileConnection 注册: %@ （这是 installd 真正读取的库）",
+                 mcOK ? @"成功" : @"失败");
+
     // 踢一下 profiled 让它立刻重新扫描（优先 killall，RootHide 无 killall 时回退 sysctl 直发 SIGHUP）。
     RPVHelperRefreshProfiled();
 
@@ -271,8 +334,16 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
         }
     }
 
-    RPVHelperLog(@"描述文件已安装（视图A: %@ 视图B: %@）", destination, jbrootDest ? jbrootDest : @"(无)");
-    return 0;
+    RPVHelperLog(@"描述文件已安装（视图A: %@ 视图B: %@ MC注册: %@）",
+                 destination, jbrootDest ? jbrootDest : @"(无)",
+                 mcOK ? @"成功" : @"失败");
+
+    // 任一注册路径成功即视为整体成功：MC 注册（installd 真正读取的库）或文件写入（兜底）。
+    if (mcOK || okMain || okJbroot) {
+        return 0;
+    }
+    RPVHelperLog(@"警告：MC 注册与文件写入均失败，描述文件未能注册");
+    return 7;
 }
 
 #pragma mark - 入口
