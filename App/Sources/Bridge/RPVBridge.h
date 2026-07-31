@@ -75,10 +75,12 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 #pragma mark - 已注册 AppID
 
 /// Apple 开发者账号下已注册的 App ID（来自 listAppIds.action）
-@interface RPVAppID : NSObject
+/// 说明：本类为桥接层自定义数据模型，刻意与 Vendor/ReProvision/Support/RPVAppID 重名类区分，
+/// 这里会把 expirationDate（Unix 时间戳或 ISO 8601 字符串）解析为 NSDate，供 Swift 侧 RegisteredAppID 使用。
+@interface RPVRegisteredAppID : NSObject
 @property (nonatomic, copy) NSString *identifier;        // bundle identifier
 @property (nonatomic, copy) NSString *applicationName;   // App 名称
-@property (nonatomic, strong, nullable) NSDate *applicationExpiryDate; // 过期时间
+@property (nonatomic, strong, nullable) NSDate *applicationExpiryDate; // 已解析为 NSDate
 - (instancetype)initWithDictionary:(NSDictionary *)dict;
 @end
 
@@ -186,7 +188,7 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 #pragma mark 已注册 AppIDs
 
 /// 拉取当前 Team 下已注册的 App ID 列表（来自 Apple listAppIds.action）
-- (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVAppID *> *_Nullable appIds,
+- (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVRegisteredAppID *> *_Nullable appIds,
                                           NSError *_Nullable error))completion
     NS_SWIFT_NAME(fetchAppIDs(completion:));
 

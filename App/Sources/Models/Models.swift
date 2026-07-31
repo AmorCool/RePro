@@ -181,7 +181,7 @@ struct RegisteredAppID: Identifiable, Hashable {
         return "未知"
     }
 
-    init(from objC: RPVAppID) {
+    init(from objC: RPVRegisteredAppID) {
         self.identifier = objC.identifier ?? ""
         self.applicationName = objC.applicationName ?? identifier
         self.applicationExpiryDate = objC.applicationExpiryDate

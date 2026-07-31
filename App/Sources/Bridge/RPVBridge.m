@@ -672,7 +672,7 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     }];
 }
 
-- (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVAppID *> *_Nullable, NSError *_Nullable))completion {
+- (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVRegisteredAppID *> *_Nullable, NSError *_Nullable))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *teamID = [self teamID];
         if (!teamID || teamID.length == 0) {
@@ -700,9 +700,9 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
                 }
 
                 NSArray *rawApps = dict[@"appIds"];
-                NSMutableArray<RPVAppID *> *result = [NSMutableArray array];
+                NSMutableArray<RPVRegisteredAppID *> *result = [NSMutableArray array];
                 for (NSDictionary *appDict in rawApps) {
-                    RPVAppID *appId = [[RPVAppID alloc] initWithDictionary:appDict];
+                    RPVRegisteredAppID *appId = [[RPVRegisteredAppID alloc] initWithDictionary:appDict];
                     [result addObject:appId];
                 }
 
@@ -811,9 +811,9 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 
 @end
 
+#pragma mark - 已注册 AppID 实现
 
-
-@implementation RPVAppID
+@implementation RPVRegisteredAppID
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
