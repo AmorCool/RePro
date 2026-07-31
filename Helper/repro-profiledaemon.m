@@ -144,13 +144,15 @@ static NSString *InstallProfile(NSString *profilePath) {
     RPVProfileDaemonLog(@"描述文件已写入真实路径: %@ (大小: %lu bytes)", dest, (unsigned long)data.length);
 
     // 尝试 MCProfileConnection 注册（root + 系统上下文 → 直连真实 profiled）
-    dlopen("/System/Library/PrivateFrameworks/ManagedConfiguration.framework/ManagedConfiguration", RTLD_LAZY);
-    Class mcClass = objc_getClass("MCProfileConnection");
-    if (mcClass) {
-        id connection = [mcClass sharedConnection];
-        if (connection) {
-            SEL sel = NSSelectorFromString(@"installProvisioningProfileData:managingProfileIdentifier:outError:");
-            if ([connection respondsToSelector:sel]) {
+    // 用 dlopen + objc_getClass + performSelector 避免需要导入 PrivateFramework 头文件
+    void *handle = dlopen("/System/Library/PrivateFrameworks/ManagedConfiguration.framework/ManagedConfiguration", RTLD_LAZY);
+    if (handle) {
+        Class mcClass = objc_getClass("MCProfileConnection");
+        if (mcClass) {
+            id connection = [(id)mcClass performSelector:@selector(sharedConnection)];
+            if (connection) {
+                SEL sel = NSSelectorFromString(@"installProvisioningProfileData:managingProfileIdentifier:outError:");
+                if ([connection respondsToSelector:sel]) {
                 NSMethodSignature *sig = [connection methodSignatureForSelector:sel];
                 NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
                 [inv setTarget:connection];
