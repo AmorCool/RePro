@@ -15,45 +15,7 @@ struct AppIDsView: View {
 
     var body: some View {
         List {
-            if isLoading {
-                HStack {
-                    ProgressView()
-                    Text("正在拉取 AppID 列表…")
-                        .foregroundColor(.secondary)
-                }
-            } else if let error = errorMessage {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text(error)
-                        .font(.callout)
-                        .multilineTextAlignment(.center)
-                    Button("重试") { loadAppIDs() }
-                        .buttonStyle(.bordered)
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-            } else if appIDs.isEmpty && !isLoading {
-                VStack(spacing: 16) {
-                    Spacer()
-                    Image(systemName: "number")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-                    Text("暂无已注册的 AppID")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                    Text("登录后在 Apple Developer 注册的应用会显示在这里")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                ForEach(appIDs) { appID in
-                    AppIDRowView(appID: appID)
-                }
-            }
+            appIDContent
         }
         .navigationTitle("已注册 App IDs (\(appIDs.count))")
         .navigationBarTitleDisplayMode(.inline)
@@ -69,6 +31,49 @@ struct AppIDsView: View {
             }
         }
         .onAppear { if appIDs.isEmpty { loadAppIDs() } }
+    }
+
+    @ViewBuilder
+    private var appIDContent: some View {
+        if isLoading {
+            HStack {
+                ProgressView()
+                Text("正在拉取 AppID 列表…")
+                    .foregroundColor(.secondary)
+            }
+        } else if let error = errorMessage {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.largeTitle)
+                    .foregroundColor(.orange)
+                Text(error)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                Button("重试") { loadAppIDs() }
+                    .buttonStyle(.bordered)
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+        } else if appIDs.isEmpty && !isLoading {
+            VStack(spacing: 16) {
+                Spacer()
+                Image(systemName: "number")
+                    .font(.system(size: 48))
+                    .foregroundColor(.secondary)
+                Text("暂无已注册的 AppID")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                Text("登录后在 Apple Developer 注册的应用会显示在这里")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            ForEach(appIDs) { appID in
+                AppIDRowView(appID: appID)
+            }
+        }
     }
 
     // MARK: - 数据加载
