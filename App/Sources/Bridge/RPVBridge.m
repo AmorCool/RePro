@@ -734,6 +734,8 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 
 @end
 
+@implementation RPVBridge
+
 #pragma mark - AppIDs / 证书 API 实现
 
 - (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVAppID *> *_Nullable, NSError *_Nullable))completion {
@@ -872,3 +874,5 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
         });
     }];
 }
+
+@end
