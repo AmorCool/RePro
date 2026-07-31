@@ -434,16 +434,25 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     // the file is the reliable cross-environment guarantee (profiled scans this dir).
     BOOL fileOK = [self _registerProfileViaFileAtPath:profilePath];
     if (RPVIsRootHideEnvironment()) {
-        // RootHide 下 in-process MCProfileConnection 只把描述文件注册进 jbroot overlay
-        //（installd/profiled 看不见），其 "success" 是假成功；以 repro-helper 的结果为准。
-        if (fileOK) {
+        // RootHide 下 App 进程带 no-sandbox，其 in-process MCProfileConnection 直连真实
+        // profiled，并以 mobile 身份把 profile 注册进【本地 provisioning 库】——与能正常
+        // 工作的 test2源码（rootless 转 roothide）完全一致；installd 的
+        // AllowInstallLocalProvisioned 校验查的正是本地库。
+        // 而 root helper 的 MC 注册会进 managed(MSM) 库（installd 不认），不能以其结果为准。
+        // 故以 App 进程 MC 结果为准，repro-helper 文件写入仅作兜底。
+        // （若日后再出现“App MC 报告成功但 installd 仍 0xe8008015”，则说明该 RootHide 版本
+        //  把 App 的 MC XPC 也重定向了，那时需改用常驻 root LaunchDaemon 注册兜底。）
+        if (success) {
             RPVDiagnostic(RPVDiagInfo, @"profile",
-                          @"[RootHide] profile 已通过 repro-helper 写入真实 /var/Managed Preferences/mobile");
+                          @"[RootHide] App 进程 MCProfileConnection 已注册到【本地库】(installd 真正读取的库)");
+        } else if (fileOK) {
+            RPVDiagnostic(RPVDiagWarning, @"profile",
+                          @"[RootHide] App MC 未成功，回退 repro-helper 文件写入（report: %@）", report);
+            success = fileOK;
         } else {
             RPVDiagnostic(RPVDiagError, @"profile",
-                          @"[RootHide] repro-helper 注册描述文件失败（report: %@）", report);
+                          @"[RootHide] App MC 与 repro-helper 均失败（report: %@）", report);
         }
-        success = fileOK;
     } else if (!success) {
         RPVDiagnostic(RPVDiagWarning, @"profile",
                       @"MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
