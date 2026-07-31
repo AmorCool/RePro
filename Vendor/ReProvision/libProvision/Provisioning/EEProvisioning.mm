@@ -9,10 +9,10 @@
 #import "EEProvisioning.h"
 #import "EESigning.h"
 #import "SAMKeychain.h"
-#import "RPVOpenSSLInit.h"
 
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
+#include <openssl/err.h>
 #include <cstdio>
 #include <iostream>
 
@@ -531,10 +531,6 @@
 
 - (int)_generateCodeSigningRequest:(NSData **)privateKey:(NSData **)codeSigningRequest {
     // Code utilised from: http://www.codepool.biz/how-to-use-openssl-to-generate-x-509-certificate-request.html
-
-    // OpenSSL 3.x 静态链接时 default provider 不会自动激活，必须显式加载，
-    // 否则 EVP_sha1()/RSA_generate_key_ex 静默失败 → 报 CSR 生成错误。
-    RPVEnsureOpenSSLInit();
 
     int ret = 0;
     RSA *r = NULL;
