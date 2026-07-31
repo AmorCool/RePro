@@ -22,7 +22,7 @@ struct IPADocumentPicker: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onDismiss: { presentationMode.dismissed() }) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onDismiss: { presentationMode.wrappedValue.dismiss() }) }
 
     class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onPick: (URL) -> Void
