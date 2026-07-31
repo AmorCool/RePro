@@ -2,72 +2,38 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- RootHide 专用 Daemon Entitlements -->
-    <!-- RootHide 默认把越狱二进制关进沙箱，必须加这些才能正常运行 -->
-    <!-- 参考: https://github.com/roothide/Developer -->
-
-    <!-- 平台应用标识（绕过沙盒限制的关键） -->
-    <key>platform-application</key>
-    <true/>
-
-    <!-- ★★★ RootHide 关键：禁用沙盒 ★★★ -->
-    <!-- 没有此项，RootHide 会将 daemon 关入沙箱，导致无法访问系统路径、无法 fork/exec -->
-    <key>com.apple.private.security.no-sandbox</key>
-    <true/>
-
-    <!-- 存储访问权限（RootHide 沙箱下需要显式声明） -->
-    <key>storage.AppBundles</key>
-    <true/>
-    <key>storage.AppDataContainers</key>
-    <true/>
-
-    <!-- posix_spawn 启动 zsign 子进程（签名 IPA 时需要） -->
-    <key>com.apple.private.posix-spawn</key>
-    <true/>
-
-    <!-- Keychain 访问（存储证书/私钥） -->
-    <key>keychain-access-groups</key>
-    <array>
-        <string>com.reprovision.*</string>
-    </array>
-
-    <!-- 网络客户端（Apple ID 认证、profile 下载） -->
-    <key>com.apple.security.network.client</key>
-    <true/>
-
-    <!-- MachService 监听（接收前端 App XPC 连接） -->
-    <key>com.apple.security.cs.mach-service</key>
-    <true/>
-
-    <!-- launchd 通信（作为 LaunchDaemon 运行必需） -->
-    <key>com.apple.private.launchd</key>
-    <true/>
-
-    <!-- 写入 /var/mobile/Library/Preferences（存储凭证） -->
-    <key>com.apple.private.security.manager</key>
-    <dict>
-        <key>allowed</key>
-        <array>
-            <string>com.apple.preferences.servicesd.modify</string>
-        </array>
-    </dict>
-
-    <!-- 写入系统 profile 目录（安装 provisioning profile） -->
-    <key>com.apple.private.storage-managedpreferences</key>
-    <true/>
-
-    <!-- CommCenter 权限（设备信息获取，Anisette 数据生成） -->
-    <key>com.apple.CommCenter.fine-grained</key>
-    <true/>
-
-    <!-- SystemConfiguration 权限（网络配置读取） -->
-    <key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
-    <array>
-        <string>com.apple.network.eapon</string>
-    </array>
-
-    <!-- 调试权限（越狱环境需要，corecrypto dlopen 等） -->
-    <key>get-task-allow</key>
-    <true/>
+	<!-- RootHide 专属 daemon entitlements（照搬原版 ReProvision 源码）
+	     RootHide 默认沙箱化一切越狱二进制；守护进程必须以 root 写真实
+	     /var/Managed Preferences/mobile，no-sandbox 是前提。 -->
+	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppBundles</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+	<key>com.apple.private.skip-library-validation</key>
+	<true/>
+	<key>application-identifier</key>
+	<string>AAAAAAAAAA.jp.soh.reprovisiond</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>AAAAAAAAAA</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.jp.soh.reprovision.ios</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
+	</array>
+	<key>com.apple.backboardd.launchapplications</key>
+	<true/>
+	<key>com.apple.multitasking.unlimitedassertions</key>
+	<true/>
+	<key>com.apple.multitasking.systemappassertions</key>
+	<true/>
 </dict>
 </plist>

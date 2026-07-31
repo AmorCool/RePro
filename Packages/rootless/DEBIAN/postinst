@@ -1,73 +1,82 @@
 #!/bin/bash
-# ReProvision Dopamine/rootless 包 postinst
-# /var/jb/ 前缀布局（Dopamine dpkg 自动映射到 jbroot）
+#
+# ReProvision (Dopamine/rootless) postinst — 照搬原版 ReProvision 源码
+#
 
-set -e
+JB_PREFIX="/var/jb"
+PLIST="${JB_PREFIX}/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
 
-PLIST="/var/jb/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
-DAEMON_BIN="/var/jb/usr/libexec/reprovisiond"
-ZSIGN_BIN="/var/jb/usr/local/bin/zsign"
-LOG_FILE="/tmp/reprovision_bootstrap.log"
+function finish() {
+	f="${1}"
+	[[ -z "${f}" || -z "${CYDIA}" ]] && return
+	cydia=(${CYDIA})
+	[[ ${cydia[1]} -eq 1 ]] || return
+	echo "finish:${f}" >&${cydia[0]}
+}
 
-echo "[RePro] rootless postinst 开始 $(date)" > "$LOG_FILE"
+# Clear Inbox folder
+if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox" ]; then
+	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
+fi
 
-# === 环境检测 ===
-{
-    echo "[RePro] 当前用户: $(whoami), uid: $(id -u)"
-    echo "[RePro] plist 存在: $(test -f "$PLIST" && echo YES || echo NO)"
-    echo "[RePro] daemon 存在: $(test -f "$DAEMON_BIN" && echo YES || echo NO)"
-} >> "$LOG_FILE" 2>&1
+# Locate launchctl (rootless paths first, then fallbacks)
+LAUNCHCTL=""
+for c in "${JB_PREFIX}/bin/launchctl" "${JB_PREFIX}/usr/bin/launchctl" "/bin/launchctl" "/usr/bin/launchctl"; do
+	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
+done
 
-# === 权限修复（root:wheel + 0755）===
-echo "[RePro] 修复二进制权限..." >> "$LOG_FILE"
+# Handle the daemon
+echo "(Re)-loading daemon..."
+
+if [ -f "$PLIST" ]; then
+	chown root:wheel "$PLIST" 2>/dev/null || true
+	chmod 644 "$PLIST" 2>/dev/null || true
+fi
+
+# Ensure the daemon binary is owned by root:wheel with mode 0755.
+DAEMON_BIN="${JB_PREFIX}/usr/libexec/reprovisiond"
 if [ -f "$DAEMON_BIN" ]; then
-    chown root:wheel "$DAEMON_BIN" 2>>"$LOG_FILE" || true
-    chmod 0755 "$DAEMON_BIN" 2>>"$LOG_FILE" || true
-    ls -la "$DAEMON_BIN" >> "$LOG_FILE" 2>&1
+	chown root:wheel "$DAEMON_BIN" 2>/dev/null || true
+	chmod 0755 "$DAEMON_BIN" 2>/dev/null || true
 fi
+
+ZSIGN_BIN="${JB_PREFIX}/usr/local/bin/zsign"
 if [ -f "$ZSIGN_BIN" ]; then
-    chown root:wheel "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
-    chmod 0755 "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
+	chown root:wheel "$ZSIGN_BIN" 2>/dev/null || true
+	chmod 0755 "$ZSIGN_BIN" 2>/dev/null || true
 fi
 
-# App 二进制
-APP_BIN="/var/jb/Applications/RePro.app/RePro"
+# App 二进制权限
+APP_BIN="${JB_PREFIX}/Applications/RePro.app/RePro"
 if [ -f "$APP_BIN" ]; then
-    chmod 0755 "$APP_BIN" 2>>"$LOG_FILE" || true
+	chmod 0755 "$APP_BIN" 2>/dev/null || true
 fi
 
-# === 确保 log 目录存在 ===
-mkdir -p /var/mobile/Library/Logs/RePro 2>/dev/null
-chown mobile:mobile /var/mobile/Library/Logs/RePro 2>/dev/null || true
-
-# === 启动守护进程 ===
-if [ -f "$PLIST" ] && [ -f "$DAEMON_BIN" ]; then
-    # Dopamine/rootless: system 域
-    if launchctl bootstrap system "$PLIST" 2>>"$LOG_FILE"; then
-        sleep 1
-        if pgrep -x reprovisiond > /dev/null 2>&1; then
-            echo "[RePro] ✅ 守护进程启动成功 (bootstrap)" >> "$LOG_FILE"
-        else
-            launchctl kickstart system/jp.soh.reprovisiond 2>>"$LOG_FILE"
-            sleep 1
-            if pgrep -x reprovisiond > /dev/null 2>&1; then
-                echo "[RePro] ✅ 守护进程启动成功 (kickstart)" >> "$LOG_FILE"
-            else
-                echo "[RePro] ⚠️ daemon 可能未成功启动" >> "$LOG_FILE"
-            fi
-        fi
-    else
-        launchctl kickstart system/jp.soh.reprovisiond 2>>"$LOG_FILE"
-        echo "[RePro] 使用 kickstart 启动" >> "$LOG_FILE"
-    fi
-else
-    echo "[RePro] ❌ 缺少必要文件" >> "$LOG_FILE"
-    [ ! -f "$PLIST" ] && echo "[RePro]   缺少: $PLIST" >> "$LOG_FILE"
-    [ ! -f "$DAEMON_BIN" ] && echo "[RePro]   缺少: $DAEMON_BIN" >> "$LOG_FILE"
+if [ -n "$LAUNCHCTL" ]; then
+	BOOT_LOG="${JB_PREFIX}/tmp/reprovision_bootstrap.log"
+	: > "$BOOT_LOG" 2>/dev/null || BOOT_LOG="/tmp/reprovision_bootstrap.log"
+	{
+		echo "== bootout/unload =="
+		"$LAUNCHCTL" bootout system "$PLIST" 2>&1 || "$LAUNCHCTL" unload "$PLIST" 2>&1 || true
+		echo "== bootstrap/load =="
+		"$LAUNCHCTL" bootstrap system "$PLIST" 2>&1 || "$LAUNCHCTL" load "$PLIST" 2>&1 || true
+		echo "== enable =="
+		"$LAUNCHCTL" enable system/jp.soh.reprovisiond 2>&1 || true
+		echo "== kickstart =="
+		"$LAUNCHCTL" kickstart -k system/jp.soh.reprovisiond 2>&1 || true
+	} >> "$BOOT_LOG" 2>&1
 fi
 
-# === 刷新图标缓存 ===
-uicache -p /var/jb/Applications/RePro.app 2>/dev/null || true
+# Reload application cache via uicache (rootless)
+echo "Reloading application cache"
+UICACHE=""
+for c in "${JB_PREFIX}/usr/bin/uicache" "${JB_PREFIX}/bin/uicache" "/usr/bin/uicache"; do
+	if [ -x "$c" ]; then UICACHE="$c"; break; fi
+done
+if [ -n "$UICACHE" ]; then
+	"$UICACHE" -p "${JB_PREFIX}/Applications/RePro.app" || "$UICACHE" -a || true
+fi
 
-echo "[RePro] rootless postinst 完成 $(date)" >> "$LOG_FILE"
+echo "Do, or do not. There is no try."
+finish restart
 exit 0

@@ -1,179 +1,107 @@
 #!/bin/bash
-# ReProvision RootHide 包 postinst
-# RootHide 布局：dpkg 自动映射到 jbroot，/ = jbroot
 #
-# ★★★ 关键 ★★★
-# 1. 必须以 exit 0 结尾（否则 dpkg 认为安装未完成，Sileo 不显示"完成"按钮）
-# 2. 二进制必须 root:wheel / 0755（否则 daemon 无法以 root 身份运行）
-# 3. RootHide 的 LaunchDaemons 在 gui/501 域（非 system 域）
+# ReProvision (RootHide) postinst — 照搬原版 ReProvision 源码
+#
+# RootHide 的 dpkg 维护脚本运行在 vroot shell 中——脚本的 "/" 就是 jbroot。
+# 所以 /Library/LaunchDaemons/xxx 实际是 <jbroot>/Library/LaunchDaemons/xxx，
+# /usr/libexec/reprovisiond 实际是 <jbroot>/usr/libexec/reprovisiond。
+#
+# 但 launchctl 是系统域工具（system launchd），它只认 rootfs 真实路径。
+# 必须用 RootHide 自带的 'jbroot' 命令行工具把 jbroot 路径转成 rootfs 路径
+# 再传给 launchctl，否则守护进程无法被加载。
 
-set -e
+function finish() {
+	f="${1}"
+	[[ -z "${f}" || -z "${CYDIA}" ]] && return
+	cydia=(${CYDIA})
+	[[ ${cydia[1]} -eq 1 ]] || return
+	echo "finish:${f}" >&${cydia[0]}
+}
 
-DAEMON_PLIST="/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
-DAEMON_BIN="/usr/libexec/reprovisiond"
-DAEMON_LABEL="jp.soh.reprovisiond"
-ZSIGN_BIN="/usr/local/bin/zsign"
-LOG_FILE="/tmp/reprovision_bootstrap.log"
-
-echo "[RePro] RootHide postinst 开始 $(date)" > "$LOG_FILE"
-
-# === 环境检测 ===
-{
-    echo "[RePro] 当前用户: $(whoami), uid: $(id -u)"
-    echo "[RePro] RootHide 检测: $(test -f /var/jb/.roothide_version && echo YES || echo NO)"
-    echo "[RePro] plist 路径: $DAEMON_PLIST"
-    echo "[RePro] daemon 路径: $DAEMON_BIN"
-    echo "[RePro] plist 存在: $(test -f "$DAEMON_PLIST" && echo YES || echo NO)"
-    echo "[RePro] daemon 存在: $(test -f "$DAEMON_BIN" && echo YES || echo NO)"
-    echo "[RePro] zsign 存在: $(test -f "$ZSIGN_BIN" && echo YES || echo NO)"
-} >> "$LOG_FILE" 2>&1
-
-# === 权限修复（root:wheel + 0755）===
-echo "[RePro] 修复二进制权限..." >> "$LOG_FILE"
-if [ -f "$DAEMON_BIN" ]; then
-    chown root:wheel "$DAEMON_BIN" 2>>"$LOG_FILE" || true
-    chmod 0755 "$DAEMON_BIN" 2>>"$LOG_FILE" || true
-    ls -la "$DAEMON_BIN" >> "$LOG_FILE" 2>&1
-    file "$DAEMON_BIN" >> "$LOG_FILE" 2>&1
-else
-    echo "[RePro] WARNING: daemon 二进制不存在: $DAEMON_BIN" >> "$LOG_FILE"
+# Clear Inbox folder（jbroot 路径，vroot shell 下直接可用）
+if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox" ]; then
+	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
 fi
 
-if [ -f "$ZSIGN_BIN" ]; then
-    chown root:wheel "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
-    chmod 0755 "$ZSIGN_BIN" 2>>"$LOG_FILE" || true
-    ls -la "$ZSIGN_BIN" >> "$LOG_FILE" 2>&1
-else
-    echo "[RePro] WARNING: zsign 不存在: $ZSIGN_BIN" >> "$LOG_FILE"
+# jbroot 路径（vroot shell 中这些就是 jbroot 下的真实位置）
+PLIST="/Library/LaunchDaemons/jp.soh.reprovisiond.plist"
+DAEMON="/usr/libexec/reprovisiond"
+ZSIGN="/usr/local/bin/zsign"
+
+echo "(Re)-loading daemon..."
+
+# 属主/权限（jbroot 路径在 vroot shell 中可直接操作）
+if [ -f "$PLIST" ]; then
+	chown root:wheel "$PLIST" 2>/dev/null || true
+	chmod 644 "$PLIST" 2>/dev/null || true
+fi
+if [ -f "$DAEMON" ]; then
+	chown root:wheel "$DAEMON" 2>/dev/null || true
+	chmod 0755 "$DAEMON" 2>/dev/null || true
+fi
+if [ -f "$ZSIGN" ]; then
+	chown root:wheel "$ZSIGN" 2>/dev/null || true
+	chmod 0755 "$ZSIGN" 2>/dev/null || true
 fi
 
-# App 二进制也设正确权限
+# App 二进制权限
 APP_BIN="/Applications/RePro.app/RePro"
 if [ -f "$APP_BIN" ]; then
-    chmod 0755 "$APP_BIN" 2>>"$LOG_FILE" || true
-    echo "[RePro] App 二进制权限已设置" >> "$LOG_FILE"
+	chmod 0755 "$APP_BIN" 2>/dev/null || true
 fi
 
-# === 确保 log 目录存在 ===
-mkdir -p /var/mobile/Library/Logs/RePro 2>/dev/null
-chown mobile:mobile /var/mobile/Library/Logs/RePro 2>/dev/null || true
+# 查找 jbroot 命令行工具（用于 jbroot→rootfs 路径转换）
+JBROOT_CMD=""
+for c in /usr/bin/jbroot /bin/jbroot; do
+	if [ -x "$c" ]; then JBROOT_CMD="$c"; break; fi
+done
 
-# === 判断环境 ===
-IS_ROOTHIDE="NO"
-if [ -f /var/jb/.roothide_version ]; then
-    IS_ROOTHIDE="YES"
-fi
-echo "[RePro] 环境检测: RootHide=$IS_ROOTHIDE" >> "$LOG_FILE"
+LAUNCHCTL=""
+for c in /bin/launchctl /usr/bin/launchctl; do
+	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
+done
 
-# === 启动守护进程 ===
-start_daemon() {
-    local method="$1"
-    local domain="$2"
-    echo "[RePro] 尝试 [$method] (域=$domain)" >> "$LOG_FILE"
+if [ -n "$LAUNCHCTL" ] && [ -f "$PLIST" ]; then
+	BOOT_LOG="/tmp/reprovision_bootstrap.log"
 
-    case "$method" in
-        bootstrap)
-            launchctl bootstrap "$domain" "$DAEMON_PLIST" 2>>"$LOG_FILE"
-            ;;
-        kickstart)
-            launchctl kickstart "$domain/$DAEMON_LABEL" 2>>"$LOG_FILE"
-            ;;
-        load)
-            launchctl load -w "$DAEMON_PLIST" 2>>"$LOG_FILE"
-            ;;
-        direct)
-            # 直接以后台进程启动（确保 root 权限）
-            if [ -x "$DAEMON_BIN" ]; then
-                # 用 nohup 确保不被 Sileo 的进程组终止
-                nohup "$DAEMON_BIN" >/dev/null 2>&1 &
-                echo "direct PID: $!" >> "$LOG_FILE"
-            fi
-            ;;
-    esac
-    return $?
-}
+	# 关键：用 jbroot 工具把 plist 的 jbroot 路径转换成 rootfs 真实路径
+	# launchctl bootstrap system 需要的是系统级（rootfs）路径
+	if [ -n "$JBROOT_CMD" ] && [ -x "$JBROOT_CMD" ]; then
+		REAL_PLIST=$("$JBROOT_CMD" "$PLIST" 2>/dev/null)
+		if [ -z "$REAL_PLIST" ] || [ ! -f "$REAL_PLIST" ]; then
+			echo "WARNING: jbroot('$PLIST')='$REAL_PLIST' not a valid file, falling back to raw path" >> "$BOOT_LOG"
+			REAL_PLIST="$PLIST"
+		fi
+	else
+		echo "WARNING: jbroot tool not found, using raw path for launchctl (may fail on RootHide)" >> "$BOOT_LOG"
+		REAL_PLIST="$PLIST"
+	fi
 
-# === 验证 daemon 是否运行 ===
-verify_daemon() {
-    sleep 1
+	{
+		echo "== jbroot path conversion =="
+		echo "  jbroot PLIST = $PLIST"
+		echo "  rootfs PLIST  = $REAL_PLIST"
+		echo "== bootout =="
+		"$LAUNCHCTL" bootout system "$REAL_PLIST" 2>&1 || true
+		echo "== bootstrap =="
+		"$LAUNCHCTL" bootstrap system "$REAL_PLIST" 2>&1 || true
+		echo "== kickstart =="
+		"$LAUNCHCTL" kickstart -k system/jp.soh.reprovisiond 2>&1 || true
+	} >> "$BOOT_LOG" 2>&1 || true
 
-    # 方式1: 通过多个可能的域检查 pid
-    for domain in "gui/501/$DAEMON_LABEL" "user/501/$DAEMON_LABEL" "system/$DAEMON_LABEL"; do
-        local pid
-        pid=$(launchctl print "$domain" 2>/dev/null | grep "pid=" | head -1 | cut -d= -f2 | tr -d ' ')
-        if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
-            echo "[RePro] ✅ daemon 运行中 (域=$domain), PID=$pid" >> "$LOG_FILE"
-            return 0
-        fi
-    done
-
-    # 方式2: 检查进程名
-    if pgrep -x reprovisiond > /dev/null 2>&1; then
-        local found_pid
-        found_pid=$(pgrep -x reprovisiond | head -1)
-        echo "[RePro] ✅ daemon 运行中 (pgrep), PID=$found_pid" >> "$LOG_FILE"
-        return 0
-    fi
-
-    echo "[RePro] ❌ daemon 未运行" >> "$LOG_FILE"
-    return 1
-}
-
-# === 主启动逻辑 ===
-if [ -f "$DAEMON_PLIST" ] && [ -f "$DAEMON_BIN" ]; then
-    echo "[RePro] 开始启动守护进程..." >> "$LOG_FILE"
-
-    # RootHide 启动顺序（从最可能成功到最不可能）
-    if [ "$IS_ROOTHIDE" = "YES" ]; then
-        # RootHide: gui/501 是主要域
-        METHODS="bootstrap:gui/501 kickstart:gui/501 load: bootstrap:user/501 kickstart:user/501 kickstart:system direct:"
-    else
-        # 标准 rootless/rootful: system 域
-        METHODS="bootstrap:system kickstart:system load: direct:"
-    fi
-
-    STARTED=0
-    for item in $METHODS; do
-        method="${item%%:*}"
-        domain="${item##*:}"
-        if start_daemon "$method" "$domain"; then
-            sleep 1
-            if verify_daemon; then
-                echo "[RePro] 🎉 守护进程启动成功 (方式=$method)" >> "$LOG_FILE"
-                STARTED=1
-                break
-            fi
-        fi
-        echo "[RePro] → $method 失败，继续尝试..." >> "$LOG_FILE"
-    done
-
-    if [ "$STARTED" -eq 0 ]; then
-        echo "[RePro] ⚠️ 所有启动方式均失败，daemon 可能需要手动启动" >> "$LOG_FILE"
-    fi
-else
-    echo "[RePro] ❌ 缺少必要文件!" >> "$LOG_FILE"
-    [ ! -f "$DAEMON_PLIST" ] && echo "[RePro]   缺少: $DAEMON_PLIST" >> "$LOG_FILE"
-    [ ! -f "$DAEMON_BIN" ] && echo "[RePro]   缺少: $DAEMON_BIN" >> "$LOG_FILE"
+	echo "Bootstrap log written to $BOOT_LOG"
 fi
 
-# === 刷新图标缓存 ===
-uicache -p /Applications/RePro.app 2>/dev/null || true
+# Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）
+echo "Reloading application cache"
+UICACHE=""
+for c in /usr/bin/uicache /bin/uicache; do
+	if [ -x "$c" ]; then UICACHE="$c"; break; fi
+done
+if [ -n "$UICACHE" ]; then
+	"$UICACHE" -p "/Applications/RePro.app" 2>/dev/null || "$UICACHE" -a 2>/dev/null || true
+fi
 
-# === 最终状态诊断 ===
-{
-    echo ""
-    echo "[RePro] ====== postinst 完成 $(date) ======"
-    echo "[RePro] 最终状态:"
-    for domain in "gui/501/$DAEMON_LABEL" "user/501/$DAEMON_LABEL" "system/$DAEMON_LABEL"; do
-        echo "--- 域: $domain ---"
-        launchctl print "$domain" 2>/dev/null | head -15 || echo "  (无法查询)"
-    done
-    echo "--- 进程列表 ---"
-    ps aux | grep reprovisiond | grep -v grep || echo "  未找到 reprovisiond 进程"
-    echo "--- 当前用户/权限 ---"
-    id
-    whoami
-} >> "$LOG_FILE" 2>&1
-
-# ★★★ 必须以 success 退出！dpkg 需要看到 exit 0 才认为安装完成 ★★★
+echo "Do, or do not. There is no try."
+finish restart
 exit 0

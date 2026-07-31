@@ -1,50 +1,121 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict>
-    <!-- RootHide 专用 App entitlements -->
-    <!-- RootHide 默认把越狱二进制关进沙箱，必须加这些才能正常运行 -->
+  <dict>
 
-    <!-- 平台应用标识（绕过沙箱限制的关键） -->
+    <!-- RootHide 专属 entitlements（照搬原版 ReProvision 源码）
+         与 Dopamine rootless 的区别：RootHide 默认把越狱二进制关进沙箱，
+         官方文档要求越狱 app 追加 no-sandbox 与两个 storage 权限，
+         否则访问沙箱外路径（如真实 /var/Managed Preferences/mobile）
+         以及到 root 守护进程的 mach-lookup 都会被拒。 -->
+
+    <key>com.apple.private.mobileinstall.allowedSPI</key>
+    <array>
+      <string>Lookup</string>
+      <string>Install</string>
+      <string>Browse</string>
+      <string>Uninstall</string>
+      <string>LookupForLaunchServices</string>
+      <string>InstallForLaunchServices</string>
+      <string>BrowseForLaunchServices</string>
+      <string>UninstallForLaunchServices</string>
+      <string>InstallLocalProvisioned</string>
+    </array>
+
+    <key>com.apple.CommCenter.fine-grained</key>
+    <array>
+      <string>cellular-plan</string>
+      <string>data-usage</string>
+      <string>data-allowed-write</string>
+      <string>preferences-write</string>
+    </array>
+
+    <key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
+    <true/>
+
+    <key>com.apple.SystemConfiguration.SCDynamicStore-write-access</key>
+    <true/>
+
+    <key>com.apple.radios.plist</key>
+    <true/>
+
+    <key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+    <true/>
+
+    <key>com.apple.private.MobileContainerManager.allowed</key>
+    <true/>
+
+    <key>com.apple.private.MobileGestalt.AllowedProtectedKeys</key>
+    <array>
+      <string>UniqueDeviceID</string>
+      <string>UniqueChipID</string>
+      <string>SerialNumber</string>
+      <string>InternationalMobileEquipmentIdentity</string>
+    </array>
+
+    <key>com.apple.managedconfiguration.profiled-access</key>
+    <true/>
+
     <key>platform-application</key>
     <true/>
 
-    <!-- 禁用沙盒 -->
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+
     <key>com.apple.private.security.no-sandbox</key>
     <true/>
 
-    <!-- 存储访问权限（RootHide 沙箱下需要显式声明） -->
-    <key>storage.AppBundles</key>
-    <true/>
-    <key>storage.AppDataContainers</key>
+    <key>com.apple.private.security.storage.AppBundles</key>
     <true/>
 
-    <!-- 网络权限 -->
-    <key>com.apple.CommCenter.fine-grained</key>
+    <key>com.apple.private.security.storage.AppDataContainers</key>
     <true/>
-    <key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
+
+    <key>com.apple.private.skip-library-validation</key>
+    <true/>
+
+    <key>application-identifier</key>
+    <string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
+
+    <key>com.apple.developer.team-identifier</key>
+    <string>AAAAAAAAAA</string>
+
+    <key>com.apple.security.application-groups</key>
     <array>
-        <string>com.apple.network.eapon</string>
+      <string>group.jp.soh.reprovision.ios</string>
     </array>
 
-    <!-- Keychain -->
     <key>keychain-access-groups</key>
     <array>
-        <string>com.reprovision.*</string>
+      <string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
     </array>
 
-    <!-- XPC MachService 连接（与守护进程通信） -->
-    <key>com.apple.security.cs.mach-service</key>
+    <key>com.apple.localnotification.schedulingproxy</key>
     <true/>
 
-    <!-- 后台运行 -->
-    <key>UIBackgroundModes</key>
+    <key>com.apple.nano.nanoregistry</key>
+    <true/>
+
+    <key>com.apple.authkit.client.private</key>
+    <true/>
+
+    <key>com.apple.developer.icloud-services</key>
     <array>
-        <string>fetch</string>
+      <string>CloudKit</string>
+      <string>CloudDocuments</string>
     </array>
 
-    <!-- 调试权限（越狱环境需要） -->
-    <key>get-task-allow</key>
-    <true/>
-</dict>
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+      <string>iCloud.jp.soh.reprovision.ios</string>
+    </array>
+
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+      <string>AGXDeviceUserClient</string>
+      <string>IOHDIXControllerUserClient</string>
+      <string>IOSurfaceRootUserClient</string>
+    </array>
+
+  </dict>
 </plist>
