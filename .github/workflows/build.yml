@@ -267,7 +267,7 @@ jobs:
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           "$LDID" -SResources/entitlements-roothide.plist "$PKG3/Applications/RePro.app/RePro"
-          "$LDID" -SResources/entitlements-daemon.plist "$PKG3/usr/libexec/reprovisiond"
+          "$LDID" -SResources/entitlements-rothide-daemon.plist "$PKG3/usr/libexec/reprovisiond"
           "$LDID" -S "$PKG3/usr/local/bin/zsign"
 
           echo "Signing + packaging complete for all 3 packages (with zsign)"
