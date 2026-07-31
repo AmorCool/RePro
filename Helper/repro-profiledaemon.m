@@ -170,10 +170,11 @@ static NSString *InstallProfile(NSString *profilePath) {
                     if (sig.methodReturnLength == sizeof(BOOL)) [inv getReturnValue:&ret];
                     RPVProfileDaemonLog(@"MCProfileConnection 注册结果: returned=%d, error=%@",
                                        ret, outError ?: @"none");
-                } @catch (NSException *e) {
+                }                 @catch (NSException *e) {
                     RPVProfileDaemonLog(@"MCProfileConnection 异常: %@", e);
                 }
             }
+        }
         }
     } else {
         RPVProfileDaemonLog(@"MCProfileConnection 不可用，跳过 MC 注册（文件写入已成功）");
