@@ -22,6 +22,7 @@
 #import "RPVAccountChecker.h"
 #import "RPVResources.h"
 #import "RZSignRunner.h"
+#import "EEAppleServices.h"
 
 #include <spawn.h>
 #include <sys/wait.h>
@@ -671,73 +672,6 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     }];
 }
 
-@end
-
-#pragma mark - RPVAppID 实现
-
-@implementation RPVAppID
-
-- (instancetype)initWithDictionary:(NSDictionary *)dict {
-    self = [super init];
-    if (self) {
-        _identifier = [dict[@"identifier"] copy] ?: @"";
-        _applicationName = [dict[@"name"] copy] ?: _identifier;
-
-        NSString *expiryStr = dict[@"expirationDate"];
-        if (expiryStr && [expiryStr length] > 0) {
-            // Apple API 返回的日期可能是 Unix 时间戳或 ISO 格式
-            double timestamp = [expiryStr doubleValue];
-            if (timestamp > 0) {
-                _applicationExpiryDate = [NSDate dateWithTimeIntervalSince1970:timestamp];
-            } else {
-                // 尝试 ISO 8601 解析
-                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-                fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-                fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
-                _applicationExpiryDate = [fmt dateFromString:expiryStr];
-            }
-        }
-    }
-    return self;
-}
-
-@end
-
-#pragma mark - RPVCertificateInfo 实现
-
-@implementation RPVCertificateInfo
-
-- (instancetype)initWithDictionary:(NSDictionary *)dict {
-    self = [super init];
-    if (self) {
-        _identifier = [dict[@"id"] copy] ?: @"";
-
-        NSDictionary *attrs = dict[@"attributes"];
-        _machineName = [attrs[@"machineName"] copy] ?: @"Unknown";
-
-        // 根据机器名推断来源应用（与原版 RPVTroubleshootingCertificatesViewController 一致）
-        NSString *mn = _machineName;
-        if ([mn containsString:@"RPV"]) {
-            _applicationName = @"ReProvision";
-        } else if ([mn containsString:@"AltStore"]) {
-            _applicationName = @"AltStore";
-        } else if ([mn containsString:@"Cydia"]) {
-            _applicationName = @"Cydia Impactor or Extender";
-        } else {
-            _applicationName = @"Xcode";
-        }
-
-        _serialNumber = attrs[@"serialNumber"] ?: @"";
-    }
-    return self;
-}
-
-@end
-
-@implementation RPVBridge
-
-#pragma mark - AppIDs / 证书 API 实现
-
 - (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVAppID *> *_Nullable, NSError *_Nullable))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *teamID = [self teamID];
@@ -873,6 +807,67 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
             if (completion) completion(firstError);
         });
     }];
+}
+
+@end
+
+
+
+@implementation RPVAppID
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _identifier = [dict[@"identifier"] copy] ?: @"";
+        _applicationName = [dict[@"name"] copy] ?: _identifier;
+
+        NSString *expiryStr = dict[@"expirationDate"];
+        if (expiryStr && [expiryStr length] > 0) {
+            // Apple API 返回的日期可能是 Unix 时间戳或 ISO 格式
+            double timestamp = [expiryStr doubleValue];
+            if (timestamp > 0) {
+                _applicationExpiryDate = [NSDate dateWithTimeIntervalSince1970:timestamp];
+            } else {
+                // 尝试 ISO 8601 解析
+                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+                fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+                fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
+                _applicationExpiryDate = [fmt dateFromString:expiryStr];
+            }
+        }
+    }
+    return self;
+}
+
+@end
+
+#pragma mark - RPVCertificateInfo 实现
+
+@implementation RPVCertificateInfo
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _identifier = [dict[@"id"] copy] ?: @"";
+
+        NSDictionary *attrs = dict[@"attributes"];
+        _machineName = [attrs[@"machineName"] copy] ?: @"Unknown";
+
+        // 根据机器名推断来源应用（与原版 RPVTroubleshootingCertificatesViewController 一致）
+        NSString *mn = _machineName;
+        if ([mn containsString:@"RPV"]) {
+            _applicationName = @"ReProvision";
+        } else if ([mn containsString:@"AltStore"]) {
+            _applicationName = @"AltStore";
+        } else if ([mn containsString:@"Cydia"]) {
+            _applicationName = @"Cydia Impactor or Extender";
+        } else {
+            _applicationName = @"Xcode";
+        }
+
+        _serialNumber = attrs[@"serialNumber"] ?: @"";
+    }
+    return self;
 }
 
 @end
