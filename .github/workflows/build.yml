@@ -19,9 +19,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install ldid dpkg 2>/dev/null || true
+          set -e
+          echo "Installing ldid and dpkg..."
+          brew install ldid dpkg 2>/dev/null || { echo "brew install failed, trying again..."; brew install ldid dpkg; }
           echo "ldid: $(command -v ldid || echo MISSING)"
           echo "dpkg-deb: $(command -v dpkg-deb || echo MISSING)"
+          if ! command -v dpkg-deb &>/dev/null; then
+            echo "dpkg-deb not found, installing via brew..."
+            brew install dpkg
+          fi
 
       # daemon 需要链接 iOS arm64 版 OpenSSL，brew 的是 macOS 版无法链接，必须交叉编译
       - name: Cache OpenSSL (iOS arm64)
@@ -48,7 +54,7 @@ jobs:
 
       - name: Build iOS App (RePro)
         run: |
-          set -e
+          set -euo pipefail
 
           # 本项目无第三方依赖，直接用 xcodeproj 构建（无 CocoaPods / SwiftPM）
           xcodebuild -project RePro.xcodeproj \
@@ -58,7 +64,10 @@ jobs:
             -arch arm64 \
             CODE_SIGNING_ALLOWED=NO \
             -derivedDataPath build \
-            2>&1 | tee build.log | tail -50
+            > build.log 2>&1
+
+          echo "=== xcodebuild 日志暂存到 build.log，最后 50 行： ==="
+          tail -50 build.log
 
           # 检查构建产物
           APP_PATH=$(find build -name "RePro.app" -type d | head -1)
@@ -213,6 +222,32 @@ jobs:
           set -e
           LDID=$(command -v ldid)
 
+          if [ -z "$LDID" ]; then
+            echo "ldid not available, skipping CI signing (device-side zsign will sign at runtime)"
+          else
+            echo "Using ldid: $LDID"
+          fi
+
+          do_sign() {
+            local bin="$1" plist="$2"
+            if [ -n "$LDID" ]; then
+              echo "Signing $bin with $plist"
+              "$LDID" -S"$plist" "$bin"
+            else
+              echo "Skipping sign for $bin (no ldid)"
+            fi
+          }
+
+          do_sign_bare() {
+            local bin="$1"
+            if [ -n "$LDID" ]; then
+              echo "Bare-signing $bin"
+              "$LDID" -S "$bin"
+            else
+              echo "Skipping bare sign for $bin (no ldid)"
+            fi
+          }
+
           # --- Rootless deb (Dopamine) ---
           PKG="Packages/rootless"
           RL="$PKG/var/jb"
@@ -238,9 +273,9 @@ jobs:
           cp Resources/Icon.png "$RL/Applications/RePro.app/Icon.png"
 
           # 签名：先签二进制，不破坏 Assets.car
-          "$LDID" -SResources/entitlements-base.plist "$RL/Applications/RePro.app/RePro"
-          "$LDID" -SResources/entitlements-daemon.plist "$RL/usr/libexec/reprovisiond"
-          "$LDID" -S "$RL/usr/local/bin/zsign"
+          do_sign "$RL/Applications/RePro.app/RePro" Resources/entitlements-base.plist
+          do_sign "$RL/usr/libexec/reprovisiond" Resources/entitlements-daemon.plist
+          do_sign_bare "$RL/usr/local/bin/zsign"
 
           # --- Rootful deb ---
           PKG2="Packages/rootful"
@@ -252,9 +287,9 @@ jobs:
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG2/Applications/RePro.app/Icon.png"
-          "$LDID" -SResources/entitlements-base.plist "$PKG2/Applications/RePro.app/RePro"
-          "$LDID" -SResources/entitlements-daemon.plist "$PKG2/usr/libexec/reprovisiond"
-          "$LDID" -S "$PKG2/usr/local/bin/zsign"
+          do_sign "$PKG2/Applications/RePro.app/RePro" Resources/entitlements-base.plist
+          do_sign "$PKG2/usr/libexec/reprovisiond" Resources/entitlements-daemon.plist
+          do_sign_bare "$PKG2/usr/local/bin/zsign"
 
           # --- RootHide deb ---
           PKG3="Packages/roothide"
@@ -266,9 +301,9 @@ jobs:
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
-          "$LDID" -SResources/entitlements-roothide.plist "$PKG3/Applications/RePro.app/RePro"
-          "$LDID" -SResources/entitlements-rothide-daemon.plist "$PKG3/usr/libexec/reprovisiond"
-          "$LDID" -S "$PKG3/usr/local/bin/zsign"
+          do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
+          do_sign "$PKG3/usr/libexec/reprovisiond" Resources/entitlements-rothide-daemon.plist
+          do_sign_bare "$PKG3/usr/local/bin/zsign"
 
           echo "Signing + packaging complete for all 3 packages (with zsign)"
 
