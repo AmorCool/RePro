@@ -315,7 +315,8 @@ extension DaemonHealthStatus {
             validTokenCount: dict["validTokenCount"] as? Int ?? 0,
             anisetteReady: dict["anisetteReady"] as? Bool ?? false,
             jailbreakType: JailbreakType(rawValue: dict["jailbreakType"] as? String ?? "unknown") ?? .unknown,
-            uptimeSeconds: dict["uptimeSeconds"] as? TimeInterval
+            uptimeSeconds: dict["uptimeSeconds"] as? TimeInterval,
+            daemonVersion: dict["daemonVersion"] as? String
         )
     }
 }

@@ -16,6 +16,10 @@ struct HealthView: View {
                              value: healthStatus?.daemonRunning == true ? "运行中" : "未运行",
                              status: healthStatus?.daemonRunning == true ? .good : .bad)
 
+                    HealthRow(label: "版本号",
+                             value: healthStatus?.daemonVersion ?? "未知",
+                             status: healthStatus?.daemonVersion != nil ? .neutral : .unknown)
+
                     HealthRow(label: "二进制权限",
                              value: healthStatus?.hasRootPrivileges == true ? "Root 正常" : "权限异常",
                              status: healthStatus?.hasRootPrivileges == true ? .good : .bad)

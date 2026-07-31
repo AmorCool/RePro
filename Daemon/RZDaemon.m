@@ -22,6 +22,8 @@ const uint8_t kRZDaemonProtocolVersion = 1;
 NSString *const kRZDaemonMachServiceName = @"com.reprovision.daemon";
 NSString *const kRZDaemonLogPath = @"/var/mobile/Library/Logs/RePro/daemon.log";
 NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.err";
+// daemon 版本号（与 PackageVersion.plist 保持同步）
+NSString *const kRZDaemonVersion = @"1.0.43";
 
 @interface RZDaemon ()
 @property (nonatomic, strong) NSXPCListener *listener;
@@ -145,7 +147,10 @@ NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.
 
 - (void)getHealthStatusWithReply:(void (^)(NSDictionary<NSString *,id> *))reply {
     NSDictionary *status = [self.healthCheck currentStatus];
-    reply(status);
+    // 添加 daemon 版本号
+    NSMutableDictionary *mutableStatus = [status mutableCopy];
+    mutableStatus[@"daemonVersion"] = kRZDaemonVersion;
+    reply(mutableStatus);
 }
 
 - (void)restartWithReply:(void (^)(BOOL))reply {

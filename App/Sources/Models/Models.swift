@@ -85,6 +85,7 @@ struct DaemonHealthStatus: Codable {
     let anisetteReady: Bool
     let jailbreakType: JailbreakType
     let uptimeSeconds: TimeInterval?
+    let daemonVersion: String?  // daemon 报告的版本号（用于确认用户是否正确更新）
 }
 
 // MARK: - 签名结果
