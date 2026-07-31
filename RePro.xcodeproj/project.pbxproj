@@ -116,8 +116,8 @@
 		E44E002F424C520C1E2A4550 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
 		A471209E5EBFF39356A5613A /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BB79B642A6C08DC65D68E5FB /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
-		7E4A1606FC62B0FACA8550AA /* AppIDsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIDsView.swift; sourceTree = "<group>"; };
-		4A2115555364E5F669192E6F /* CertificatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificatesView.swift; sourceTree = "<group>"; };
+		7E4A1606FC62B0FACA8550AA /* AppIDsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Sources/Views/AppIDsView.swift; sourceTree = "<group>"; };
+		4A2115555364E5F669192E6F /* CertificatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Sources/Views/CertificatesView.swift; sourceTree = "<group>"; };
 		6D9CC9E206293C6FCF49C763 /* apple-ios-g3.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = "apple-ios-g3.pem"; sourceTree = "<group>"; };
 		BD0BF4D63EBAC5039F648FE2 /* apple-ios.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = "apple-ios.pem"; sourceTree = "<group>"; };
 		C3639A4A8D0CB921F64877ED /* root.pem */ = {isa = PBXFileReference; lastKnownFileType = text; path = root.pem; sourceTree = "<group>"; };
