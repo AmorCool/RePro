@@ -329,6 +329,22 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     NSData *data = [NSData dataWithContentsOfFile:profilePath];
     if (data.length == 0) return NO;
 
+    // RootHide：sandbox 内 App 直接写 /var/Managed Preferences/mobile 会落入 jbroot
+    // overlay（installd/profiled 只读真实路径），所以"成功"也是假成功，会导致安装时
+    // 0xe8008015。此处跳过直接写，直接走 repro-helper（setuid root，能看到真实路径）。
+    if (RPVIsRootHideEnvironment()) {
+        if (_rpvDaemonProfileInstallHandler) {
+            BOOL ok = _rpvDaemonProfileInstallHandler(profilePath);
+            RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError,
+                          @"profile",
+                          @"[RootHide] daemon profile install %@", ok ? @"succeeded" : @"failed");
+            return ok;
+        }
+        RPVDiagnostic(RPVDiagError, @"profile",
+                      @"[RootHide] 未挂载 root helper，无法注册描述文件（请确认 repro-helper 已安装且 setuid）");
+        return NO;
+    }
+
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *fileName = [self _profileFileNameForData:data];
     NSString *dir = @"/var/Managed Preferences/mobile";
@@ -417,7 +433,18 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     // may report success yet not actually register under RootHide's sandbox, so writing
     // the file is the reliable cross-environment guarantee (profiled scans this dir).
     BOOL fileOK = [self _registerProfileViaFileAtPath:profilePath];
-    if (!success) {
+    if (RPVIsRootHideEnvironment()) {
+        // RootHide 下 in-process MCProfileConnection 只把描述文件注册进 jbroot overlay
+        //（installd/profiled 看不见），其 "success" 是假成功；以 repro-helper 的结果为准。
+        if (fileOK) {
+            RPVDiagnostic(RPVDiagInfo, @"profile",
+                          @"[RootHide] profile 已通过 repro-helper 写入真实 /var/Managed Preferences/mobile");
+        } else {
+            RPVDiagnostic(RPVDiagError, @"profile",
+                          @"[RootHide] repro-helper 注册描述文件失败（report: %@）", report);
+        }
+        success = fileOK;
+    } else if (!success) {
         RPVDiagnostic(RPVDiagWarning, @"profile",
                       @"MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
         success = fileOK;

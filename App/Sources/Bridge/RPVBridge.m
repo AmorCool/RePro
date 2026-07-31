@@ -530,6 +530,10 @@ static NSString *RPVResolvedRootHideRoot(void) {
     return resolved;
 }
 
+BOOL RPVIsRootHideEnvironment(void) {
+    return RPVResolvedRootHideRoot() != nil;
+}
+
 /// 找到按需 root helper（repro-helper）的绝对路径，找不到返回 nil。
 /// 三种越狱形态的安装位置不同：RootHide 在随机 jbroot 下，Dopamine 在 /var/jb，
 /// rootful 就是标准根路径。

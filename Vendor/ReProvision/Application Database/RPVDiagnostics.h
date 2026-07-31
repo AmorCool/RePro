@@ -28,4 +28,10 @@ extern NSString *const RPVDiagnosticNotification;
 /// 用法：RPVDiagnostic(RPVDiagError, @"repro-helper", @"exit=%d", code);
 void RPVDiagnostic(RPVDiagLevel level, NSString * _Nonnull source, NSString * _Nonnull format, ...) NS_FORMAT_FUNCTION(3, 4);
 
+/// 当前是否为 RootHide 环境（App bundle 旁存在 .jbroot 符号链接）。
+/// 由 RPVBridge.m 实现。RootHide 下 sandbox 内的 App 直接写
+/// /var/Managed Preferences/mobile 会落入 jbroot overlay（installd/profiled 看不见），
+/// 因此描述文件注册必须走 repro-helper（setuid root）而不能直接写。
+BOOL RPVIsRootHideEnvironment(void);
+
 NS_ASSUME_NONNULL_END
