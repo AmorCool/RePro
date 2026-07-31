@@ -53,11 +53,17 @@ struct AppsView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
+            VStack(spacing: 0) {
+                // 应用列表（有应用时）或空状态（无应用时）
                 if viewModel.installedApps.isEmpty {
                     emptyState
                 } else {
                     appList
+                }
+
+                // 已注册 AppIDs 入口 —— 始终显示（登录后），不受应用列表是否为空影响
+                if account.isSignedIn {
+                    appIDsSection
                 }
             }
             .navigationTitle("RePro")
@@ -75,6 +81,7 @@ struct AppsView: View {
                         showingFileImporter = true
                     } label: {
                         Image(systemName: "plus")
+                        Text("导入")
                     }
                     .disabled(viewModel.isBusy)
                 }
@@ -153,6 +160,30 @@ struct AppsView: View {
         }
     }
 
+    // MARK: 已注册 AppIDs（独立于应用列表，确保登录后始终可见）
+
+    private var appIDsSection: some View {
+        Section {
+            NavigationLink(destination: AppIDsView()) {
+                HStack(spacing: 10) {
+                    Image(systemName: "number")
+                        .foregroundColor(.blue)
+                    Text("已注册 App IDs")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        } header: {
+            Text("开发者账号")
+        } footer: {
+            Text("查看当前 Apple 开发者账号下已注册的应用标识符及其过期时间")
+        }
+        .listStyle(.insetGrouped)
+        .padding(.top, 8)
+    }
+
     // MARK: 应用列表
     private var appList: some View {
         List {
@@ -169,26 +200,7 @@ struct AppsView: View {
                 }
             }
 
-            // 已注册 AppIDs 入口（原版在 Installed tab 内的标签）
-            if account.isSignedIn {
-                Section {
-                    NavigationLink(destination: AppIDsView()) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "number")
-                                .foregroundColor(.blue)
-                            Text("已注册 App IDs")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                } header: {
-                    Text("开发者账号")
-                } footer: {
-                    Text("查看当前 Apple 开发者账号下已注册的应用标识符及其过期时间")
-                }
-            }
+            // （已注册 AppIDs 入口已移至 body 层的 appIDsSection，确保无应用时也可见）
         }
         .refreshable {
             await viewModel.refreshApps()

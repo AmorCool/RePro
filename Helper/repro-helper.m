@@ -142,13 +142,30 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 
     // 踢一下 profiled 让它立刻重新扫描（best effort；
     // 即便没踢成，MIS 在校验时也会重读一遍 profile 库）。
-    // 用 /bin/sh + PATH 查找 killall，兼容 rootless / RootHide（同 SettingsView 方案）。
-    pid_t pid = 0;
-    char *const shArgv[] = { (char *)"/bin/sh", (char *)"-c",
-        (char *)"PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin killall -HUP profiled", NULL };
-    if (posix_spawn(&pid, shArgv[0], NULL, NULL, shArgv, NULL) == 0 && pid > 0) {
-        int status = 0;
-        waitpid(pid, &status, 0);
+    // 直接查找 killall（iOS 没有 /bin/sh）。
+    static const char *killallCandidates[] = {
+        "/var/jb/usr/bin/killall",
+        "/var/jb/bin/killall",
+        "/usr/bin/killall",
+        "/usr/local/bin/killall",
+        NULL
+    };
+    const char *killallPath = NULL;
+    for (int i = 0; killallCandidates[i]; i++) {
+        if (access(killallCandidates[i], X_OK) == 0) {
+            killallPath = killallCandidates[i];
+            break;
+        }
+    }
+    if (killallPath) {
+        pid_t pid = 0;
+        char *const kaArgv[] = { (char *)killallPath, (char *)"-HUP", (char *)"profiled", NULL };
+        if (posix_spawn(&pid, killallPath, NULL, NULL, kaArgv, NULL) == 0 && pid > 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+        }
+    } else {
+        RPVHelperLog(@"警告：未找到 killall，跳过 profiled 刷新");
     }
 
     RPVHelperLog(@"描述文件已安装到 %@", destination);

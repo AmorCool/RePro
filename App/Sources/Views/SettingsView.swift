@@ -320,36 +320,60 @@ struct SettingsView: View {
         }
     }
 
-    /// 通过 /bin/sh 执行 killall SpringBoard（兼容 rootless / RootHide）。
-    /// 原版 RPVAccountViewController.m:308-314 的方案：spawn /bin/sh，
-    /// 由 shell 按 PATH 顺序查找 killall，避免硬编码路径在 Dopamine/RootHide 下 ENOENT。
+    /// 重启 SpringBoard（兼容 rootless / RootHide / rootful）。
+    /// iOS 没有 /bin/sh，不能走 shell 中间层；必须直接找到 killall 并 spawn。
+    /// 回退方案：通过 notify_post 发送 SpringBoard 重启通知（无需任何二进制）。
     private func performRespring() {
-        var pid: pid_t = 0
-
-        var attr: posix_spawnattr_t?
-        posix_spawnattr_init(&attr)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
-
-        // 越狱 bootstrap 提供的 killall 在 rootless 下位于 /var/jb/usr/bin/，
-        // RootHide 下在随机 jbroot 里。/bin/sh 在 iOS 原生系统里始终存在。
-        let command = "PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin killall SpringBoard"
-        let argv: [UnsafeMutablePointer<CChar>?] = [
-            strdup("/bin/sh"),
-            strdup("-c"),
-            strdup(command),
-            nil
+        // 候选路径：按越狱类型优先级排列
+        let killallCandidates = [
+            "/var/jb/usr/bin/killall",    // Dopamine rootless
+            "/var/jb/bin/killall",         // Dopamine rootless (备用)
+            "/usr/bin/killall",            // RootHide (标准根路径，dpkg 映射后可命中)
+            "/usr/local/bin/killall",      // 通用越狱
         ]
-        let envp: [UnsafeMutablePointer<CChar>?] = [nil]
 
-        let result = posix_spawn(&pid, "/bin/sh", nil, &attr, argv, envp)
+        var foundKillall: String? = nil
+        for path in killallCandidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                foundKillall = path
+                break
+            }
+        }
 
-        for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
-        posix_spawnattr_destroy(&attr)
+        if let killall = foundKillall {
+            // 方案 A：直接 spawn killall（无需 /bin/sh）
+            var pid: pid_t = 0
+            var attr: posix_spawnattr_t?
+            posix_spawnattr_init(&attr)
+            posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
 
-        if result == 0 {
-            LogManager.shared.info("已发送 killall SpringBoard (sh pid=\(pid))", source: "SettingsView")
+            let argv: [UnsafeMutablePointer<CChar>?] = [
+                strdup(killall),
+                strdup("SpringBoard"),
+                nil
+            ]
+            let result = posix_spawn(&pid, killall, nil, &attr, argv, nil)
+
+            for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
+            posix_spawnattr_destroy(&attr)
+
+            if result == 0 {
+                LogManager.shared.info("已发送 killall SpringBoard (pid=\(pid), path=\(killall))", source: "SettingsView")
+                return
+            } else {
+                LogManager.shared.warning("posix_spawn(\(killall)) 失败: errno=\(result)，尝试 notify_post 回退", source: "SettingsView")
+            }
         } else {
-            LogManager.shared.error("posix_spawn(/bin/sh) 失败: errno=\(result)", source: "SettingsView")
+            LogManager.shared.warning("未找到 killall 二进制，尝试 notify_post 回退", source: "SettingsView")
+        }
+
+        // 方案 B：notify_post 回退（不需要任何外部二进制，纯 Darwin API）
+        // com.apple.springboard.restart 是 SpringBoard 监听的标准通知名
+        let notifyResult = notify_post("com.apple.springboard.restart")
+        if notifyResult == 0 {
+            LogManager.shared.info("已通过 notify_post 发送 SpringBoard 重启通知", source: "SettingsView")
+        } else {
+            LogManager.shared.error("重启 SpringBoard 失败：killall 未找到且 notify_post 返回 \(notifyResult)", source: "SettingsView")
         }
     }
 }
