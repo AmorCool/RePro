@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 
 // MARK: - 设置页面
 
@@ -198,31 +199,53 @@ struct SettingsView: View {
         }
     }
 
-    /// 降级方案：不依赖 daemon，直接执行 killall SpringBoard
+    /// 降级方案：通过 XPC 让 daemon 执行 respring（daemon 有 root 权限）
     private func fallbackRespring() {
-        let killallPath = "/usr/bin/killall"
-        let processName = "SpringBoard"
-
-        // 使用 NSTask/Process 执行（iOS 15+ 可用）
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: killallPath)
-        task.arguments = [processName]
-
-        do {
-            try task.run()
-            LogManager.shared.info("已发送 killall SpringBoard 命令", source: "SettingsView")
-        } catch {
-            // 最后的兜底：尝试 launchctl kickstart
-            let fallbackTask = Process()
-            fallbackTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            fallbackTask.arguments = ["kickstart", "gui/\(getuid())/com.apple.SpringBoard"]
-            do {
-                try fallbackTask.run()
-                LogManager.shared.info("使用 launchctl kickstart 重启 SpringBoard", source: "SettingsView")
-            } catch {
-                self.loginMessage = "重启失败: \(error.localizedDescription)"
-                LogManager.shared.error("所有重启方案均失败: \(error)", source: "SettingsView")
+        // 优先通过 daemon XPC 执行（root 权限）
+        daemonClient.respring { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    LogManager.shared.info("已通过 daemon 重启 SpringBoard", source: "SettingsView")
+                case .failure(let error):
+                    LogManager.shared.warning("daemon respring 失败: \(error.localizedDescription)，尝试 posix_spawn", source: "SettingsView")
+                    self.posixSpawnRespring()
+                }
             }
+        }
+    }
+
+    /// 最终兜底：posix_spawn 执行 killall（纯 C 系统调用，iOS 可用）
+    private func posixSpawnRespring() {
+        let killallPath = "/usr/bin/killall"
+        var pid: pid_t = 0
+
+        // posix_spawn 参数
+        var attr: posix_spawnattr_t?
+        posix_spawn_initattr(&attr)
+        // 不等待子进程退出
+        var flags: Int16 = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+        posix_spawnattr_setflags(&attr, flags)
+
+        let argv: [UnsafeMutablePointer<CChar>?] = [
+            strdup(killallPath),
+            strdup("SpringBoard"),
+            nil
+        ]
+
+        let envp: [UnsafeMutablePointer<CChar>?] = [nil]
+
+        let result = posix_spawn(&pid, killallPath, nil, &attr, argv, envp)
+
+        // 释放内存
+        for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
+        if let attr = attr { posix_spawn_destroyattr(&attr) }
+
+        if result == 0 {
+            LogManager.shared.info("已发送 killall SpringBoard (pid=\(pid))", source: "SettingsView")
+        } else {
+            self.loginMessage = "重启失败 (errno=\(result))"
+            LogManager.shared.error("posix_spawn 失败: errno=\(result)", source: "SettingsView")
         }
     }
 }

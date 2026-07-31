@@ -86,6 +86,9 @@ struct DaemonHealthStatus: Codable {
     let jailbreakType: JailbreakType
     let uptimeSeconds: TimeInterval?
     let daemonVersion: String?  // daemon 报告的版本号（用于确认用户是否正确更新）
+    let pid: Int?               // daemon 进程 PID
+    let uid: Int?               // daemon 实际 uid (0=root)
+    let effectiveUid: Int?      // daemon 有效 uid
 }
 
 // MARK: - 签名结果

@@ -21,8 +21,20 @@ struct HealthView: View {
                              status: healthStatus?.daemonVersion != nil ? .neutral : .unknown)
 
                     HealthRow(label: "二进制权限",
-                             value: healthStatus?.hasRootPrivileges == true ? "Root 正常" : "权限异常",
-                             status: healthStatus?.hasRootPrivileges == true ? .good : .bad)
+                             value: {
+                                 if let status = healthStatus {
+                                     let pid = status.pid ?? 0
+                                     let uid = status.uid ?? -1
+                                     let euid = status.effectiveUid ?? -1
+                                     if uid == 0 {
+                                         return "PID=\(pid), root (uid=\(uid))"
+                                     } else {
+                                         return "PID=\(pid), uid=\(uid) (非root)"
+                                     }
+                                 }
+                                 return "未知"
+                             }(),
+                             status: (healthStatus?.uid ?? -1) == 0 ? .good : .bad)
 
                     HealthRow(label: "沙盒限制",
                              value: healthStatus?.isSandboxed == true ? "存在" : "不受限制",
@@ -41,8 +53,19 @@ struct HealthView: View {
                              status: .good)
 
                     HealthRow(label: "zsign 路径",
-                             value: healthStatus?.zsignPath ?? "检测中...",
-                             status: healthStatus?.zsignPath != nil ? .good : .unknown)
+                             value: {
+                                 if let path = healthStatus?.zsignPath {
+                                     return path
+                                 } else if healthStatus != nil {
+                                     return "未找到"
+                                 }
+                                 return "检测中..."
+                             }(),
+                             status: {
+                                 if healthStatus?.zsignPath != nil { return .good }
+                                 if healthStatus != nil { return .bad }
+                                 return .unknown
+                             }())
                 }
 
                 // MARK: Token 与 Anisette

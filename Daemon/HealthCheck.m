@@ -26,6 +26,9 @@
     status[@"anisetteReady"] = @([[AnisetteManager sharedManager] isReady]);
     status[@"uptimeSeconds"] = @([self uptime]);
     status[@"pid"] = @(getpid());
+    status[@"uid"] = @(getuid());
+    status[@"effectiveUid"] = @(geteuid());
+    status[@"gid"] = @(getgid());
 
     // 越狱环境检测
     NSString *jbType = @"unknown";

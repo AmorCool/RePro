@@ -7,10 +7,10 @@
 	<key>Minor</key>
 	<integer>0</integer>
 	<key>BugFix</key>
-	<integer>47</integer>
+	<integer>48</integer>
 	<key>Stage</key>
 	<string></string>
 	<key>PackageRevision</key>
-	<string>47</string>
+	<string>48</string>
 </dict>
 </plist>

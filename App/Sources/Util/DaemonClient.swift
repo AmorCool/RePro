@@ -316,7 +316,10 @@ extension DaemonHealthStatus {
             anisetteReady: dict["anisetteReady"] as? Bool ?? false,
             jailbreakType: JailbreakType(rawValue: dict["jailbreakType"] as? String ?? "unknown") ?? .unknown,
             uptimeSeconds: dict["uptimeSeconds"] as? TimeInterval,
-            daemonVersion: dict["daemonVersion"] as? String
+            daemonVersion: dict["daemonVersion"] as? String,
+            pid: dict["pid"] as? Int,
+            uid: dict["uid"] as? Int,
+            effectiveUid: dict["effectiveUid"] as? Int
         )
     }
 }
