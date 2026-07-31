@@ -228,7 +228,7 @@ struct SettingsView: View {
 
         // 释放内存
         for ptr in argv { free(UnsafeMutablePointer(mutating: ptr)) }
-        if var attr = attr { posix_spawnattr_destroy(&attr) }
+        posix_spawnattr_destroy(&attr)
 
         if result == 0 {
             LogManager.shared.info("已发送 killall SpringBoard (pid=\(pid))", source: "SettingsView")
