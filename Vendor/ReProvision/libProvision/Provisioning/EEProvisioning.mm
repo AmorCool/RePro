@@ -533,7 +533,6 @@
 
     // OpenSSL 3.x 需要显式初始化算法表，否则 RSA/X509 操作会静默失败
     OpenSSL_add_all_algorithms();
-    ERR_load_crypto_strings();
 
     int ret = 0;
     RSA *r = NULL;
