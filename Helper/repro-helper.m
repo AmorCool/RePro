@@ -24,6 +24,11 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <sys/sysctl.h>
+#include <sys/proc.h>
+#include <signal.h>
+#include <string.h>
+#include <stdlib.h>
 
 #pragma mark - 日志
 
@@ -78,6 +83,76 @@ static int RPVHelperCopyFile(NSString *srcPath, NSString *dstPath) {
 
     RPVHelperLog(@"copy 完成: %@", dstPath);
     return 0;
+}
+
+#pragma mark - 刷新 profiled
+
+/// 让 profiled 立刻重新扫描 /var/Managed Preferences/mobile/ 库。
+/// 优先用 killall（若存在）；RootHide 等没有 killall 的环境回退到 sysctl 枚举进程，
+/// 直接给 profiled 发 SIGHUP（纯系统调用，不依赖任何外部二进制，root 进程可用）。
+/// 发送后短暂等待，给 profiled 完成重新加载的时间。
+static void RPVHelperRefreshProfiled(void) {
+    // 1) 优先 killall（部分环境提供）
+    static const char *killallCandidates[] = {
+        "/var/jb/usr/bin/killall",
+        "/var/jb/bin/killall",
+        "/usr/bin/killall",
+        "/usr/local/bin/killall",
+        NULL
+    };
+    const char *killallPath = NULL;
+    for (int i = 0; killallCandidates[i]; i++) {
+        if (access(killallCandidates[i], X_OK) == 0) {
+            killallPath = killallCandidates[i];
+            break;
+        }
+    }
+    if (killallPath) {
+        pid_t pid = 0;
+        char *const kaArgv[] = { (char *)killallPath, (char *)"-HUP", (char *)"profiled", NULL };
+        if (posix_spawn(&pid, killallPath, NULL, NULL, kaArgv, NULL) == 0 && pid > 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+        }
+        RPVHelperLog(@"已通过 killall 发送 SIGHUP 给 profiled");
+        usleep(400000);
+        return;
+    }
+
+    // 2) 回退：sysctl(KERN_PROC_ALL) 枚举，直接给名为 profiled 的进程发 SIGHUP
+    int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
+    size_t size = 0;
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0) {
+        RPVHelperLog(@"profiled 刷新失败：sysctl 取进程表大小失败");
+        return;
+    }
+    struct kinfo_proc *procs = malloc(size);
+    if (!procs) {
+        RPVHelperLog(@"profiled 刷新失败：无法分配内存");
+        return;
+    }
+    if (sysctl(mib, 3, procs, &size, NULL, 0) != 0) {
+        RPVHelperLog(@"profiled 刷新失败：sysctl 取进程表失败");
+        free(procs);
+        return;
+    }
+    int count = (int)(size / sizeof(struct kinfo_proc));
+    int signalled = 0;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(procs[i].kp_proc.p_comm, "profiled") == 0) {
+            pid_t pid = procs[i].kp_proc.p_pid;
+            if (pid > 0 && kill(pid, SIGHUP) == 0) {
+                signalled++;
+            }
+        }
+    }
+    free(procs);
+    if (signalled > 0) {
+        RPVHelperLog(@"已通过 sysctl 向 %d 个 profiled 进程发送 SIGHUP", signalled);
+    } else {
+        RPVHelperLog(@"警告：未找到 profiled 进程，无法发送 SIGHUP（描述文件已写入，但 profiled 可能未加载）");
+    }
+    usleep(400000);
 }
 
 #pragma mark - install-profile
@@ -140,32 +215,19 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
                              error:nil];
     }
 
-    // 踢一下 profiled 让它立刻重新扫描（best effort；
-    // 即便没踢成，MIS 在校验时也会重读一遍 profile 库）。
-    // 直接查找 killall（iOS 没有 /bin/sh）。
-    static const char *killallCandidates[] = {
-        "/var/jb/usr/bin/killall",
-        "/var/jb/bin/killall",
-        "/usr/bin/killall",
-        "/usr/local/bin/killall",
-        NULL
-    };
-    const char *killallPath = NULL;
-    for (int i = 0; killallCandidates[i]; i++) {
-        if (access(killallCandidates[i], X_OK) == 0) {
-            killallPath = killallCandidates[i];
-            break;
-        }
-    }
-    if (killallPath) {
-        pid_t pid = 0;
-        char *const kaArgv[] = { (char *)killallPath, (char *)"-HUP", (char *)"profiled", NULL };
-        if (posix_spawn(&pid, killallPath, NULL, NULL, kaArgv, NULL) == 0 && pid > 0) {
-            int status = 0;
-            waitpid(pid, &status, 0);
-        }
+    // 踢一下 profiled 让它立刻重新扫描（优先 killall，RootHide 无 killall 时回退 sysctl 直发 SIGHUP）。
+    RPVHelperRefreshProfiled();
+
+    // 取证诊断：确认文件确实落进本进程视图的目录，并列出目录内 profile 数
+    // （若本进程在 overlay 命名空间，此目录 ≠ installd 读取的真实目录，可据此区分失败原因）。
+    NSError *lsErr = nil;
+    NSArray *existing = [fileManager contentsOfDirectoryAtPath:directory error:&lsErr];
+    if (lsErr) {
+        RPVHelperLog(@"读取目录失败 %@: %@", directory, lsErr);
     } else {
-        RPVHelperLog(@"警告：未找到 killall，跳过 profiled 刷新");
+        RPVHelperLog(@"目录 %@ 现有 %lu 个描述文件；本文件已写入：%@",
+                     directory, (unsigned long)existing.count,
+                     [fileManager fileExistsAtPath:destination] ? @"是" : @"否");
     }
 
     RPVHelperLog(@"描述文件已安装到 %@", destination);
