@@ -1136,7 +1136,7 @@
 				CODE_SIGN_ENTITLEMENTS = Resources/entitlements-base.plist;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 115;
+				CURRENT_PROJECT_VERSION = 116;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1172,7 +1172,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.1.6;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1198,7 +1198,7 @@
 				CODE_SIGN_ENTITLEMENTS = Resources/entitlements-base.plist;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 115;
+				CURRENT_PROJECT_VERSION = 116;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1234,7 +1234,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.1.6;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",

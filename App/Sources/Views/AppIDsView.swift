@@ -20,9 +20,6 @@ struct AppIDsView: View {
         .navigationTitle("已注册 App IDs (\(appIDs.count))")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("完成") { dismiss() }
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button(action: loadAppIDs) {
                     Image(systemName: "arrow.clockwise")

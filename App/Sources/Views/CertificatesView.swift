@@ -100,9 +100,6 @@ struct CertificatesView: View {
         .navigationTitle("证书管理")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("完成") { /* 由 NavigationLink 返回处理 */ }
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button(action: loadCertificates) {
                     Image(systemName: "arrow.clockwise")
