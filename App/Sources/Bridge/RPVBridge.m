@@ -775,7 +775,7 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
                                                        withCompletionHandler:^(NSError *error, NSDictionary *resp) {
                 RPVBridgeCallOnMain(^{ if (completion) completion(error); });
             }];
-        }]);
+        }];
     });
 }
 
