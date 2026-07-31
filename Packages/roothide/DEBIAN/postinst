@@ -2,13 +2,12 @@
 #
 # RePro (RootHide) postinst
 #
-# 本版本已经没有常驻守护进程，所以过去那套「用 jbroot 工具把路径转成 rootfs
-# 真实路径再喂给 launchctl bootstrap system」的复杂流程全部不需要了 ——
-# 那正是 RootHide 下 daemon 起不来的根源。
+# RootHide 下描述文件安装由 LaunchDaemon（repro-profiledaemon）完成：
+#   由 launchd 以 root 在系统级上下文启动，不受 App namespace 影响，
+#   能写真实 /var/Managed Preferences/mobile、MC 直连真实 profiled。
+#   这是解决 0xe8008015 的最终方案（App MC / spawn helper 均被 namespace 拦截）。
 #
-# 需要 root 的两件事（跨沙箱复制 IPA、把描述文件写进真实的
-# /var/Managed Preferences/mobile）改由 App 按需 posix_spawn 拉起
-# repro-helper 完成，做完即退出。
+# IPA 搬运仍由 repro-helper（setuid，App posix_spawn 按需拉起）完成。
 #
 # RootHide 的 dpkg 维护脚本运行在 vroot shell 中——脚本里的 "/" 就是 jbroot，
 # 下面这些标准根路径会被自动映射到 <jbroot>/... ，直接用即可。
@@ -27,17 +26,18 @@ if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.i
 	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
 fi
 
-# 从旧版本（带 reprovisiond 守护进程）升级时的兜底清理：
-# 旧包在 RootHide 下可能装在 gui/501、user/501 或 system 域，全试一遍。
+# 从旧版本（带 reprovisiond 守护进程或无 profiledaemon）升级时的兜底清理：
 for c in /bin/launchctl /usr/bin/launchctl; do
 	if [ -x "$c" ]; then
 		for domain in "gui/501" "user/501" "system"; do
 			"$c" bootout "$domain/jp.soh.reprovisiond" 2>/dev/null || true
+			"$c" bootout "$domain/jp.soh.reprovision.profiledaemon" 2>/dev/null || true
 		done
 		break
 	fi
 done
 pkill -x reprovisiond 2>/dev/null || true
+pkill -x repro-profiledaemon 2>/dev/null || true
 
 # 按需 root helper：必须 root:wheel + setuid（4755），
 # 否则 mobile 身份的 App 拉起它时拿不到 root。
@@ -46,6 +46,14 @@ if [ -f "$HELPER" ]; then
 	chown root:wheel "$HELPER" 2>/dev/null || true
 	chmod 4755 "$HELPER" 2>/dev/null || true
 	echo "root helper: $(ls -l "$HELPER")"
+fi
+
+# 描述文件安装守护进程：root:wheel + 0755（不需要 setuid，launchd 已以 root 启动）
+DAEMON="/usr/libexec/repro-profiledaemon"
+if [ -f "$DAEMON" ]; then
+	chown root:wheel "$DAEMON" 2>/dev/null || true
+	chmod 0755 "$DAEMON" 2>/dev/null || true
+	echo "profile daemon: $(ls -l "$DAEMON")"
 fi
 
 ZSIGN="/usr/local/bin/zsign"
@@ -58,6 +66,24 @@ fi
 APP_BIN="/Applications/RePro.app/RePro"
 if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
+fi
+
+# 加载 profiledaemon LaunchDaemon（系统级上下文，不受 namespace 影响）
+PLIST="/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist"
+LAUNCHCTL=""
+for c in /bin/launchctl /usr/bin/launchctl; do
+	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
+done
+
+if [ -n "$LAUNCHCTL" ] && [ -f "$PLIST" ]; then
+	chown root:wheel "$PLIST" 2>/dev/null || true
+	chmod 644 "$PLIST" 2>/dev/null || true
+	echo "Loading profiledaemon..."
+	"$LAUNCHCTL" bootout system "$PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$PLIST" >/dev/null 2>&1 || true
+	"$LAUNCHCTL" bootstrap system "$PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" load "$PLIST" >/dev/null 2>&1 || true
+	echo "profiledaemon launched (system context, outside App namespace)"
+else
+	echo "WARNING: 无法加载 profiledaemon（launchctl 或 plist 不存在）"
 fi
 
 # Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）

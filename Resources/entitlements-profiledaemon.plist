@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- repro-profiledaemon（LaunchDaemon，root 身份运行）
+	     需要调 MCProfileConnection + 写 /var/Managed Preferences/mobile -->
+	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.skip-library-validation</key>
+	<true/>
+
+	<!-- MCProfileConnection 访问 -->
+	<key>com.apple.managedconfiguration.profiled-access</key>
+	<true/>
+
+	<!-- posix_spawn killall -->
+	<key>com.apple.private.posix-spawn</key>
+	<true/>
+
+	<!-- 写入系统描述文件库 -->
+	<key>com.apple.private.storage-managedpreferences</key>
+	<true/>
+</dict>
+</plist>

@@ -429,43 +429,37 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         }
     }
 
-    // RootHide 下：App 进程自身 MC（mobile 身份、无 no-sandbox）已把 profile 注册进
-    // 【本地 provisioning 库】（installd 的 AllowInstallLocalProvisioned 查的正是本地库），
-    // 与能正常工作的 test2源码 完全一致。此处【不再】调用 repro-helper 写文件 + SIGHUP：
-    // helper 跑在 App 的 jbroot namespace 内，写的是 overlay 的 /var/Managed Preferences/mobile，
-    // 且 SIGHUP 会触发 profiled 重载（可能把 App 刚 MC 注册的 profile 冲掉）—— 正是此前反复
-    // 0xe8008015 的隐患。故 RootHide 完全对齐 test2：仅 App MC，不写文件、不 SIGHUP。
-    //（非 RootHide（rootless/rootful）仍走文件/daemon 兜底，保持原行为。）
+    // RootHide：App 的 in-process MC 被 RootHide namespace 重定向到 overlay（假成功），
+    // posix_spawn helper 继承 App namespace（写的也是 overlay）。
+    // → 唯一可靠路径是 LaunchDaemon（repro-profiledaemon）：
+    //   由 launchd 在系统级上下文启动，完全在 App namespace 外面，
+    //   能写真实 /var/Managed Preferences/mobile + MC 直连真实 profiled。
+    //   App 通过 notify(3) + 文件 IPC 触发 daemon（见 RPVBridge.m 的 RPVTriggerProfileDaemon）。
     BOOL fileOK = NO;
-    if (!RPVIsRootHideEnvironment()) {
-        fileOK = [self _registerProfileViaFileAtPath:profilePath];
-    }
     if (RPVIsRootHideEnvironment()) {
-        // RootHide 下 App 是【沙箱】进程（已移除 no-sandbox，与能正常重签的 test2源码 对齐）：
-        // 作为 mobile 身份、不带 no-sandbox，其 in-process MCProfileConnection 走真实 profiled，
-        // 并把 profile 注册进【本地 provisioning 库】——installd 的 AllowInstallLocalProvisioned
-        // 校验查的正是本地库。
-        // 此前带 no-sandbox 时，App 的 MC XPC 会被路由到 jbroot 内 overlay 的 profiled（假成功）；
-        // 而 repro-helper 跑在 App 的 namespace 内、写 overlay 路径 + SIGHUP 也会干扰本地库。
-        // 故 v1.1.22 起：RootHide 下仅依赖 App 进程 MC（→ 本地库），彻底不再调用 helper 写文件/SIGHUP。
-        if (success) {
-            RPVDiagnostic(RPVDiagInfo, @"profile",
-                          @"[RootHide] App 进程 MCProfileConnection 已注册到【本地库】(installd 真正读取的库)");
-        } else if (fileOK) {
-            RPVDiagnostic(RPVDiagWarning, @"profile",
-                          @"[RootHide] App MC 未成功，回退 repro-helper 文件写入（report: %@）", report);
-            success = fileOK;
+        // RootHide：跳过 App MC（被重定向），直接走 daemon
+        if (_rpvDaemonProfileInstallHandler) {
+            fileOK = _rpvDaemonProfileInstallHandler(profilePath);
+            RPVDiagnostic(fileOK ? RPVDiagInfo : RPVDiagError,
+                          @"profile",
+                          @"[RootHide] profiledaemon 描述文件安装 %@（daemon 运行在系统级上下文，不受 namespace 影响）",
+                          fileOK ? @"成功" : @"失败");
         } else {
             RPVDiagnostic(RPVDiagError, @"profile",
-                          @"[RootHide] App MC 与 repro-helper 均失败（report: %@）", report);
+                          @"[RootHide] 未挂载 daemon handler，无法安装描述文件（请确认 repro-profiledaemon 已通过 launchctl 加载）");
         }
-    } else if (!success) {
-        RPVDiagnostic(RPVDiagWarning, @"profile",
-                      @"MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
         success = fileOK;
-    } else if (fileOK) {
-        RPVDiagnostic(RPVDiagInfo, @"profile",
-                      @"profile registered via MCProfileConnection; file/daemon fallback also written");
+    } else {
+        // 非 RootHide（rootless/rootful）：App MC + 文件/daemon 兜底，保持原行为
+        fileOK = [self _registerProfileViaFileAtPath:profilePath];
+        if (!success) {
+            RPVDiagnostic(RPVDiagWarning, @"profile",
+                          @"MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
+            success = fileOK;
+        } else if (fileOK) {
+            RPVDiagnostic(RPVDiagInfo, @"profile",
+                          @"profile registered via MCProfileConnection; file/daemon fallback also written");
+        }
     }
 
     RPVDiagnostic(RPVDiagWarning, @"profile", @"profile register report:\n%@", report);

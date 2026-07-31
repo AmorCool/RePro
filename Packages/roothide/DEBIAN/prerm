@@ -2,15 +2,27 @@
 set -e
 
 # RePro RootHide 包 prerm
-# 本版本没有常驻守护进程，repro-helper 是一次性进程，不需要停服务。
+# 停止 profiledaemon（卸载前必须先 unload，否则二进制被删后 launchd 会报错）
 
 echo "[RePro] RootHide prerm 开始 $(date)"
+
+# 停止 profiledaemon LaunchDaemon
+for c in /bin/launchctl /usr/bin/launchctl; do
+	if [ -x "$c" ]; then
+		"$c" bootout system /Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist 2>/dev/null || \
+		"$c" unload /Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist 2>/dev/null || true
+		break
+	fi
+done
+pkill -x repro-profiledaemon 2>/dev/null || true
+echo "[RePro] profiledaemon 已停止"
 
 # 清理残留数据
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true
 rm -rf /var/mobile/Library/ReProvision 2>/dev/null || true
 rm -f /var/mobile/Documents/ReProvisionDebug.txt 2>/dev/null || true
 rm -rf /tmp/reprovision_*.log 2>/dev/null || true
+rm -f /tmp/repro-profile-request /tmp/repro-profile-result 2>/dev/null || true
 echo "[RePro] 残留数据已清理"
 
 echo "[RePro] RootHide prerm 完成 $(date)"

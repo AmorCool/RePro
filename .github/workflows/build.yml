@@ -138,6 +138,33 @@ jobs:
           chmod +x build/repro-helper
           echo "root helper built successfully"
 
+      - name: Build profile daemon (repro-profiledaemon) for RootHide
+        # RootHide 专用：由 launchd 在系统级上下文启动的常驻守护进程，
+        # 负责把描述文件写入真实 /var/Managed Preferences/mobile（不受 namespace 影响）。
+        # App 通过 notify(3) 触发安装请求。
+        run: |
+          set -e
+          mkdir -p build
+
+          xcrun -sdk iphoneos clang \
+            -x objective-c -fobjc-arc \
+            -arch arm64 -miphoneos-version-min=15.0 \
+            -O2 \
+            -framework Foundation \
+            -lobjc \
+            -o build/repro-profiledaemon \
+            Helper/repro-profiledaemon.m 2>&1 | tee profiledaemon_build.log
+
+          if [ ! -f build/repro-profiledaemon ]; then
+            echo "error: repro-profiledaemon build failed"
+            cat profiledaemon_build.log
+            exit 1
+          fi
+
+          file build/repro-profiledaemon
+          chmod +x build/repro-profiledaemon
+          echo "profile daemon built successfully"
+
       - name: Cross-compile zsign for iOS (arm64)
         # zsign 是设备端签名后端（纯 C/C++，仅依赖 OpenSSL）。
         # zlib/minizip 已内嵌在其源码树中。交叉编译为 iOS arm64 静态链接版，
@@ -273,15 +300,20 @@ jobs:
           # --- RootHide deb ---
           PKG3="Packages/roothide"
           mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/usr/local/bin" \
-                   "$PKG3/usr/share/reprovision/certificates"
+                   "$PKG3/usr/share/reprovision/certificates" \
+                   "$PKG3/Library/LaunchDaemons"
           cp -R "$APP_DIR" "$PKG3/Applications/"
           cp build/repro-helper "$PKG3/usr/libexec/"
+          cp build/repro-profiledaemon "$PKG3/usr/libexec/"
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
+          # LaunchDaemon plist（profiledaemon 由 launchd 在系统级上下文启动）
+          cp Resources/jp.soh.reprovision.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
+          do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
           do_sign_bare "$PKG3/usr/local/bin/zsign"
           chmod 4755 "$PKG3/usr/libexec/repro-helper"
 
