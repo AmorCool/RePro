@@ -23,7 +23,7 @@ NSString *const kRZDaemonMachServiceName = @"com.reprovision.daemon";
 NSString *const kRZDaemonLogPath = @"/var/mobile/Library/Logs/RePro/daemon.log";
 NSString *const kRZDaemonErrorLogPath = @"/var/mobile/Library/Logs/RePro/daemon.err";
 // daemon 版本号（与 PackageVersion.plist 保持同步）
-NSString *const kRZDaemonVersion = @"1.0.54";
+NSString *const kRZDaemonVersion = @"1.0.55";
 
 @interface RZDaemon ()
 @property (nonatomic, strong) NSXPCListener *listener;

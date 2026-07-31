@@ -14,7 +14,7 @@ for domain in "gui/501" "user/501" "system"; do
 done
 
 # 额外：直接 kill 进程（防止 launchctl 残留）
-if pgrep -x reprovisiond > /dev/null 2>&1 then
+if pgrep -x reprovisiond > /dev/null 2>&1; then
     pkill -x reprovisiond 2>/dev/null || true
     sleep 1
 fi
