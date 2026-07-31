@@ -306,11 +306,13 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
                  okMain ? @"成功" : @"失败",
                  jbrootDest ? (okJbroot ? @"成功" : @"失败") : @"跳过(无法解析 jbroot)");
 
-    // 主路径：经 MCProfileConnection XPC 把描述文件注册进真实 profiled 数据库。
-    // 这才是 installd 的 MIS 在校验代码签名时真正查询的 profile 库；
+    // 主路径：经 MCProfileConnection XPC 把描述文件注册进 profiled 的「本地 provisioning 库」。
+    // 这才是 installd 的 MIS 在校验代码签名时（AllowInstallLocalProvisioned）真正查询的库；
     // 仅写文件目录 + SIGHUP 在较新 iOS 上不可靠（profiled 不保证重扫目录）。
+    // 注意：本 helper 只持 profiled-access，不带 provisioningprofiles 数组授权，
+    // 因此 profile 落进本地库（而非 managed/MDM 库）——这正是 installd 能认到的库。
     BOOL mcOK = RPVHelperRegisterViaMCProfileConnection(data);
-    RPVHelperLog(@"MCProfileConnection 注册: %@ （这是 installd 真正读取的库）",
+    RPVHelperLog(@"MCProfileConnection 注册到【本地库】(installd 真正读取的库，非 managed/MDM 库): %@",
                  mcOK ? @"成功" : @"失败");
 
     // 踢一下 profiled 让它立刻重新扫描（优先 killall，RootHide 无 killall 时回退 sysctl 直发 SIGHUP）。

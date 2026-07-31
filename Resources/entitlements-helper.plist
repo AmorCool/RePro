@@ -25,18 +25,13 @@
     <key>com.apple.private.storage-managedpreferences</key>
     <true/>
 
-    <!-- 经 MCProfileConnection XPC 把描述文件注册进 profiled 真实库。
-         helper 也调用 MC XPC（installProvisioningProfileAtPath 主路径），
-         profiled 要求调用方持有此数组授权（含 Installation），否则 MCXPCErrorDomain
-         Code=39000。helper 由 ldid 签名，可直接注入。 -->
-    <key>com.apple.managedconfiguration.profiled.provisioningprofiles</key>
-    <array>
-        <string>Read</string>
-        <string>Installation</string>
-        <string>Removal</string>
-    </array>
-
-    <!-- 允许连接 profiled XPC（MCProfileConnection 前提）。 -->
+    <!-- 经 MCProfileConnection XPC 把描述文件注册进 profiled 的「本地 provisioning 库」
+         （注意：只给 profiled-access，绝不给 profiled.provisioningprofiles 数组授权）。
+         关键认知（v1.1.19 踩坑）：一旦带上 provisioningprofiles 数组（含 Installation
+         授权），profiled 会把 profile 注册进 **managed（MDM）库**，而 installd 的
+         AllowInstallLocalProvisioned 校验查的是「本地库」，两边不是一库 → 0xe8008015。
+         能正常工作的 rootless test源码 即只持 profiled-access（platform-application 同款），
+         调 MC 时 managingProfileIdentifier 传 nil，profile 落进本地库。本 helper 与之对齐。 -->
     <key>com.apple.managedconfiguration.profiled-access</key>
     <true/>
 </dict>
