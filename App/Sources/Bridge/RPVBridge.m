@@ -671,6 +671,8 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     }];
 }
 
+@end
+
 #pragma mark - RPVAppID 实现
 
 @implementation RPVAppID
@@ -870,5 +872,3 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
         });
     }];
 }
-
-@end
