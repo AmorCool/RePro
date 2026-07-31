@@ -199,20 +199,9 @@ struct SettingsView: View {
         }
     }
 
-    /// 降级方案：通过 XPC 让 daemon 执行 respring（daemon 有 root 权限）
+    /// 降级方案：posix_spawn 执行 killall（纯 C 系统调用，iOS 可用）
     private func fallbackRespring() {
-        // 优先通过 daemon XPC 执行（root 权限）
-        daemonClient.respring { result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success:
-                    LogManager.shared.info("已通过 daemon 重启 SpringBoard", source: "SettingsView")
-                case .failure(let error):
-                    LogManager.shared.warning("daemon respring 失败: \(error.localizedDescription)，尝试 posix_spawn", source: "SettingsView")
-                    self.posixSpawnRespring()
-                }
-            }
-        }
+        posixSpawnRespring()
     }
 
     /// 最终兜底：posix_spawn 执行 killall（纯 C 系统调用，iOS 可用）
