@@ -154,7 +154,7 @@ NSString *const kRZDaemonVersion = @"1.0.52";
 }
 
 - (void)restartWithReply:(void (^)(BOOL))reply {
-    NSLog("[RePro] 收到重启请求");
+    NSLog(@"[RePro] 收到重启请求");
     // 通过 launchctl kickstart 重启自己（system() 在 iOS 不可用）
     // ★ RootHide 的 daemon 在 gui/501 域，标准环境在 system 域
     // 依次尝试多个域，确保在所有越狱环境下都能工作
