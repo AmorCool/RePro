@@ -7,8 +7,6 @@ struct LogView: View {
     @State private var searchText = ""
     @State private var selectedFilter: LogLevel? = nil
     @State private var showingClearAlert = false
-    @State private var showingShareSheet = false
-    @State private var exportFileURL: URL?
     @State private var showingExportError = false
     @State private var exportErrorMessage = ""
 
@@ -51,11 +49,6 @@ struct LogView: View {
                 Button("确定", role: .cancel) {}
             } message: {
                 Text(exportErrorMessage)
-            }
-            .sheet(isPresented: $showingShareSheet) {
-                if let url = exportFileURL {
-                    ShareSheet(activityItems: [url])
-                }
             }
         }
     }
@@ -174,8 +167,8 @@ struct LogView: View {
 
         do {
             try data.write(to: tempURL, options: .atomic)
-            self.exportFileURL = tempURL
-            self.showingShareSheet = true
+            // 直接从 keyWindow rootVC 呈现分享面板（绕开 SwiftUI .sheet + UIActivityViewController 白屏）
+            SharePresenter.share(items: [tempURL])
         } catch {
             exportErrorMessage = "写入文件失败: \(error.localizedDescription)"
             showingExportError = true
