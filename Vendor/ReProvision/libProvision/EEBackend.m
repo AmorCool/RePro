@@ -18,7 +18,6 @@
 #import <mach/machine.h>
 #import <stdio.h>
 #import <sys/stat.h>
-#import <Security/SecCMS.h>
 
 #pragma mark - ARM64e thinning (fixes SIGBUS on arm64e devices after re-sign)
 
@@ -267,48 +266,20 @@ static void RZVerifyBundleSigned(NSString *bundlePath) {
     }
 }
 
-// After zsign, extract the application-identifier + TeamIdentifier from the
-// main app's embedded.mobileprovision (it is a CMS-signed plist) and log them,
-// plus whether every nested bundle also carries a profile. This is the concrete
-// evidence needed when a re-sign still fails at install (0xe8008015) — it shows
-// whether the profile actually matches the bundle id.
+// After zsign, report the on-disk code-signing artifacts so a failing re-sign
+// can be debugged from the app log: whether the main app (and each nested
+// framework) carries an embedded.mobileprovision, and RZVerifyBundleSigned
+// (called separately) reports any Mach-O zsign left unsigned. We intentionally
+// do NOT parse the CMS plist here: CMSDecoder is unavailable in the iOS SDK,
+// and installd would still reject at install if a profile were mismatched.
 static void RZLogProfileDiagnostics(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *appName = [bundlePath lastPathComponent].stringByDeletingPathExtension;
     NSString *mainProv = [bundlePath stringByAppendingPathComponent:@"embedded.mobileprovision"];
 
     NSLog(@"*** [ReProvision] diagnostics for %@:", appName);
-
-    if (![fm fileExistsAtPath:mainProv]) {
-        NSLog(@"*** [ReProvision]   ! main app has NO embedded.mobileprovision");
-        return;
-    }
-    NSData *prov = [NSData dataWithContentsOfFile:mainProv];
-    if (prov.length == 0) { NSLog(@"*** [ReProvision]   ! main provisioning profile is empty"); return; }
-
-    CMSDecoderRef decoder = NULL;
-    OSStatus st = CMSDecoderCreate(&decoder);
-    if (st != noErr || !decoder) { NSLog(@"*** [ReProvision]   ! CMSDecoderCreate failed (%d)", (int)st); return; }
-    CMSDecoderUpdateMessage(decoder, prov.bytes, prov.length);
-    CMSDecoderFinalizeMessage(decoder);
-    CFDataRef content = NULL;
-    CMSDecoderCopyContent(decoder, &content);
-    if (content) {
-        NSData *plistData = (__bridge NSData *)content;
-        NSDictionary *plist = [NSPropertyListSerialization propertyListWithData:plistData
-                                                                        options:0 format:NULL error:nil];
-        if (plist) {
-            NSDictionary *ent = plist[@"Entitlements"];
-            NSString *aid = ent[@"application-identifier"];
-            NSArray *teams = plist[@"TeamIdentifier"];
-            NSLog(@"*** [ReProvision]   main app profile: application-identifier=%@ team=%@",
-                  aid, teams.firstObject);
-        } else {
-            NSLog(@"*** [ReProvision]   ! could not parse profile plist");
-        }
-        if (content) CFRelease(content);
-    }
-    if (decoder) CFRelease(decoder);
+    NSLog(@"*** [ReProvision]   main app embedded.mobileprovision: %@",
+          [fm fileExistsAtPath:mainProv] ? @"present" : @"MISSING");
 
     // Report nested bundles (frameworks) and whether each carries a profile.
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
