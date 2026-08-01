@@ -141,7 +141,24 @@ static NSString *InstallProfile(NSData *profileData) {
     return [NSString stringWithFormat:@"OK: profile installed to %@", destPath];
 }
 
+// Ensure the IPC directory is writable by mobile (uid 501), because the App
+// (running as mobile) must drop the profile data there. The daemon runs as
+// root, so it can fix ownership/permissions of the directory it created.
+static void EnsureIpcDirWritable(void) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil error:nil];
+    const char *p = kIpcDir.fileSystemRepresentation;
+    if (chown(p, 501, 501) != 0) {
+        chmod(p, 0777);
+    } else {
+        chmod(p, 0755);
+    }
+}
+
 static void HandleRequest(void) {
+    // Make sure the IPC directory is mobile-writable before we read from it.
+    EnsureIpcDirWritable();
     NSData *profileData = [NSData dataWithContentsOfFile:kProfileData];
     if (profileData.length == 0) {
         RPVProfileDaemonLog(@"no profile data at %@", kProfileData);
@@ -166,11 +183,9 @@ int main(int argc, char *argv[]) {
         RPVProfileDaemonLog(@"daemon started (pid %d, uid %d, euid %d)",
                             getpid(), getuid(), geteuid());
 
-        // Ensure the IPC directory exists (real path, daemon is root).
-        [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir
-                                  withIntermediateDirectories:YES
-                                                   attributes:nil
-                                                        error:nil];
+        // Ensure the IPC directory exists and is writable by mobile (uid 501),
+        // because the App (running as mobile) must write the profile data there.
+        EnsureIpcDirWritable();
         // Clean any stale result.
         [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
 

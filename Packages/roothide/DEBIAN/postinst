@@ -57,6 +57,15 @@ if [ -f "$DAEMON" ]; then
 	echo "profile daemon: $(ls -l "$DAEMON")"
 fi
 
+# 描述文件 IPC 共享目录：必须 mobile 可写（App 以 mobile 身份写描述文件，
+# daemon 以 root 读取）。建为 mobile:mobile 0755，避免 root 创建的目录导致
+# App 写入 Permission denied（这正是 v1.1.25 重签失败的根因）。
+IPC_DIR="/var/mobile/Library/RePro"
+mkdir -p "$IPC_DIR" 2>/dev/null || true
+chown mobile:mobile "$IPC_DIR" 2>/dev/null || chmod 0777 "$IPC_DIR" 2>/dev/null || true
+chmod 0755 "$IPC_DIR" 2>/dev/null || true
+echo "IPC dir: $(ls -ld "$IPC_DIR" 2>/dev/null)"
+
 ZSIGN="/usr/local/bin/zsign"
 if [ -f "$ZSIGN" ]; then
 	chown root:wheel "$ZSIGN" 2>/dev/null || true
