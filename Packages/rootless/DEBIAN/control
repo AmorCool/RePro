@@ -1,8 +1,8 @@
 Package: jp.soh.reprovision
-Name: RePro
+Name: RePro17
 Description: iOS 应用签名工具 - Dopamine/rootless 版
 Depends: firmware (>= 15.0), zip, unzip
-Version: 1.1.27~release
+Version: 1.1.28~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm64

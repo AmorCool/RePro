@@ -18,6 +18,7 @@
 #import <mach/machine.h>
 #import <stdio.h>
 #import <sys/stat.h>
+#import "RPVDiagnostics.h"
 
 #pragma mark - ARM64e thinning (fixes SIGBUS on arm64e devices after re-sign)
 
@@ -80,7 +81,7 @@ static BOOL RZThinArm64eSliceInFile(NSString *path) {
             }
         }
         if (arm64Off < 0 && sawArm64e) {
-            NSLog(@"*** [ReProvision] WARN: %@ is arm64e-only (FAT); cannot thin to arm64, kept arm64e.", [path lastPathComponent]);
+            RPVDiagnostic(RPVDiagWarning, @"sign", @"%@ is arm64e-only (FAT); cannot thin to arm64, kept arm64e.", [path lastPathComponent]);
         }
         if (arm64Off >= 0 && arm64Size > 0 && (int64_t)data.length >= arm64Off + arm64Size) {
             NSData *thin = [data subdataWithRange:NSMakeRange((NSUInteger)arm64Off, (NSUInteger)arm64Size)];
@@ -90,7 +91,7 @@ static BOOL RZThinArm64eSliceInFile(NSString *path) {
                 NSError *werr = nil;
                 if ([thin writeToFile:path options:NSDataWritingAtomic error:&werr] && !werr) {
                     chmod(path.UTF8String, 0755);
-                    NSLog(@"*** [ReProvision] thinned arm64e -> arm64: %@", [path lastPathComponent]);
+                    RPVDiagnostic(RPVDiagInfo, @"sign", @"thinned arm64e -> arm64: %@", [path lastPathComponent]);
                     return YES;
                 }
             }
@@ -102,7 +103,7 @@ static BOOL RZThinArm64eSliceInFile(NSString *path) {
     if (magic == MH_MAGIC_64) {
         const struct mach_header_64 *h = (const struct mach_header_64 *)data.bytes;
         if ((h->cputype == CPU_TYPE_ARM64) && (h->cpusubtype & RZ_ARM64E_BIT)) {
-            NSLog(@"*** [ReProvision] WARN: %@ is arm64e-only; cannot thin to arm64 (kept arm64e).", [path lastPathComponent]);
+            RPVDiagnostic(RPVDiagWarning, @"sign", @"%@ is arm64e-only; cannot thin to arm64 (kept arm64e).", [path lastPathComponent]);
         }
         return NO;
     }
@@ -177,6 +178,15 @@ static BOOL RZMachOHasCodeSignature(NSString *path) {
 // one, so installd accepts it as a proper nested framework.
 static void RZFixFrameworkBundles(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
+    // The app's own provisioning profile (written by _provisionBundleAtPath just
+    // before this runs) is copied into every nested framework so each framework
+    // carries a valid embedded.mobileprovision. installd verifies nested bundles
+    // independently and rejects a framework that has no profile with
+    // 0xe8008015 — this is the most common cause of jailbreak-app re-sign
+    // failures (Relaxin's CydiaSubstrate.framework, etc.).
+    NSString *mainProfile = [bundlePath stringByAppendingPathComponent:@"embedded.mobileprovision"];
+    NSData *mainProfileData = [fm fileExistsAtPath:mainProfile] ? [NSData dataWithContentsOfFile:mainProfile] : nil;
+
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
                                           includingPropertiesForKeys:@[NSURLIsDirectoryKey]
                                                              options:NSDirectoryEnumerationSkipsHiddenFiles
@@ -188,54 +198,66 @@ static void RZFixFrameworkBundles(NSString *bundlePath) {
         NSString *path = url.path;
         if (![path hasSuffix:@".framework"]) continue;
         NSString *infoPlist = [path stringByAppendingPathComponent:@"Info.plist"];
-        if ([fm fileExistsAtPath:infoPlist]) continue; // already a valid framework
 
-        NSString *fwName = [path lastPathComponent].stringByDeletingPathExtension;
-        NSString *exePath = [path stringByAppendingPathComponent:fwName];
-        NSString *exeName = fwName;
-        if (![fm fileExistsAtPath:exePath]) {
-            // Fall back to the first Mach-O inside the framework.
-            NSDirectoryEnumerator *fe = [fm enumeratorAtURL:url
+        // 1) A framework with no Info.plist is malformed and rejected by installd.
+        if (![fm fileExistsAtPath:infoPlist]) {
+            NSString *fwName = [path lastPathComponent].stringByDeletingPathExtension;
+            NSString *exePath = [path stringByAppendingPathComponent:fwName];
+            NSString *exeName = fwName;
+            if (![fm fileExistsAtPath:exePath]) {
+                // Fall back to the first Mach-O inside the framework.
+                NSDirectoryEnumerator *fe = [fm enumeratorAtURL:url
                                           includingPropertiesForKeys:nil
                                                              options:0
                                                         errorHandler:nil];
-            for (NSURL *fu in fe) {
-                FILE *f = fopen(fu.path.UTF8String, "rb");
-                uint32_t m = 0; size_t rn = f ? fread(&m, 1, 4, f) : 0;
-                if (f) fclose(f);
-                if (rn == 4 && (m == 0xfeedfacf || m == 0xcafebabe || m == 0xfeedface || m == 0xcffaedfe)) {
-                    exeName = [fu.path lastPathComponent];
-                    break;
+                for (NSURL *fu in fe) {
+                    FILE *f = fopen(fu.path.UTF8String, "rb");
+                    uint32_t m = 0; size_t rn = f ? fread(&m, 1, 4, f) : 0;
+                    if (f) fclose(f);
+                    if (rn == 4 && (m == 0xfeedfacf || m == 0xcafebabe || m == 0xfeedface || m == 0xcffaedfe)) {
+                        exeName = [fu.path lastPathComponent];
+                        break;
+                    }
                 }
             }
+            // Nest the fixed framework's identifier under the main app's bundle id
+            // (the conventional Xcode form "appid.fwname"), so it validates as
+            // nested code rather than a foreign bundle.
+            NSString *idPrefix = @"com.reprovision.fixedfw";
+            NSString *appInfoPlist = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
+            if ([fm fileExistsAtPath:appInfoPlist]) {
+                NSString *appId = [[NSDictionary dictionaryWithContentsOfFile:appInfoPlist] objectForKey:@"CFBundleIdentifier"];
+                if (appId.length) idPrefix = [appId stringByAppendingString:@"."];
+            }
+            NSDictionary *info = @{
+                @"CFBundleName": fwName,
+                @"CFBundleExecutable": exeName,
+                @"CFBundleIdentifier": [NSString stringWithFormat:@"%@%@", idPrefix, fwName],
+                @"CFBundlePackageType": @"FMWK",
+                @"CFBundleVersion": @"1.0",
+                @"CFBundleShortVersionString": @"1.0",
+                @"CFBundleSupportedPlatforms": @[@"iPhoneOS"],
+                @"DTPlatformName": @"iphoneos",
+                @"DTPlatformVersion": @"17.0",
+                @"MinimumOSVersion": @"15.0",
+                @"UIDeviceFamily": @[@1, @2],
+            };
+            if ([info writeToFile:infoPlist atomically:YES]) {
+                RPVDiagnostic(RPVDiagInfo, @"sign", @"fixed malformed framework (added Info.plist): %@", [path lastPathComponent]);
+            } else {
+                RPVDiagnostic(RPVDiagError, @"sign", @"WARN: could not write Info.plist for framework %@", [path lastPathComponent]);
+            }
         }
-        // Nest the fixed framework's identifier under the main app's bundle id
-        // (the conventional Xcode form "appid.fwname"), so it lives in the app's
-        // namespace and validates as nested code rather than a foreign bundle.
-        NSString *idPrefix = @"com.reprovision.fixedfw";
-        NSString *appInfoPlist = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
-        if ([fm fileExistsAtPath:appInfoPlist]) {
-            NSString *appId = [[NSDictionary dictionaryWithContentsOfFile:appInfoPlist] objectForKey:@"CFBundleIdentifier"];
-            if (appId.length) idPrefix = [appId stringByAppendingString:@"."];
-        }
-        NSDictionary *info = @{
-            @"CFBundleName": fwName,
-            @"CFBundleExecutable": exeName,
-            @"CFBundleIdentifier": [NSString stringWithFormat:@"%@%@", idPrefix, fwName],
-            @"CFBundlePackageType": @"FMWK",
-            @"CFBundleVersion": @"1.0",
-            @"CFBundleShortVersionString": @"1.0",
-            @"CFBundleSupportedPlatforms": @[@"iPhoneOS"],
-            @"DTPlatformName": @"iphoneos",
-            @"DTPlatformVersion": @"17.0",
-            @"MinimumOSVersion": @"15.0",
-            @"UIDeviceFamily": @[@1, @2],
-        };
-        NSError *werr = nil;
-        if ([info writeToFile:infoPlist atomically:YES]) {
-            NSLog(@"*** [ReProvision] fixed malformed framework (added Info.plist): %@", path);
-        } else {
-            NSLog(@"*** [ReProvision] WARN: could not write Info.plist for %@: %@", path, werr);
+
+        // 2) Inject the app's profile into the framework so it has a valid
+        //    embedded.mobileprovision (installd requires one for nested bundles).
+        NSString *fwProfile = [path stringByAppendingPathComponent:@"embedded.mobileprovision"];
+        if (mainProfileData.length && ![fm fileExistsAtPath:fwProfile]) {
+            if ([mainProfileData writeToFile:fwProfile atomically:YES]) {
+                RPVDiagnostic(RPVDiagInfo, @"sign", @"injected app profile into framework: %@", [path lastPathComponent]);
+            } else {
+                RPVDiagnostic(RPVDiagError, @"sign", @"WARN: could not inject profile into framework %@", [path lastPathComponent]);
+            }
         }
     }
 }
@@ -248,8 +270,9 @@ static void RZVerifyBundleSigned(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
                                           includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-                                                             options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                             options:0
                                                         errorHandler:nil];
+    int unsignedCount = 0;
     for (NSURL *url in enumerator) {
         NSNumber *isDir = nil;
         [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
@@ -261,44 +284,61 @@ static void RZVerifyBundleSigned(NSString *bundlePath) {
         if (rn != 4) continue;
         if (!(m == 0xfeedfacf || m == 0xcafebabe || m == 0xfeedface || m == 0xcffaedfe)) continue;
         if (!RZMachOHasCodeSignature(path)) {
-            NSLog(@"*** [ReProvision] UNSIGNED Mach-O after zsign: %@", path);
+            RPVDiagnostic(RPVDiagError, @"sign", @"UNSIGNED Mach-O after zsign: %@", path);
+            unsignedCount++;
         }
+    }
+    if (unsignedCount == 0) {
+        RPVDiagnostic(RPVDiagInfo, @"sign", @"all Mach-O binaries are code-signed after zsign");
+    } else {
+        RPVDiagnostic(RPVDiagError, @"sign", @"%d unsigned Mach-O binaries remain (likely cause of 0xe8008015)", unsignedCount);
     }
 }
 
 // After zsign, report the on-disk code-signing artifacts so a failing re-sign
 // can be debugged from the app log: whether the main app (and each nested
-// framework) carries an embedded.mobileprovision, and RZVerifyBundleSigned
-// (called separately) reports any Mach-O zsign left unsigned. We intentionally
-// do NOT parse the CMS plist here: CMSDecoder is unavailable in the iOS SDK,
-// and installd would still reject at install if a profile were mismatched.
+// framework, and each loose dylib at the app root) carries an
+// embedded.mobileprovision. The app's profile embedded into a nested bundle is
+// what installd requires to accept it — if any bundle lacks it, that's the
+// smoking gun for 0xe8008015.
 static void RZLogProfileDiagnostics(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *appName = [bundlePath lastPathComponent].stringByDeletingPathExtension;
     NSString *mainProv = [bundlePath stringByAppendingPathComponent:@"embedded.mobileprovision"];
 
-    NSLog(@"*** [ReProvision] diagnostics for %@:", appName);
-    NSLog(@"*** [ReProvision]   main app embedded.mobileprovision: %@",
-          [fm fileExistsAtPath:mainProv] ? @"present" : @"MISSING");
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"=== re-sign diagnostics for %@ ===", appName);
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"main app embedded.mobileprovision: %@",
+                  [fm fileExistsAtPath:mainProv] ? @"present" : @"MISSING");
 
-    // Report nested bundles (frameworks) and whether each carries a profile.
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
                                       includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-                                                         options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                         options:0
                                                     errorHandler:nil];
     for (NSURL *url in enumerator) {
         NSNumber *isDir = nil;
         [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
-        if (!isDir.boolValue) continue;
         NSString *p = url.path;
-        if (![p hasSuffix:@".framework"]) continue;
-        NSString *ip = [p stringByAppendingPathComponent:@"Info.plist"];
-        NSString *prov2 = [p stringByAppendingPathComponent:@"embedded.mobileprovision"];
-        NSLog(@"*** [ReProvision]   framework %@ : Info.plist=%@ embedded.mobileprovision=%@",
-              [p lastPathComponent],
-              [fm fileExistsAtPath:ip] ? @"yes" : @"NO",
-              [fm fileExistsAtPath:prov2] ? @"yes" : @"NO");
+        if ([p hasSuffix:@".framework"]) {
+            NSString *ip = [p stringByAppendingPathComponent:@"Info.plist"];
+            NSString *prov2 = [p stringByAppendingPathComponent:@"embedded.mobileprovision"];
+            RPVDiagnostic(RPVDiagInfo, @"sign", @"framework %@ : Info.plist=%@ embedded.mobileprovision=%@",
+                          [p lastPathComponent],
+                          [fm fileExistsAtPath:ip] ? @"yes" : @"NO",
+                          [fm fileExistsAtPath:prov2] ? @"yes" : @"NO");
+        } else if (!isDir.boolValue) {
+            // A loose Mach-O at the app root (e.g. libjailbreak.dylib) — report
+            // whether it has its own profile (it normally shouldn't; it's covered
+            // by the app's signature, but report presence for completeness).
+            FILE *f = fopen(p.UTF8String, "rb");
+            uint32_t m = 0; size_t rn = f ? fread(&m, 1, 4, f) : 0;
+            if (f) fclose(f);
+            if (rn == 4 && (m == 0xfeedfacf || m == 0xcafebabe || m == 0xfeedface || m == 0xcffaedfe)) {
+                RPVDiagnostic(RPVDiagDebug, @"sign", @"loose Mach-O at root: %@ (signed=%@)",
+                              [p lastPathComponent], RZMachOHasCodeSignature(p) ? @"yes" : @"NO");
+            }
+        }
     }
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"=== end diagnostics ===");
 }
 
 /* Private headers */
