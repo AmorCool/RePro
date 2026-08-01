@@ -3,71 +3,66 @@ import UniformTypeIdentifiers
 
 // MARK: - IPA 文件选择器
 //
-// 用空 UIViewController 作为宿主，在 viewDidAppear 时真正 present
-// UIDocumentPickerViewController。这样 picker 在 VC 层级链中位置正确，
-// delegate 回调（didPickDocumentsAt / didPickDocumentsAtURLs）才能正常触发。
+// 直接从 keyWindow.rootViewController 弹出 UIDocumentPickerViewController，
+// 不经过空 VC 嵌套（viewDidAppear 时机在部分设备上不可靠）。
+// asCopy: true 让系统把选中文件拷贝到沙箱 tmp 目录。
 //
-// 关键点：
-//  - asCopy: true —— 让系统把选中文件拷贝到沙箱临时目录，避免越狱环境下
-//    安全作用域 URL（security-scoped resource）访问失败
-//  - 不允许选多个文件（我们只需要一个 .ipa）
+// 内容类型: .archive（zip）+ .data（通用），覆盖所有 .ipa 文件的 UTI 变体。
 
 struct IPADocumentPicker: UIViewControllerRepresentable {
     let onPick: (URL) -> Void
     @Environment(\.presentationMode) var presentationMode
 
-    func makeUIViewController(context: Context) -> PickerHostController {
-        let host = PickerHostController()
-        host.onPick = onPick
-        host.onDismiss = { [weak host] in
-            host?.dismiss(animated: true) {
-                self.presentationMode.wrappedValue.dismiss()
-            }
-        }
-        return host
-    }
+    func makeUIViewController(context: Context) -> UIViewController {
+        let vc = UIViewController()
+        vc.view.backgroundColor = .clear
 
-    func updateUIViewController(_ uiViewController: PickerHostController, context: Context) {}
-
-    /// 空 VC：仅用于承载 UIDocumentPickerViewController 的 present
-    class PickerHostController: UIViewController {
-        var onPick: ((URL) -> Void)?
-        var onDismiss: (() -> Void)?
-        var appeared = false
-
-        override func viewDidAppear(_ animated: Bool) {
-            super.viewDidAppear(animated)
-            guard !appeared else { return }
-            appeared = true
-            presentPicker()
-        }
-
-        private func presentPicker() {
-            // iOS 17 上 UTType(filenameExtension:"ipa") 可能返回过窄的 UTI
-            // 导致 IPA 文件在 picker 中灰色不可选。用 .archive（zip类）+ .data（通用）
-            // 覆盖所有情况，允许用户选择任意 IPA 文件。
+        DispatchQueue.main.async {
             let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.archive, .data], asCopy: true)
-            picker.delegate = self
+            picker.delegate = context.coordinator
             picker.allowsMultipleSelection = false
-            self.present(picker, animated: true)
-        }
-    }
-}
+            context.coordinator.picker = picker
 
-// MARK: - UIDocumentPickerDelegate
-
-extension IPADocumentPicker.PickerHostController: UIDocumentPickerDelegate {
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        if let url = urls.first {
-            LogManager.shared.info("用户选择了文件: \(url.lastPathComponent)", source: "AppsView")
-            onPick?(url)
+            // 从当前 keyWindow 的最顶层 VC present（绕开 SwiftUI sheet 时序问题）
+            guard let root = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first?.keyWindow?.rootViewController else { return }
+            var top = root
+            while let presented = top.presentedViewController { top = presented }
+            top.present(picker, animated: true)
         }
-        onDismiss?()
+        return vc
     }
 
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        LogManager.shared.info("用户取消了文件选择", source: "AppsView")
-        onDismiss?()
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onDismiss: {
+            presentationMode.wrappedValue.dismiss()
+        })
+    }
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        let onDismiss: () -> Void
+        weak var picker: UIDocumentPickerViewController?
+
+        init(onPick: @escaping (URL) -> Void, onDismiss: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onDismiss = onDismiss
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first {
+                LogManager.shared.info("用户选择了文件: \(url.lastPathComponent)", source: "AppsView")
+                onPick(url)
+            }
+            onDismiss()
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            LogManager.shared.info("用户取消了文件选择", source: "AppsView")
+            onDismiss()
+        }
     }
 }
 
