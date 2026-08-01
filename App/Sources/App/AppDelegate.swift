@@ -130,16 +130,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     // MARK: - /tmp/reprorefresh_at.log 写入
 
     private func appendDaemonLog(_ msg: String) {
-        guard let file = fopen(Self.daemonLogPath, "a") else { return }
-        time_t now = time(nil)
-        var tmNow = tm()
-        localtime_r(&now, &tmNow)
-        var ts: [CChar] = Array(repeating: 0, count: 64)
-        strftime(&ts, 64, "%Y-%m-%d %H:%M:%S", &tmNow)
-        fprintf(file, "[%s] [App] %s\n", ts, (msg as NSString).utf8String)
-        fflush(file)
-        fclose(file)
-        chmod(Self.daemonLogPath, 0o644)
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let ts = df.string(from: Date())
+        let line = "[\(ts)] [App] \(msg)\n"
+
+        guard let data = line.data(using: .utf8) else { return }
+        let path = Self.daemonLogPath
+
+        if FileManager.default.fileExists(atPath: path) {
+            if let fh = FileHandle(forWritingAtPath: path) {
+                fh.seekToEndOfFile()
+                fh.write(data)
+                fh.closeFile()
+            }
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+        chmod(path, 0o644)
     }
 
     // MARK: - repro-signingd IPC
