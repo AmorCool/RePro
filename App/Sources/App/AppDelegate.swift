@@ -1,10 +1,12 @@
 import UIKit
 import UserNotifications
 
-/// 复刻原 ReProvision-Reborn AppDelegate 的 daemon 通信 + 通知逻辑：
-/// - Daemon（repro-signingd）定时通过 notify_post + 共享文件触发续签
-/// - App 收到后执行续签，完成后**直接**使用 UNUserNotificationCenter 发送本地通知
-///   （与原项目一致：daemon 只负责调度，App 负责发通知）
+/// RootHide 适配：daemon（repro-signingd）在 namespace 外直接写真实 TCC.db
+/// 授权通知权限。App 不再调 requestAuthorization（避免 RootHide overlay 假写入
+/// 导致权限状态丢失、每次启动都弹窗）。
+///
+/// 通知发送仍用 UNUserNotificationCenter.add() —— 这个 XPC 走真实的 bulletinboard
+/// （RootHide 不拦截通知 XPC），真实 TCC.db 有权限即可正常显示。
 class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var window: UIWindow?
 
@@ -18,8 +20,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         LogManager.shared.initialize()
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
 
-        // 注册通知（匹配原项目 RPVNotificationManager.registerToSendNotifications）
-        registerForNotifications()
+        // 设置 UNUserNotificationCenter delegate（前台也显示横幅）
+        // 不调 requestAuthorization —— 权限由 daemon 写入真实 TCC.db
+        UNUserNotificationCenter.current().delegate = self
+
+        // 通知 daemon 确保真实 TCC 权限（daemon 已启动或即将启动）
+        RPVSigningdNotify.notifyEnsureNotificationPermission()
 
         RPVBridge.installRootHelperHandlers()
 
@@ -33,13 +39,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         syncSigningdConfig()
         setupSigningdNotify()
 
-        // daemon 在前台触发续签
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-foreground-resign"),
             object: nil, queue: .main) { [weak self] _ in
                 self?.doAutoResign()
             }
-        // 设置页保存后同步配置到 daemon
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in
@@ -51,25 +55,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // 检查 daemon 是否有待处理的续签请求
         if checkSigningdRequest() {
             LogManager.shared.info("收到 repro-signingd 续签请求，触发自动重签", source: "AppDelegate")
             doAutoResign()
         } else {
             scheduleAutoResignIfNeeded()
-        }
-    }
-
-    // MARK: - 通知注册（匹配原项目 registerToSendNotifications）
-
-    private func registerForNotifications() {
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error = error {
-                LogManager.shared.warning("通知注册错误: \(error.localizedDescription)", source: "AppDelegate")
-            }
-            LogManager.shared.info(granted ? "通知权限已获取" : "通知权限未授权", source: "AppDelegate")
         }
     }
 
@@ -99,7 +89,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
             guard let self = self else { return }
 
-            // 通知 daemon 续签完成（匹配原项目 applicationDidFinishTask）
             RPVSigningdNotify.notifySigningComplete()
 
             switch result {
@@ -167,9 +156,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         return false
     }
 
-    // MARK: - 本地通知（App 直接发，不经过 daemon 中继）
+    // MARK: - 本地通知
 
-    /// 发送本地通知。匹配原项目 RPVNotificationManager._newSendNotificationWithTitle:body:
+    /// 发送本地通知。TCC 权限由 daemon 直接写入真实 TCC.db（绕过 RootHide overlay），
+    /// addNotificationRequest 的 XPC 走真实 bulletinboard，不受 namespace 影响。
     private func sendNotification(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
@@ -190,29 +180,35 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         }
     }
 
-    /// 供设置页「测试发送通知」按钮直接调用
+    /// 供设置页「测试发送通知」按钮调用。
+    /// 先请求 daemon 确保真实 TCC 权限，然后直接发通知。
     static func testSendNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
+        // 确保真实 TCC 权限（daemon 在 namespace 外写入）
+        RPVSigningdNotify.notifyEnsureNotificationPermission()
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
-        let request = UNNotificationRequest(identifier: "test-\(Int(Date().timeIntervalSince1970))",
-                                             content: content, trigger: trigger)
+        // 给 daemon 一点时间写 TCC
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
 
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                LogManager.shared.warning("测试通知发送失败: \(error.localizedDescription)", source: "AppDelegate")
-            } else {
-                LogManager.shared.info("测试通知已发送", source: "AppDelegate")
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
+            let request = UNNotificationRequest(identifier: "test-\(Int(Date().timeIntervalSince1970))",
+                                                 content: content, trigger: trigger)
+
+            UNUserNotificationCenter.current().add(request) { error in
+                if let error = error {
+                    LogManager.shared.warning("测试通知发送失败: \(error.localizedDescription)", source: "AppDelegate")
+                } else {
+                    LogManager.shared.info("测试通知已发送", source: "AppDelegate")
+                }
             }
         }
     }
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// App 在前台时也显示通知横幅（匹配原项目 willPresentNotification）
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler:

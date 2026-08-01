@@ -76,6 +76,10 @@
     notify_post("com.reprovision.signing-complete");
 }
 
++ (void)notifyEnsureNotificationPermission {
+    notify_post("com.reprovision.ensure-notification-permission");
+}
+
 - (void)dealloc {
     if (_token > 0) notify_cancel(_token);
 }
