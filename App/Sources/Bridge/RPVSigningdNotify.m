@@ -76,5 +76,8 @@
     if (_token > 0) notify_cancel(_token);
 }
 
++ (void)notifyShowNotification {
+    notify_post("com.reprovision.show-notification");
+}
+
 @end
-+ (void)notifyShowNotification { notify_post("com.reprovision.show-notification"); }
