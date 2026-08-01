@@ -421,36 +421,13 @@ struct SettingsView: View {
         }
     }
 
-    /// daemon 日志路径（与 AppDelegate.daemonLogPath 一致）
-    private func daemonLogPath() -> String {
-        let bundlePath = Bundle.main.bundlePath
-        if let r = bundlePath.range(of: "/Applications/", options: .backwards) {
-            return "\(bundlePath[..<r.lowerBound])/var/log/reprorefresh_at.log"
-        }
-        return "/var/jb/var/log/reprorefresh_at.log"
-    }
-
     private func refreshLogFileSize() {
-        let path = daemonLogPath()
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let size = attrs[.size] as? Int64 else {
-            logFileSize = "—"
-            return
-        }
-        if size < 1024 {
-            logFileSize = "\(size) B"
-        } else if size < 1024 * 1024 {
-            logFileSize = String(format: "%.1f KB", Double(size) / 1024.0)
-        } else {
-            logFileSize = String(format: "%.1f MB", Double(size) / (1024.0 * 1024.0))
-        }
+        logFileSize = DaemonLogSize(DaemonLogDefaultPath())
     }
 
     private func clearDaemonLog() {
-        let path = daemonLogPath()
-        try? "".write(toFile: path, atomically: true, encoding: .utf8)
+        DaemonLogClear(DaemonLogDefaultPath())
         refreshLogFileSize()
-        LogManager.shared.info("已清空 daemon 日志: \(path)", source: "SettingsView")
     }
 
     private func performRespring() {

@@ -1,11 +1,11 @@
 //
-//  repro-signingd.m
-//  RePro 后台定时续签守护进程（全程静默，不依赖拉 App）
+//  repro-signingd.m — 极简版
+//  步骤1: 启动，读 /var/mobile/Library/RePro/signingd-config.plist
+//  步骤2: 按 checkIntervalMin 设 NSTimer
+//  步骤3: 到点 → 写触发标记 + 日志 → notify_post
+//  步骤4: 等 App 同步新配置 → 重设定时器
 //
-//  以 root 身份由 launchd 拉起（RunAtLoad + KeepAlive），运行在 App jbroot
-//  namespace 外。职责：定时检查 → 到达续签时间 → 写触发标记 + 通知 App。
-//  App 运行中立即执行续签，未运行时下次打开时处理。全部日志写入
-//  <jbroot>/var/log/reprorefresh_at.log。
+//  日志: fopen/fprintf 同步写入 <jbroot>/var/log/reprorefresh_at.log
 //
 
 #include <notify.h>
@@ -14,235 +14,101 @@
 #include <time.h>
 #import <Foundation/Foundation.h>
 
-// ─── 常量 ────────────────────────────────────────────────────────
+static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
+static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
+static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";
 
-static NSString *const kIpcDir          = @"/var/mobile/Library/RePro";
-static NSString *const kConfigPath      = @"/var/mobile/Library/RePro/signingd-config.plist";
-static NSString *const kTriggerPath     = @"/var/mobile/Library/RePro/auto-resign-trigger";
+static const NSInteger  kFallbackMinutes = 360;
+static const NSInteger  kFallbackDays    = 2;
 
-static const BOOL       kDefaultAutoResign    = YES;
-static const NSInteger  kDefaultCheckMinutes  = 360;
-static const NSInteger  kDefaultThreshold     = 2;
-static const NSTimeInterval kMinTimerInterval = 60.0;
+static FILE     *gLogFile  = NULL;
+static NSTimer  *gTimer    = nil;
+static time_t    gLastFire = 0;
 
-// ─── 日志路径（动态：从 daemon 自身路径推导 jbroot）─────────────
+// ─── 日志 ────────────────────────────────────────────────────────
 
-static NSString *gLogPath = nil;
-
-static NSString *SDResolveJbroot(void) {
-    // 从 argv[0] 推导（launchd 会传绝对路径）
-    NSString *argv0 = [[[NSProcessInfo processInfo] arguments] firstObject];
-    if (argv0.length > 0 && [argv0 containsString:@"/usr/libexec/"]) {
-        NSRange r = [argv0 rangeOfString:@"/usr/libexec/" options:NSBackwardsSearch];
-        if (r.location != NSNotFound) return [argv0 substringToIndex:r.location];
-    }
-
-    // 回退：扫描常见路径
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *cand in @[@"/var/jb",
-                             @"/private/var/jb",
-                             @"/var/mobile/Containers/Shared/AppGroup"]) {
-        NSString *test = [cand stringByAppendingPathComponent:@"usr/libexec/repro-signingd"];
-        if ([fm fileExistsAtPath:test]) return cand;
-    }
-
-    // 最后回退
-    return @"/var/jb";
+static void s_log(NSString *fmt, ...) {
+    va_list a; va_start(a, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:a]; va_end(a);
+    time_t t = time(NULL); struct tm tm; localtime_r(&t, &tm);
+    char ts[64]; strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
+    if (gLogFile) { fprintf(gLogFile, "[%s] %s\n", ts, s.UTF8String); fflush(gLogFile); }
+    NSLog(@"[repro-signingd] %@", s);
 }
 
-// ─── 文件日志 ─────────────────────────────────────────────────────
+static void s_open_log(void) {
+    NSString *dir = nil, *jb = nil;
+    // 从 argv[0] 推 jbroot
+    NSString *a0 = [[[NSProcessInfo processInfo] arguments] firstObject];
+    if (a0) {
+        NSRange r = [a0 rangeOfString:@"/usr/libexec/" options:NSBackwardsSearch];
+        if (r.location != NSNotFound) jb = [a0 substringToIndex:r.location];
+    }
+    if (!jb) jb = @"/var/jb";
+    dir = [jb stringByAppendingPathComponent:@"var/log"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
+    NSString *p = [dir stringByAppendingPathComponent:@"reprorefresh_at.log"];
+    gLogFile = fopen(p.UTF8String, "a");
+    if (gLogFile) chmod(p.UTF8String, 0666);
+    if (!gLogFile) NSLog(@"[repro-signingd] 无法打开 %@", p);
+}
 
-static FILE *gLogFile = NULL;
+// ─── 配置 ────────────────────────────────────────────────────────
 
-static void SDLog(NSString *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
-    va_end(args);
+typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; } sd_config;
 
+static sd_config s_cfg(void) {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (!d) return (sd_config){YES, kFallbackMinutes, kFallbackDays};
+    NSInteger m = [d[@"checkIntervalMin"] integerValue]; if (m < 1) m = kFallbackMinutes;
+    NSInteger dy = [d[@"resignThreshold"] integerValue]; if (dy < 1) dy = kFallbackDays;
+    BOOL en = d[@"autoResign"] ? [d[@"autoResign"] boolValue] : YES;
+    return (sd_config){en, m, dy};
+}
+
+// ─── 触发 ────────────────────────────────────────────────────────
+
+static void s_fire(void) {
+    sd_config c = s_cfg();
+    if (!c.enabled) { s_log(@"自动续签关闭，跳过"); return; }
     time_t now = time(NULL);
-    struct tm tm_now;
-    localtime_r(&now, &tm_now);
-    char ts[64];
-    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_now);
-
-    if (gLogFile) {
-        fprintf(gLogFile, "[%s] %s\n", ts, msg.UTF8String);
-        fflush(gLogFile);
-    }
-
-    NSLog(@"[repro-signingd] %@", msg);
-}
-
-static BOOL SDOpenLog(void) {
-    NSString *logDir = [gLogPath stringByDeletingLastPathComponent];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:logDir]) {
-        [fm createDirectoryAtPath:logDir withIntermediateDirectories:YES
-                       attributes:@{NSFilePosixPermissions: @0755} error:nil];
-    }
-
-    gLogFile = fopen(gLogPath.UTF8String, "a");
-    if (!gLogFile) {
-        NSLog(@"[repro-signingd] 无法打开日志 %@: %s", gLogPath, strerror(errno));
-        return NO;
-    }
-    chmod(gLogPath.UTF8String, 0644);
-    return YES;
-}
-
-// ─── IPC ────────────────────────────────────────────────────────
-
-static BOOL SDEnsureIpcDir(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:kIpcDir]) return YES;
-    NSError *err;
-    if (![fm createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES
-                        attributes:@{NSFilePosixPermissions: @0755} error:&err]) {
-        SDLog(@"创建 IPC 目录失败: %@", err);
-        return NO;
-    }
-    chown(kIpcDir.UTF8String, 501, 501);
-    return YES;
-}
-
-static NSDictionary *SDLoadConfig(void) {
-    // 1. 优先读 App 同步的 plist（/var/mobile/Library/RePro/signingd-config.plist）
-    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (cfg) {
-        NSInteger th = [cfg[@"resignThreshold"] integerValue];
-        NSInteger im = [cfg[@"checkIntervalMin"] integerValue];
-        if (th >= 1 && im >= 1) return cfg; // 有效值才用
-    }
-
-    // 2. 回退：从 CFPreferences 读 App 的 UserDefaults
-    //    关键：必须用 CFSTR("mobile") 而非 kCFPreferencesCurrentUser，
-    //    因为 daemon 以 root 运行，而 App 以 mobile 写入。
-    //    这是原 reprovisiond（test2源码）的做法。
-    CFStringRef appID = CFSTR("com.reprovision.repro");
-    CFPreferencesAppSynchronize(appID);
-    CFArrayRef keys = CFPreferencesCopyKeyList(appID, CFSTR("mobile"), kCFPreferencesAnyHost);
-    if (keys) {
-        NSDictionary *prefs = (__bridge_transfer NSDictionary *)
-            CFPreferencesCopyMultiple(keys, appID, CFSTR("mobile"), kCFPreferencesAnyHost);
-        CFRelease(keys);
-        if (prefs.count > 0) {
-            NSNumber *autoR = prefs[@"autoResign"];
-            NSNumber *interval = prefs[@"checkIntervalMin"];
-            NSNumber *threshold = prefs[@"resignThreshold"];
-            NSInteger th = threshold ? [threshold integerValue] : kDefaultThreshold;
-            NSInteger im = interval ? [interval integerValue] : kDefaultCheckMinutes;
-            if (th < 1) th = kDefaultThreshold;
-            if (im < 1) im = kDefaultCheckMinutes;
-            SDLog(@"从 CFPreferences(mobile) 读取到: autoResign=%@, 间隔=%ld分, 阈值=%ld天",
-                  autoR, (long)im, (long)th);
-            return @{
-                @"autoResign":       autoR ?: @(kDefaultAutoResign),
-                @"checkIntervalMin": @(im),
-                @"resignThreshold":  @(th),
-            };
-        }
-    }
-    return @{
-        @"autoResign":       @(kDefaultAutoResign),
-        @"checkIntervalMin": @(kDefaultCheckMinutes),
-        @"resignThreshold":  @(kDefaultThreshold),
-    };
-}
-
-// ─── NSTimer ────────────────────────────────────────────────────
-
-static NSTimer *gSigningTimer;
-static time_t   gLastFireTime;
-
-static void SDFireResignRequest(void) {
-    NSDictionary *cfg = SDLoadConfig();
-    if (![cfg[@"autoResign"] boolValue]) {
-        SDLog(@"自动续签已关闭，跳过");
-        return;
-    }
-
-    time_t now = time(NULL);
-    SDEnsureIpcDir();
-
-    NSInteger threshold = [cfg[@"resignThreshold"] integerValue];
-    if (threshold < 1) threshold = kDefaultThreshold;
-
-    // 写触发标记
-    NSDictionary *trigger = @{
+    [@{
         @"timestamp": @(now),
-        @"threshold": @(threshold),
-    };
-    [trigger writeToFile:kTriggerPath atomically:YES];
+        @"threshold": @(c.days),
+    } writeToFile:kTriggerPath atomically:YES];
     chown(kTriggerPath.UTF8String, 501, 501);
-
-    // 通知 App（App 在前台/后台时立即处理，否则下次打开时处理）
     notify_post("com.reprovision.schedule-resign");
-
-    SDLog(@"══════ 到达续签时间 ══════");
-    SDLog(@"阈值: %ld 天 | 已写入触发标记，App 可用时自动执行续签", (long)threshold);
+    s_log(@"到达续签时间 — 阈值 %ld 天 — 已触发", (long)c.days);
 }
 
-static void SDScheduleTimer(NSTimeInterval interval) {
-    [gSigningTimer invalidate];
-    gSigningTimer = [NSTimer scheduledTimerWithTimeInterval:interval
-                                                    repeats:YES
-                                                      block:^(NSTimer *timer) {
-        time_t now = time(NULL);
-        if (now - gLastFireTime < 60) return;
-        gLastFireTime = now;
-        SDFireResignRequest();
+static void s_start_timer(NSTimeInterval sec) {
+    [gTimer invalidate];
+    gTimer = [NSTimer scheduledTimerWithTimeInterval:sec repeats:YES block:^(NSTimer *t) {
+        time_t n = time(NULL); if (n - gLastFire < 60) return; gLastFire = n;
+        s_fire();
     }];
 }
 
-// ─── main ───────────────────────────────────────────────────────
+// ─── main ────────────────────────────────────────────────────────
 
 int main(void) {
-    // 确定 jbroot 及日志路径
-    NSString *jbroot = SDResolveJbroot();
-    gLogPath = [jbroot stringByAppendingPathComponent:@"var/log/reprorefresh_at.log"];
+    s_open_log();
+    s_log(@"启动 pid=%d uid=%d", getpid(), getuid());
+    [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
+    chown(kIpcDir.UTF8String, 501, 501);
 
-    SDOpenLog();
-    SDLog(@"══════════════════════════════════════");
-    SDLog(@"repro-signingd 启动, pid=%d uid=%d, jbroot=%@", getpid(), getuid(), jbroot);
-    SDEnsureIpcDir();
+    sd_config c = s_cfg();
+    s_log(@"配置: 自动=%@ 间隔=%ld分 阈值=%ld天", c.enabled?@"是":@"否", (long)c.minutes, (long)c.days);
+    if (c.enabled) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC), dispatch_get_main_queue(), ^{ s_fire(); });
+    s_start_timer((NSTimeInterval)c.minutes * 60.0);
 
-    NSDictionary *cfg = SDLoadConfig();
-    NSInteger intervalMin = [cfg[@"checkIntervalMin"] integerValue];
-    if (intervalMin < 1) intervalMin = kDefaultCheckMinutes;
-    NSTimeInterval interval = MAX((NSTimeInterval)intervalMin * 60.0, kMinTimerInterval);
+    int t; notify_register_dispatch("com.reprovision.signingd-config-updated", &t,
+        dispatch_get_main_queue(), ^(int _){ sd_config nc = s_cfg();
+            s_log(@"配置已刷新 — 间隔 %ld 分", (long)nc.minutes);
+            s_start_timer((NSTimeInterval)nc.minutes * 60.0); });
 
-    SDLog(@"启动完成 — 间隔: %ld 分钟, 阈值: %ld 天, 自动: %@",
-          (long)intervalMin,
-          (long)[cfg[@"resignThreshold"] integerValue],
-          [cfg[@"autoResign"] boolValue] ? @"开启" : @"关闭");
+    int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
+        dispatch_get_main_queue(), ^(int _){ s_log(@"续签完成"); });
 
-    if ([cfg[@"autoResign"] boolValue]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
-                       dispatch_get_main_queue(), ^{
-            SDFireResignRequest();
-        });
-    }
-
-    SDScheduleTimer(interval);
-
-    int configToken;
-    notify_register_dispatch("com.reprovision.signingd-config-updated", &configToken,
-        dispatch_get_main_queue(), ^(int unused) {
-            NSDictionary *c = SDLoadConfig();
-            NSInteger im = [c[@"checkIntervalMin"] integerValue];
-            if (im < 1) im = kDefaultCheckMinutes;
-            NSTimeInterval inv = MAX((NSTimeInterval)im * 60.0, kMinTimerInterval);
-            SDLog(@"配置已更新 — 间隔: %ld 分钟", (long)im);
-            SDScheduleTimer(inv);
-        });
-
-    int completeToken;
-    notify_register_dispatch("com.reprovision.signing-complete", &completeToken,
-        dispatch_get_main_queue(), ^(int unused) {
-            SDLog(@"App 续签完成");
-        });
-
-    [[NSRunLoop mainRunLoop] run];
-    return 0;
+    [[NSRunLoop mainRunLoop] run]; return 0;
 }

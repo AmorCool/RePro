@@ -1,7 +1,61 @@
 import Foundation
 import os.log
 
-// MARK: - 统一日志管理器（参考 SideStore 日志系统）
+// MARK: - 全局 daemon 日志句柄（用 C FILE* 同步写入，可靠）
+
+private var gDaemonLogFile: UnsafeMutablePointer<FILE>? = nil
+private var gDaemonLogPath: String? = nil
+
+/// 开启 daemon 日志转发（后续所有 LogManager 日志同步写入该文件）
+func DaemonLogStart(_ path: String) {
+    gDaemonLogPath = path
+    let dir = (path as NSString).deletingLastPathComponent
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    gDaemonLogFile = fopen(path, "a")
+    if gDaemonLogFile != nil { chmod(path, 0666) }
+}
+
+/// 关闭 daemon 日志转发
+func DaemonLogStop() {
+    if let f = gDaemonLogFile { fclose(f) }
+    gDaemonLogFile = nil
+    gDaemonLogPath = nil
+}
+
+/// 清空 daemon 日志
+func DaemonLogClear(_ path: String) {
+    DaemonLogStop()
+    try? "".write(toFile: path, atomically: true, encoding: .utf8)
+    chmod(path, 0666)
+}
+
+/// 获取 daemon 日志文件大小
+func DaemonLogSize(_ path: String) -> String {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+          let size = attrs[.size] as? Int64 else { return "—" }
+    if size < 1024 { return "\(size) B" }
+    if size < 1024*1024 { return String(format: "%.1f KB", Double(size)/1024.0) }
+    return String(format: "%.1f MB", Double(size)/(1024.0*1024.0))
+}
+
+/// daemon 日志路径（从 App bundle 推 jbroot）
+func DaemonLogDefaultPath() -> String {
+    let p = Bundle.main.bundlePath
+    if let r = p.range(of: "/Applications/", options: .backwards) {
+        return "\(p[..<r.lowerBound])/var/log/reprorefresh_at.log"
+    }
+    return "/var/jb/var/log/reprorefresh_at.log"
+}
+
+/// 同步写入一行到 daemon 日志（在 LogManager.append 中调用）
+private func daemonLogWrite(ts: String, source: String, message: String) {
+    guard let f = gDaemonLogFile else { return }
+    let line = "[\(ts)] [\(source)] \(message)\n"
+    fputs(line, f)
+    fflush(f)
+}
+
+// MARK: - 统一日志管理器
 
 class LogManager: ObservableObject {
     static let shared = LogManager()
@@ -12,33 +66,14 @@ class LogManager: ObservableObject {
 
     private init() {}
 
-    // MARK: daemon 日志转发
-    /// 设为非 nil 时，所有日志同时追加写入该文件（实时，一行一条）。
-    /// 用于自动续签期间把详尽日志写入 reprorefresh_at.log。
-    var daemonLogPath: String? {
-        didSet {
-            if let path = daemonLogPath, !FileManager.default.fileExists(atPath: path) {
-                FileManager.default.createFile(atPath: path, contents: nil)
-                chmod(path, 0o644)
-            }
-        }
-    }
-
     // MARK: 初始化
     func initialize() {
         loadFromDisk()
-
-        // 接收 Vendor 业务层（RPVApplicationSigning / RPVBridge / repro-helper 经 RPVBridge
-        // 转发）发来的诊断，使其出现在 App「日志」页，用户可在重签后导出发给开发者。
         NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDiagnostic(_:)),
-            name: Notification.Name("com.reprovision.diagnostic"),
-            object: nil
-        )
+            self, selector: #selector(handleDiagnostic(_:)),
+            name: Notification.Name("com.reprovision.diagnostic"), object: nil)
     }
 
-    /// Vendor 层通过 RPVDiagnostic 转发的诊断（见 RPVDiagnostics.h）。
     @objc private func handleDiagnostic(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let message = userInfo["message"] as? String else { return }
@@ -58,114 +93,58 @@ class LogManager: ObservableObject {
     }
 
     // MARK: 写入日志
-    func info(_ message: String, source: String = "General") {
-        append(level: .info, message: message, source: source)
-    }
-
-    func warning(_ message: String, source: String = "General") {
-        append(level: .warning, message: message, source: source)
-    }
-
-    func error(_ message: String, source: String = "General") {
-        append(level: .error, message: message, source: source)
-    }
-
-    func debug(_ message: String, source: String = "General") {
+    func info(_ message: String, source: String = "General")    { append(level: .info,    message: message, source: source) }
+    func warning(_ message: String, source: String = "General")  { append(level: .warning, message: message, source: source) }
+    func error(_ message: String, source: String = "General")    { append(level: .error,   message: message, source: source) }
+    func debug(_ message: String, source: String = "General")    {
         #if DEBUG
         append(level: .debug, message: message, source: source)
         #endif
     }
 
     private func append(level: LogLevel, message: String, source: String) {
-        queue.async { [weak self] in
-            let entry = LogEntry(
-                id: UUID(),
-                timestamp: Date(),
-                level: level,
-                message: message,
-                source: source
-            )
+        let now = Date()
+        let entry = LogEntry(id: UUID(), timestamp: now, level: level, message: message, source: source)
 
-            // @Published 属性必须在主线程更新（SwiftUI 要求）
+        // daemon 日志：同步写入（最关键——不用 async，不丢数据）
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        daemonLogWrite(ts: df.string(from: now), source: source, message: message)
+
+        // 内存日志：异步更新 UI
+        queue.async { [weak self] in
             DispatchQueue.main.async {
                 self?.logs.append(entry)
-
-                // 限制日志数量，防止内存膨胀
-                while (self?.logs.count ?? 0) > (self?.maxLogEntries ?? 50) {
-                    self?.logs.removeFirst()
-                }
+                while (self?.logs.count ?? 0) > (self?.maxLogEntries ?? 50) { self?.logs.removeFirst() }
             }
-
-            // 同时输出到系统日志（控制台可见）
-            let osLogType: OSLogType = {
-                switch level {
-                case .info: return .info
-                case .warning: return .default
-                case .error: return .error
-                case .debug: return .debug
-                }
-            }()
             os_log("[%@][%@] %@", log: OSLog(subsystem: "com.reprovision", category: source),
-               type: osLogType, level.displayName, source, message)
-
-            // daemon 日志转发（自动续签时实时写入 reprorefresh_at.log）
-            if let dp = self?.daemonLogPath {
-                let df = DateFormatter()
-                df.dateFormat = "yyyy-MM-dd HH:mm:ss"
-                let ts = df.string(from: entry.timestamp)
-                if let line = "[\(ts)] [\(source)] \(message)\n".data(using: .utf8) {
-                    if let fh = FileHandle(forWritingAtPath: dp) {
-                        fh.seekToEndOfFile()
-                        fh.write(line)
-                        fh.closeFile()
-                    }
-                }
-            }
+                   type: (level == .error ? .error : level == .warning ? .default : .info),
+                   level.displayName, source, message)
         }
     }
 
-    // MARK: 清空日志
+    // MARK: 清空
     func clear() {
-        queue.async { [weak self] in
-            self?.logs.removeAll()
-            self?.deleteLogFile()
-        }
+        queue.async { [weak self] in self?.logs.removeAll(); self?.deleteLogFile() }
     }
 
-    // MARK: 持久化
     private func saveToDisk() {
         guard let url = logFileURL else { return }
-        do {
-            let data = try JSONEncoder().encode(logs)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            os_log("保存日志失败: %{public}@", type: .error, error.localizedDescription)
-        }
+        try? (try? JSONEncoder().encode(logs))?.write(to: url, options: .atomic)
     }
 
     private func loadFromDisk() {
-        guard let url = logFileURL else { return }
-        do {
-            let data = try Data(contentsOf: url)
-            let decoded = try JSONDecoder().decode([LogEntry].self, from: data)
-            DispatchQueue.main.async { [weak self] in
-                self?.logs = decoded
-            }
-        } catch {
-            // 首次启动或文件损坏，忽略
-        }
+        guard let url = logFileURL, let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([LogEntry].self, from: data) else { return }
+        DispatchQueue.main.async { [weak self] in self?.logs = decoded }
     }
 
-    private func deleteLogFile() {
-        guard let url = logFileURL else { return }
-        try? FileManager.default.removeItem(at: url)
-    }
+    private func deleteLogFile() { if let u = logFileURL { try? FileManager.default.removeItem(at: u) } }
 
     private var logFileURL: URL? {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
             .appendingPathComponent("ReProvision")
-        guard let safeDir = dir else { return nil }
-        try? FileManager.default.createDirectory(at: safeDir, withIntermediateDirectories: true)
-        return safeDir.appendingPathComponent("logs.json")
+        guard let d = dir else { return nil }
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d.appendingPathComponent("logs.json")
     }
 }
