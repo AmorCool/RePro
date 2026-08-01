@@ -26,7 +26,7 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "RePro"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.53"
+MARKETING_VERSION = "1.1.54"
 CURRENT_PROJECT_VERSION = "48"
 DEPLOYMENT_TARGET = "15.0"
 BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
@@ -583,6 +583,12 @@ def build():
             ("GENERATE_INFOPLIST_FILE", "YES"),
             ("HEADER_SEARCH_PATHS", "(\n%s\n\t\t\t\t)" % "\n".join("\t\t\t\t\t%s," % p for p in header_paths)),
             ("INFOPLIST_KEY_CFBundleDisplayName", '"RePro"'),
+            ("INFOPLIST_KEY_CFBundleURLTypes",
+             '(\n\t\t\t\t\t{\n'
+             '\t\t\t\t\t\tCFBundleURLSchemes = (\n'
+             '\t\t\t\t\t\t\treprovision,\n'
+             '\t\t\t\t\t\t);\n'
+             '\t\t\t\t\t},\n\t\t\t\t)'),
             ("INFOPLIST_KEY_UIApplicationSceneManifest_Generation", "YES"),
             ("INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents", "YES"),
             ("INFOPLIST_KEY_UIFileSharingEnabled", "YES"),

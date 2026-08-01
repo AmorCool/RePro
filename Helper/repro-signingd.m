@@ -12,11 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <spawn.h>
-#include <sys/wait.h>
 #import <Foundation/Foundation.h>
-
-extern char **environ;
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
@@ -98,26 +94,11 @@ static void s_start_timer(NSTimeInterval sec) {
 int main(int argc, char *argv[]) {
     s_open_log();
 
-    // --resign-now: 终端直接触发续签
+    // --resign-now: 终端触发续签（写标记 + 日志）
     if (argc >= 2 && strcmp(argv[1], "--resign-now") == 0) {
-        s_log(@"收到 --resign-now，触发续签…");
-
-        // 写触发标记 + notify_post（App 运行中则立即处理）
+        s_log(@"收到 --resign-now");
         s_fire();
-
-        // 尝试通过 open 命令后台拉起 App（走 SpringBoard，不会 EPERM）
-        s_log(@"尝试拉起 App…");
-        pid_t pid = 0;
-        char *openArgv[] = { "/usr/bin/open", "-b", "com.reprovision.repro", NULL };
-        int rc = posix_spawn(&pid, "/usr/bin/open", NULL, NULL, openArgv, environ);
-        if (rc == 0) {
-            int st = 0; waitpid(pid, &st, 0);
-            s_log(@"App 已拉起（open 返回 %d），将在后台静默续签", st);
-        } else {
-            s_log(@"open 不可用（%d），App 下次手动打开时自动续签", rc);
-        }
-
-        s_log(@"续签结果见: <jbroot>/var/log/reprorefresh_at.log");
+        s_log(@"触发完成 — 打开 App 时自动续签，或用快捷指令 reprovision://refresh");
         return 0;
     }
 

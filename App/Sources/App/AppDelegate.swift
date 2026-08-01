@@ -72,6 +72,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         else { tryAutoResign() }
     }
 
+    // MARK: - 快捷指令 / URL Scheme（reprovision://refresh）
+
+    func application(_ app: UIApplication, open url: URL,
+                     options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+        if url.scheme == "reprovision" && url.host == "refresh" {
+            return silentResignAndExit()
+        }
+        return false
+    }
+
     // MARK: - 触发检测
 
     private func checkDaemonTrigger() -> Bool {
