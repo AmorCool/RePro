@@ -6,7 +6,13 @@ import Darwin
 struct SettingsView: View {
     @AppStorage("autoResign") private var autoResign: Bool = true
     @AppStorage("resignThreshold") private var resignThreshold: Int = 2
-    @AppStorage("checkInterval") private var checkInterval: Int = 6
+    // checkIntervalMin: 检查间隔，单位分钟，默认 360（6小时），最少 1 分钟
+    @AppStorage("checkIntervalMin") private var checkIntervalMin: Int = 360
+
+    /// 从分钟数拆出的小时和分钟（纯展示用，不绑定 @AppStorage）
+    @State private var intervalHours: Int = 6
+    @State private var intervalMins: Int = 0
+    @State private var showIntervalPicker: Bool = false
 
     @ObservedObject private var account = BridgeClient.shared
 
@@ -16,7 +22,6 @@ struct SettingsView: View {
     @State private var loginMessage: String?
     @State private var loginSucceeded = false
 
-    // Team 选择
     @State private var availableTeams: [DeveloperTeam] = []
     @State private var showingTeamSheet = false
 
@@ -35,7 +40,12 @@ struct SettingsView: View {
                 aboutSection
             }
             .navigationTitle("设置")
-            .onAppear { refreshEnvironment() }
+            .onAppear {
+                refreshEnvironment()
+                // 从 checkIntervalMin 初始化小时/分钟
+                intervalHours = checkIntervalMin / 60
+                intervalMins  = checkIntervalMin % 60
+            }
             .onDisappear {
                 NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
             }
@@ -122,17 +132,67 @@ struct SettingsView: View {
         Section {
             Toggle("启用自动重签", isOn: $autoResign)
             Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...7)
-            Stepper("最短间隔 \(checkInterval) 小时", value: $checkInterval, in: 1...24)
-            Button("测试发送通知") {
-                AppDelegate.testSendNotification(
-                    title: "RePro 测试通知",
-                    body: "如果你能看到这条通知，说明通知权限正常 ✓")
+
+            // 展开式间隔选择
+            Button {
+                withAnimation { showIntervalPicker.toggle() }
+            } label: {
+                HStack {
+                    Text("检查间隔")
+                    Spacer()
+                    Text(formatInterval(hours: intervalHours, mins: intervalMins))
+                        .foregroundColor(.secondary)
+                    Image(systemName: showIntervalPicker ? "chevron.down" : "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if showIntervalPicker {
+                VStack(spacing: 0) {
+                    HStack {
+                        Picker("小时", selection: $intervalHours) {
+                            ForEach(0...23, id: \.self) { h in
+                                Text("\(h) 小时").tag(h)
+                            }
+                        }
+                        .pickerStyle(.wheel)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+
+                        Picker("分钟", selection: $intervalMins) {
+                            ForEach(0...59, id: \.self) { m in
+                                Text("\(m) 分钟").tag(m)
+                            }
+                        }
+                        .pickerStyle(.wheel)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                    }
+                    .frame(height: 160)
+
+                    Button("确定") {
+                        let totalMin = max(1, intervalHours * 60 + intervalMins)
+                        checkIntervalMin = totalMin
+                        intervalHours = totalMin / 60
+                        intervalMins  = totalMin % 60
+                        withAnimation { showIntervalPicker = false }
+                        LogManager.shared.info("检查间隔已更新: \(totalMin) 分钟", source: "SettingsView")
+                    }
+                    .padding(.vertical, 8)
+                }
             }
         } header: {
             Text("自动重签")
         } footer: {
-            Text("repro-signingd 守护进程会定时检查，续签完成后通过系统通知告知结果。")
+            Text("repro-signingd 守护进程以 root 权限定时检查是否需要续签。App 未运行时 daemon 独立记录检查日志到 /tmp/reprorefresh_at.log，App 下次打开时执行续签。")
         }
+    }
+
+    private func formatInterval(hours: Int, mins: Int) -> String {
+        if hours == 0 { return "\(mins) 分钟" }
+        if mins == 0 { return "\(hours) 小时" }
+        return "\(hours) 小时 \(mins) 分钟"
     }
 
     // MARK: - 签名后端
@@ -278,7 +338,6 @@ struct SettingsView: View {
         switch step {
         case .chooseTeam(let teams):
             if teams.count == 1, let only = teams.first {
-                // 只有一个 Team 时不必再让用户点一次
                 selectTeam(only)
             } else if teams.isEmpty {
                 isLoggingIn = false
@@ -290,14 +349,11 @@ struct SettingsView: View {
             }
 
         case .needsTwoFactor:
-            // 和原版 RPVAccount2FAViewController 一样：直接续上回退通道。
-            // AuthKit 会弹出系统级验证界面，用户在系统弹窗里确认后才返回。
             loginMessage = "该 Apple ID 开启了两步验证，请在系统弹出的验证界面完成确认…"
             loginSucceeded = false
             LogManager.shared.info("账号需要两步验证，拉起系统验证界面", source: "SettingsView")
             account.continueTwoFactor { next in
                 if case .needsTwoFactor = next {
-                    // 回退通道又要求 2FA，说明系统验证没通过，别在这里递归
                     isLoggingIn = false
                     loginMessage = "两步验证未完成，请重试"
                     return
@@ -340,10 +396,6 @@ struct SettingsView: View {
         }
     }
 
-    /// 重启 SpringBoard（兼容 rootless / RootHide / rootful）。
-    /// 参考 RebootTools / TrollStore TSUtil.m 方案：
-    ///   通过 sysctl(KERN_PROC_ALL) 枚举所有进程，按 executable name 匹配 SpringBoard，
-    ///   直接 kill(pid, SIGTERM)。不依赖任何外部二进制（不需要 killall / sbreload / notify_post）。
     private func performRespring() {
         let result = BridgeClient.shared.respring()
         if result {

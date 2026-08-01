@@ -3,20 +3,16 @@
 //  RePro 后台定时续签守护进程
 //
 //  以 root 身份由 launchd 拉起（RunAtLoad + KeepAlive），运行在 App jbroot
-//  namespace 外。两个核心职责：
-//  1. NSTimer 定时触发续签 → notify_post 通知 App
-//  2. 直接写真实 TCC.db 授权通知权限（绕过 RootHide overlay）
+//  namespace 外。职责：定时检查是否需要续签，通过 notify_post + 共享文件
+//  通知 App 执行自动续签。所有日志写入 /tmp/reprorefresh_at.log。
 //
-//  RootHide namespace 会把 App 进程的 TCC.db 写操作重定向到 overlay，
-//  导致 UNUserNotificationCenter.requestAuthorization 存不到真实系统。
-//  本 daemon 在 namespace 外 → 写真实 /var/mobile/Library/TCC/TCC.db。
+//  App 未运行时 daemon 独立完成检查并记录；App 下次打开时读取请求文件执行续签。
 //
 
 #include <notify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <sqlite3.h>
 #import <Foundation/Foundation.h>
 
 // ─── 常量 ────────────────────────────────────────────────────────
@@ -24,24 +20,50 @@
 static NSString *const kIpcDir          = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath      = @"/var/mobile/Library/RePro/signingd-config.plist";
 static NSString *const kRequestPath     = @"/var/mobile/Library/RePro/auto-resign-request";
-
-static NSString *const kTCCDbPath       = @"/private/var/mobile/Library/TCC/TCC.db";
-static NSString *const kOurBundleID     = @"com.reprovision.repro";
-static NSString *const kTCCService      = @"kTCCServiceUserNotifications";
+static NSString *const kLogPath         = @"/tmp/reprorefresh_at.log";
 
 static const BOOL       kDefaultAutoResign    = YES;
-static const NSInteger  kDefaultCheckInterval = 6;
+static const NSInteger  kDefaultCheckMinutes  = 360; // 默认 6 小时 = 360 分钟
 static const NSInteger  kDefaultThreshold     = 2;
-static const NSTimeInterval kMinTimerInterval = 3600.0;
+static const NSTimeInterval kMinTimerInterval = 60.0; // 最少 1 分钟
 
-// ─── 日志 ────────────────────────────────────────────────────────
+// ─── 文件日志 ─────────────────────────────────────────────────────
+
+static FILE *gLogFile = NULL;
 
 static void SDLog(NSString *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
     va_end(args);
+
+    // 时间戳
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    char ts[64];
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_now);
+
+    // 写文件日志（/tmp/reprorefresh_at.log）
+    if (gLogFile) {
+        fprintf(gLogFile, "[%s] %s\n", ts, msg.UTF8String);
+        fflush(gLogFile);
+    }
+
+    // 同时 NSLog
     NSLog(@"[repro-signingd] %@", msg);
+}
+
+static BOOL SDOpenLog(void) {
+    gLogFile = fopen(kLogPath.UTF8String, "a");
+    if (!gLogFile) {
+        NSLog(@"[repro-signingd] 无法打开日志文件 %@: %s", kLogPath, strerror(errno));
+        return NO;
+    }
+    // 确保 mobile 用户也能读
+    chown(kLogPath.UTF8String, 501, 501);
+    chmod(kLogPath.UTF8String, 0644);
+    return YES;
 }
 
 // ─── IPC 目录 ────────────────────────────────────────────────────
@@ -64,102 +86,10 @@ static BOOL SDEnsureIpcDir(void) {
 static NSDictionary *SDLoadConfig(void) {
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     return cfg ?: @{
-        @"autoResign":     @(kDefaultAutoResign),
-        @"checkInterval":  @(kDefaultCheckInterval),
-        @"resignThreshold":@(kDefaultThreshold),
+        @"autoResign":       @(kDefaultAutoResign),
+        @"checkIntervalMin": @(kDefaultCheckMinutes),
+        @"resignThreshold":  @(kDefaultThreshold),
     };
-}
-
-// ─── TCC 权限写入（绕过 RootHide overlay）───────────────────────
-//
-// RootHide namespace 下 App 进程对 /var/mobile/Library/TCC/ 的写被重定向到
-// overlay → 真实系统认为权限未授权 → 每次启动都弹请求 + 通知发不出去。
-// daemon 在 namespace 外，写的是真实 TCC.db。
-//
-// TCC.db access 表结构（iOS 15+）:
-//   service TEXT        - 'kTCCServiceUserNotifications'
-//   client TEXT         - bundle ID
-//   client_type INTEGER - 0
-//   auth_value INTEGER  - 2 (allowed)
-//   auth_reason INTEGER - 1 (user set)
-//   auth_version INTEGER- 1
-//   indirect_object_identifier_type INTEGER - 0
-//   indirect_object_identifier TEXT - 'UNUserNotificationCenter'
-//   flags INTEGER       - 0
-//   last_modified INTEGER - timestamp
-//
-
-static void SDEnsureNotificationPermission(void) {
-    // 检查 TCC.db 是否存在
-    if (access(kTCCDbPath.UTF8String, W_OK) != 0) {
-        SDLog(@"TCC.db 不可写: %s", strerror(errno));
-        return;
-    }
-
-    sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(kTCCDbPath.UTF8String, &db,
-                              SQLITE_OPEN_READWRITE, NULL);
-    if (rc != SQLITE_OK) {
-        SDLog(@"打开 TCC.db 失败: %s", sqlite3_errmsg(db));
-        if (db) sqlite3_close(db);
-        return;
-    }
-
-    // 先查询是否已有记录，避免重复 INSERT
-    const char *checkSQL = "SELECT auth_value FROM access "
-                            "WHERE service=?1 AND client=?2 LIMIT 1;";
-    sqlite3_stmt *stmt = NULL;
-    BOOL alreadyHavePermission = NO;
-
-    if (sqlite3_prepare_v2(db, checkSQL, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, kTCCService.UTF8String, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, kOurBundleID.UTF8String, -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            int val = sqlite3_column_int(stmt, 0);
-            alreadyHavePermission = (val == 2); // 2 = allowed
-        }
-        sqlite3_finalize(stmt);
-    }
-
-    if (alreadyHavePermission) {
-        SDLog(@"TCC 通知权限已存在（auth_value=2），跳过");
-        sqlite3_close(db);
-        return;
-    }
-
-    // 先删后插（避免重复键）
-    const char *delSQL = "DELETE FROM access WHERE service=?1 AND client=?2;";
-    if (sqlite3_prepare_v2(db, delSQL, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, kTCCService.UTF8String, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, kOurBundleID.UTF8String, -1, SQLITE_TRANSIENT);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-    }
-
-    // 插入新记录
-    const char *insSQL =
-        "INSERT INTO access "
-        "(service, client, client_type, auth_value, auth_reason, auth_version, "
-        " indirect_object_identifier_type, indirect_object_identifier, flags, last_modified) "
-        "VALUES "
-        "(?1, ?2, 0, 2, 1, 1, 0, 'UNUserNotificationCenter', 0, "
-        " CAST(strftime('%%s','now') AS INTEGER));";
-
-    if (sqlite3_prepare_v2(db, insSQL, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, kTCCService.UTF8String, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, kOurBundleID.UTF8String, -1, SQLITE_TRANSIENT);
-        rc = sqlite3_step(stmt);
-        if (rc == SQLITE_DONE) {
-            SDLog(@"✅ 已写入 TCC 通知权限（bundle=%@）到真实 TCC.db", kOurBundleID);
-        } else {
-            SDLog(@"⚠ TCC INSERT 返回: %d (%s)", rc, sqlite3_errmsg(db));
-        }
-        sqlite3_finalize(stmt);
-    } else {
-        SDLog(@"⚠ TCC INSERT 准备失败: %s", sqlite3_errmsg(db));
-    }
-
-    sqlite3_close(db);
 }
 
 // ─── NSTimer ────────────────────────────────────────────────────
@@ -185,7 +115,7 @@ static void SDFireResignRequest(void) {
 
     NSInteger threshold = [cfg[@"resignThreshold"] integerValue];
     if (threshold < 1) threshold = kDefaultThreshold;
-    SDLog(@"已触发自动续签请求（阈值 %ld 天）", (long)threshold);
+    SDLog(@"已触发自动续签请求（阈值 %ld 天，时间戳 %@）", (long)threshold, ts);
 }
 
 static void SDScheduleTimer(NSTimeInterval interval) {
@@ -203,23 +133,22 @@ static void SDScheduleTimer(NSTimeInterval interval) {
 // ─── main ───────────────────────────────────────────────────────
 
 int main(void) {
-    SDLog(@"启动，pid=%d，uid=%d", getpid(), getuid());
+    SDOpenLog();
+    SDLog(@"══════════════════════════════════════");
+    SDLog(@"repro-signingd 启动，pid=%d uid=%d", getpid(), getuid());
     SDEnsureIpcDir();
 
-    // 核心：写真实 TCC.db 授权通知权限（RootHide 下这是唯一可靠路径）
-    SDLog(@"确保真实 TCC.db 中通知权限…");
-    SDEnsureNotificationPermission();
-
     NSDictionary *cfg = SDLoadConfig();
-    NSInteger intervalHours = [cfg[@"checkInterval"] integerValue];
-    if (intervalHours < 1) intervalHours = kDefaultCheckInterval;
-    NSTimeInterval interval = MAX((NSTimeInterval)intervalHours * 3600.0, kMinTimerInterval);
+    NSInteger intervalMin = [cfg[@"checkIntervalMin"] integerValue];
+    if (intervalMin < 1) intervalMin = kDefaultCheckMinutes;
+    NSTimeInterval interval = MAX((NSTimeInterval)intervalMin * 60.0, kMinTimerInterval);
 
-    SDLog(@"自动续签: %@, 间隔: %.0f 分钟, 阈值: %@ 天",
+    SDLog(@"自动续签: %@, 检查间隔: %ld 分钟, 阈值: %@ 天",
           [cfg[@"autoResign"] boolValue] ? @"开启" : @"关闭",
-          interval / 60.0,
+          (long)intervalMin,
           cfg[@"resignThreshold"] ?: @(kDefaultThreshold));
 
+    // 启动时立即检查一次
     if ([cfg[@"autoResign"] boolValue]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
@@ -233,11 +162,13 @@ int main(void) {
     int configToken;
     notify_register_dispatch("com.reprovision.signingd-config-updated", &configToken,
         dispatch_get_main_queue(), ^(int unused) {
-            SDLog(@"收到配置更新通知，重新加载");
+            SDLog(@"收到配置更新，重新加载");
             NSDictionary *c = SDLoadConfig();
-            NSInteger ih = [c[@"checkInterval"] integerValue];
-            if (ih < 1) ih = kDefaultCheckInterval;
-            NSTimeInterval inv = MAX((NSTimeInterval)ih * 3600.0, kMinTimerInterval);
+            NSInteger im = [c[@"checkIntervalMin"] integerValue];
+            if (im < 1) im = kDefaultCheckMinutes;
+            NSTimeInterval inv = MAX((NSTimeInterval)im * 60.0, kMinTimerInterval);
+            SDLog(@"新配置 — 自动续签: %@, 间隔: %ld 分钟",
+                  [c[@"autoResign"] boolValue] ? @"开启" : @"关闭", (long)im);
             SDScheduleTimer(inv);
         });
 
@@ -246,14 +177,6 @@ int main(void) {
     notify_register_dispatch("com.reprovision.signing-complete", &completeToken,
         dispatch_get_main_queue(), ^(int unused) {
             SDLog(@"App 续签完成");
-        });
-
-    // App 请求重新确保通知权限（设置页测试按钮触发）
-    int permToken;
-    notify_register_dispatch("com.reprovision.ensure-notification-permission", &permToken,
-        dispatch_get_main_queue(), ^(int unused) {
-            SDLog(@"收到确保通知权限请求");
-            SDEnsureNotificationPermission();
         });
 
     [[NSRunLoop mainRunLoop] run];

@@ -2,11 +2,8 @@
 //  RPVSigningdNotify.m
 //  RePro — 接收 repro-signingd LaunchDaemon 的 notify 信号
 //
-//  复刻原 ReProvision-Reborn 的 notify + XPC 通信模式：
-//  - Daemon 通过 NSTimer 定时检查，触发时 notify_post("com.reprovision.schedule-resign")
-//  - App 收到后通过共享文件确认是否有待处理的续签请求
-//  - App 在前台时直接触发续签，不在前台时等下次 didBecomeActive 检查
-//  - 续签完成后 App 直接发 UNUserNotificationCenter 通知 + notify daemon 完成
+//  repro-signingd 定时检查是否需要续签，触发时 notify_post("com.reprovision.schedule-resign")。
+//  本类用 notify_register_dispatch 监听该信号，转发给 AppDelegate 执行自动续签。
 //
 
 #include <notify.h>
@@ -32,26 +29,24 @@
 }
 
 - (void)setup {
-    // 监听 daemon 的续签触发信号
     notify_register_dispatch("com.reprovision.schedule-resign",
         &_token,
         dispatch_get_main_queue(),
         ^(int unused) {
-            NSLog(@"[RePro] 收到 repro-signingd 的 notify，检查自动续签");
+            NSLog(@"[RePro] 收到 repro-signingd 续签信号");
 
             // 读共享配置确认自动续签仍开启
             NSString *configPath = @"/var/mobile/Library/RePro/signingd-config.plist";
             NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:configPath];
-            BOOL autoResign = cfg ? [cfg[@"autoResign"] boolValue] : YES;
-            if (!autoResign) {
+            if (cfg && ![cfg[@"autoResign"] boolValue]) {
                 NSLog(@"[RePro] 自动续签已关闭，跳过");
                 return;
             }
 
-            // App 在前台时直接触发自动续签
+            // App 在前台时直接触发
             if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
                 NSLog(@"[RePro] App 在前台，直接触发自动续签");
-                // 写时间戳让 didBecomeActive 能读到
+
                 NSString *ts = [NSString stringWithFormat:@"%lld", (long long)time(NULL)];
                 [ts writeToFile:@"/var/mobile/Library/RePro/auto-resign-request"
                      atomically:YES
@@ -65,6 +60,8 @@
                                           object:nil];
                     });
             }
+            // App 不在前台 → notify 被忽略，但请求文件已由 daemon 写入，
+            // App 下次 didBecomeActive 时检查并执行续签。
         });
 }
 
@@ -74,10 +71,6 @@
 
 + (void)notifySigningComplete {
     notify_post("com.reprovision.signing-complete");
-}
-
-+ (void)notifyEnsureNotificationPermission {
-    notify_post("com.reprovision.ensure-notification-permission");
 }
 
 - (void)dealloc {
