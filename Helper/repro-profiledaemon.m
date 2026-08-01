@@ -30,6 +30,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <CommonCrypto/CommonDigest.h>
 #import <Foundation/Foundation.h>
 
@@ -119,9 +121,19 @@ static NSString *InstallProfile(NSData *profileData) {
     }
 
     // 3. Nudge the real profiled to reload so installd sees the new profile.
+    //    system() is unavailable on iOS; use posix_spawn to run killall -HUP.
     @try {
-        int rc = system("/usr/bin/killall -HUP profiled 2>/dev/null");
-        RPVProfileDaemonLog(@"killall -HUP profiled rc=%d", rc);
+        pid_t pid = 0;
+        const char *argv[] = { "/usr/bin/killall", "-HUP", "profiled", NULL };
+        int rc = posix_spawn(&pid, "/usr/bin/killall", NULL, NULL,
+                             (char *const *)argv, NULL);
+        if (rc == 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+            RPVProfileDaemonLog(@"killall -HUP profiled done (status %d)", status);
+        } else {
+            RPVProfileDaemonLog(@"posix_spawn killall failed: %d", rc);
+        }
     } @catch (NSException *e) {
         RPVProfileDaemonLog(@"SIGHUP threw: %@", e);
     }
