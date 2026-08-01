@@ -745,11 +745,17 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
     else
         [infoplist setObject:applicationId forKey:@"REBundleIdentifier"];
 
-    // Capture the bundle id WITHOUT the .teamId suffix — used as a fallback when
-    // EEProvisioning's entitlements dict lacks an explicit application-identifier.
+    // 剥离已有的 TeamID 后缀再追加，防止重复追加导致
+    // "com.x.YVW4KHS3Q4.YVW4KHS3Q4"（双后缀→entitlements 三 TeamID →与 profile 不匹配→0xe8008015）。
+    NSString *teamIdSuffix = [NSString stringWithFormat:@".%@", teamId];
+    while ([applicationId hasSuffix:teamIdSuffix]) {
+        applicationId = [applicationId substringToIndex:applicationId.length - teamIdSuffix.length];
+    }
+
+    // 取剥离后的原始 bundle ID 作为回退（line 895 fallback）。
     NSString *baseApplicationId = applicationId;
 
-    applicationId = [applicationId stringByAppendingFormat:@".%@", teamId];
+    applicationId = [applicationId stringByAppendingString:teamIdSuffix];
     [infoplist setObject:applicationId forKey:@"CFBundleIdentifier"];
 
     NSError *error = nil;
