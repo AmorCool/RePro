@@ -26,7 +26,7 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "RePro"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.0"
+MARKETING_VERSION = "1.1.32"
 CURRENT_PROJECT_VERSION = "48"
 DEPLOYMENT_TARGET = "15.0"
 BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
@@ -52,6 +52,14 @@ VENDOR_HEADER_DIRS = [
     "Vendor/ReProvision/libProvision/SSZipArchive/minizip",
     "Vendor/ReProvision/libProvision/Signing",
     "Vendor/ReProvision/libProvision/ldid",
+    # ChOma（opa334/ChOma，MIT 许可，commit 5eca76384237fec26c6bfb8e236ebe4a6b7982fa）。
+    # 源码直接 vendored 进仓库随 App 一起编译，不做 dlopen、也不在 CI 里单独 make：
+    #   1) MIT 许可允许静态链接，没有 GPL 问题；
+    #   2) src/*.c 只依赖 iOS SDK 自带头（CommonCrypto / CoreFoundation / mach-o），零外部依赖；
+    #   3) CI 少一个构建步骤就少一处失败点。
+    # 它唯一与现有代码同名的头是 Base64.h（libplist 里有个 base64.h），而 libplist 目录
+    # 本来就不在这个列表里，且两边都用引号包含（同目录优先），不会互相串。
+    "Vendor/ChOma",
     "App/Sources/Bridge",
 ]
 
@@ -138,6 +146,9 @@ def collect():
     bridge_hdr = ["App/Sources/Bridge/RPVBridge.h", BRIDGING_HEADER]
 
     vendor_all = walk("Vendor/ReProvision", exts={".m", ".mm", ".c", ".cpp", ".h", ".hpp"})
+    # ChOma 全量参与编译。官方 Makefile 就支持 TARGET=ios 全量构建，
+    # 裁剪反而容易漏符号导致链接失败，所以整包编进来。
+    vendor_all = sorted(vendor_all + walk("Vendor/ChOma", exts={".c", ".h"}))
     vendor_src = [p for p in vendor_all
                   if os.path.splitext(p)[1] in COMPILED_EXTS
                   and os.path.basename(p) not in EXCLUDED_SOURCES]

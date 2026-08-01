@@ -19,28 +19,38 @@
 #import <stdio.h>
 #import <sys/stat.h>
 #import "RPVDiagnostics.h"
+// ChOma（opa334/ChOma，MIT 许可）源码已 vendored 到 Vendor/ChOma，随 App 一起编译。
+// 这里只用它的只读能力：解析 FAT / Mach-O 架构切片、读代码签名里的
+// CodeDirectory（identifier / teamID）。绝不用它改写用户的二进制。
+#import "Fat.h"
+#import "MachO.h"
+#import "CSBlob.h"
+#import "CodeDirectory.h"
 #import "libMobileGestalt.h"
 
-#pragma mark - ARM64e thinning (fixes SIGBUS on arm64e devices after re-sign)
+#pragma mark - ARM64e：只读侦测，绝不改动用户二进制
 
-// After re-signing, arm64e binaries keep their pointer-authentication (PAC) /
-// chained-fixup pointers, which dyld cannot re-authenticate against the new
-// signature and therefore SIGBUS (KERN_PROTECTION_FAILURE) at launch on arm64e
-// hardware (e.g. iPhone 16,2 / iOS 17.2.1). Running the app as a plain arm64
-// slice sidesteps pointer authentication entirely and is universally compatible,
-// so we drop the arm64e slice (keeping arm64) before handing the bundle to zsign.
+// 历史教训（1.1.32 一次性清算）：
 //
-// arm64e is identified by the 0x80000000 capability bit in the Mach-O cpusubtype
-// (independent of the exact low subtype value), which is robust across SDKs.
+// 1) v1.1.10 起为了绕开 arm64e 的 PAC / chained-fixup 问题，代码会把 FAT 里的
+//    arm64e 切片整个丢掉、只保留 arm64。这个"瘦身"一直没删干净——v1.1.31 的
+//    真机日志里 libjailbreak.dylib / libchoma.dylib / libxpf.dylib /
+//    CydiaSubstrate 依然被 "thinned arm64e -> arm64"。后果很直接：Relaxin 的
+//    主二进制和 RelaxinEngine 是 arm64e-only，arm64e 进程根本加载不了被瘦成
+//    arm64 的依赖库。
+//
+// 2) v1.1.30 想改成"保留 arm64e 但就地 patch"，结果引入了一个更隐蔽的破坏源：
+//    回写时把偏移算成了 `sliceOffset + (lc - base)`，而 `lc - base` 本身已经
+//    包含 sliceOffset，于是 FAT 里 offset 非 0 的 arm64e 切片会被写到错误位置，
+//    直接把二进制写坏。这类损坏在 installd 眼里就是签名校验失败（0xe8008015）。
+//
+// 所以从 1.1.32 起立下硬规矩：**任何情况下都不修改用户的 Mach-O**——不瘦身、
+// 不改 segment 权限、不清 chained fixups、不写一个字节。原始二进制原样交给
+// zsign 重签就好；arm64e 在 RootHide 的 AMFI 补丁下本来就能加载。
+//
+// 这里保留的全部逻辑只有一件事：用 ChOma（opa334/ChOma，MIT）只读解析每个
+// Mach-O，把架构切片和签名信息打进 App 日志页，供定位问题使用。
 #define RZ_ARM64E_BIT 0x80000000u
-
-// FAT/Mach-O fat_arch fields are big-endian on disk; iOS/arm64 is little-endian.
-// Local swap avoids depending on <libkern/OSByteOrder.h>, which is not reliably
-// exposed under this target's C99 settings.
-static inline uint32_t RZSwapBigToHost32(uint32_t x) {
-    return ((x & 0x000000FFu) << 24) | ((x & 0x0000FF00u) << 8) |
-           ((x & 0x00FF0000u) >> 8)  | ((x & 0xFF000000u) >> 24);
-}
 
 static BOOL RZFileLooksLikeMachO(NSString *path) {
     FILE *f = fopen(path.UTF8String, "rb");
@@ -54,226 +64,152 @@ static BOOL RZFileLooksLikeMachO(NSString *path) {
             magic == MH_MAGIC || magic == MH_CIGAM);
 }
 
-// Per the LiveContainer ARM64e migration guide: arm64e-only binaries must NOT be
-// thinned to arm64. The re-signed arm64e app is still rejected by installd
-// (0xe8008015) because the arm64e binary's chained fixups / authenticated pointers
-// are incompatible with re-signing under a free provisioning profile. The correct
-// fix is to PATCH the arm64e slice in place — disable chained fixups and ensure
-// __TEXT is executable — while keeping it arm64e. RootHide's AMFI patches let
-// arm64e load at runtime.
-
-// Patch a single thin arm64e Mach-O slice (at base+off, length size) in place.
-static void RZPatchArm64eThinSlice(uint8_t *base, size_t off, size_t size) {
-    if (size < sizeof(struct mach_header_64)) return;
-    struct mach_header_64 *h = (struct mach_header_64 *)(base + off);
-    if (h->magic != MH_MAGIC_64) return;
-    if (!(h->cpusubtype & RZ_ARM64E_BIT)) return; // not arm64e
-    uint8_t *lc = (uint8_t *)h + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        if ((uintptr_t)(lc - base) + 8 > off + size) break;
-        struct load_command *cmd = (struct load_command *)lc;
-        if (cmd->cmdsize == 0) break;
-        if (cmd->cmd == 0x80000034) { // LC_DYLD_CHAINED_FIXUPS
-            if ((uintptr_t)(lc - base) + cmd->cmdsize <= off + size)
-                memset(lc + sizeof(struct load_command), 0,
-                       cmd->cmdsize - sizeof(struct load_command));
-        } else if (cmd->cmd == 0x19) { // LC_SEGMENT_64
-            struct segment_command_64 *seg = (struct segment_command_64 *)lc;
-            if (strcmp(seg->segname, "__TEXT") == 0) {
-                if (!(seg->initprot & 0x4)) seg->initprot |= 0x4; // VM_PROT_EXECUTE
-                if (!(seg->maxprot  & 0x4)) seg->maxprot  |= 0x4;
-            }
-        }
-        lc += cmd->cmdsize;
+// cputype/cpusubtype -> 可读架构名。mach_header 与 mach_header_64 的
+// cputype/cpusubtype 字段偏移一致，所以 ChOma 返回的 32 位头也能直接读。
+static NSString *RZArchName(int32_t cputype, int32_t cpusubtype) {
+    uint32_t sub = (uint32_t)cpusubtype & ~RZ_ARM64E_BIT;
+    if (cputype == CPU_TYPE_ARM64) {
+        if ((uint32_t)cpusubtype & RZ_ARM64E_BIT) return @"arm64e";
+        return (sub == CPU_SUBTYPE_ARM64E) ? @"arm64e" : @"arm64";
     }
+    if (cputype == CPU_TYPE_ARM) return @"armv7";
+    return [NSString stringWithFormat:@"cpu%d/%u", cputype, sub];
 }
 
-// Patch an arm64e Mach-O (thin or FAT) in place: disable chained fixups and ensure
-// the __TEXT segment is executable. Keeps the binary arm64e. Returns YES if rewritten.
-static BOOL RZPatchArm64eSliceInFile(NSString *path) {
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (data.length < sizeof(uint32_t)) return NO;
-    uint32_t magic = *(const uint32_t *)data.bytes;
-    NSMutableData *md = [data mutableCopy];
-    uint8_t *base = (uint8_t *)md.mutableBytes;
-    BOOL patched = NO;
-
-    if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
-        if (md.length < sizeof(struct fat_header)) return NO;
-        const struct fat_header *fh = (const struct fat_header *)base;
-        uint32_t nfat = RZSwapBigToHost32(fh->nfat_arch);
-        const struct fat_arch *archs = (const struct fat_arch *)(base + sizeof(struct fat_header));
-        for (uint32_t i = 0; i < nfat; i++) {
-            uint32_t ct = RZSwapBigToHost32(archs[i].cputype);
-            uint32_t st = RZSwapBigToHost32(archs[i].cpusubtype);
-            if (ct == CPU_TYPE_ARM64 && (st & RZ_ARM64E_BIT)) {
-                int64_t off = RZSwapBigToHost32(archs[i].offset);
-                int64_t sz  = RZSwapBigToHost32(archs[i].size);
-                if (off >= 0 && sz > 0 && (int64_t)md.length >= off + sz) {
-                    RZPatchArm64eThinSlice(base, (size_t)off, (size_t)sz);
-                    patched = YES;
-                }
-            }
+// 用 ChOma 只读列出一个 Mach-O 的每个切片指纹，形如
+//   "arm64e(cs=0x80000002,PAC-versioned,unsigned)+arm64(cs=0x00000000,adhoc)"
+// 解析不了就返回 nil（不是我们认识的 Mach-O，直接放过）。
+//
+// 为什么要打这么细：离线拆 Relaxin-v0.3.8.ipa 得到的事实是——主二进制
+// Relaxin 与 Frameworks/RelaxinEngine.framework/RelaxinEngine 都是
+// **arm64e-only 且完全没有 LC_CODE_SIGNATURE**（出厂就没签名），
+// cpusubtype = 0x80000002（arm64e 且置了 CPU_SUBTYPE_PTRAUTH_ABI 位）；
+// 而根目录那几个 dylib 是 arm64+arm64e 的 FAT、带 ad-hoc 签名（有
+// identifier 无 teamID）。这些指纹决定了 zsign 要不要新建签名槽、
+// installd 会不会因为架构/签名状态拒绝，必须在日志里一眼可见。
+static NSString *RZDescribeArchs(NSString *path) {
+    Fat *fat = fat_init_from_path(path.UTF8String);
+    if (!fat) return nil;
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    fat_enumerate_slices(fat, ^(MachO *macho, bool *stop) {
+        struct mach_header *h = macho_get_mach_header(macho);
+        if (!h) return;
+        uint32_t cs = (uint32_t)h->cpusubtype;
+        NSMutableString *desc = [NSMutableString stringWithFormat:@"%@(cs=0x%08x",
+                                 RZArchName(h->cputype, h->cpusubtype), cs];
+        // arm64e 的 0x80000000 位是 CPU_SUBTYPE_PTRAUTH_ABI（带版本的 PAC ABI）。
+        if (h->cputype == CPU_TYPE_ARM64 && (cs & RZ_ARM64E_BIT)) {
+            [desc appendFormat:@",PAC-versioned-v%u", (cs >> 24) & 0x3f];
         }
-    } else if (magic == MH_MAGIC_64) {
-        const struct mach_header_64 *h = (const struct mach_header_64 *)base;
-        if ((h->cpusubtype & RZ_ARM64E_BIT)) {
-            RZPatchArm64eThinSlice(base, 0, md.length);
-            patched = YES;
-        }
-    }
-    if (patched) {
-        NSError *werr = nil;
-        if ([md writeToFile:path options:NSDataWritingAtomic error:&werr] && !werr) {
-            chmod(path.UTF8String, 0755);
-            RPVDiagnostic(RPVDiagInfo, @"sign", @"patched arm64e (kept arm64e): %@", [path lastPathComponent]);
-            return YES;
-        } else {
-            RPVDiagnostic(RPVDiagWarning, @"sign", @"arm64e patch of %@ failed: %@", [path lastPathComponent], werr.localizedDescription);
-        }
-    }
-    return NO;
+        // 出厂有没有签名槽，决定 zsign 是否需要 ReallocCodeSignSpace 新建
+        // LC_CODE_SIGNATURE —— 这一步失败是"重签后仍未签名"的典型原因。
+        CS_SuperBlob *sb = macho_read_code_signature(macho);
+        [desc appendString:sb ? @",presigned" : @",NO-SIGSLOT"];
+        if (sb) free(sb);
+        [desc appendString:@")"];
+        [names addObject:desc];
+    });
+    fat_free(fat);
+    return names.count ? [names componentsJoinedByString:@"+"] : nil;
 }
 
-// For a single Mach-O file:
-//  - if it is a FAT archive carrying a plain arm64 slice, thin to that arm64 slice
-//    (ordinary sandboxed apps must not run as arm64e without an Apple signature);
-//  - if it is arm64e-only (thin, or FAT with only arm64e), patch the arm64e slice in
-//    place and KEEP arm64e (per the LiveContainer ARM64e migration guide).
-// Returns YES if the file was rewritten.
-static BOOL RZThinArm64eSliceInFile(NSString *path) {
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (data.length < sizeof(uint32_t)) return NO;
-    uint32_t magic = *(const uint32_t *)data.bytes;
-
-    if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
-        // FAT archive (fields are big-endian on disk).
-        if (data.length < sizeof(struct fat_header)) return NO;
-        const struct fat_header *fh = (const struct fat_header *)data.bytes;
-        uint32_t nfat = RZSwapBigToHost32(fh->nfat_arch);
-        if (nfat == 0 || data.length < sizeof(struct fat_header) + (size_t)nfat * sizeof(struct fat_arch)) return NO;
-        const struct fat_arch *archs = (const struct fat_arch *)((const char *)data.bytes + sizeof(struct fat_header));
-
-        int64_t arm64Off = -1, arm64Size = -1;
-        BOOL sawArm64e = NO;
-        for (uint32_t i = 0; i < nfat; i++) {
-            uint32_t ct = RZSwapBigToHost32(archs[i].cputype);
-            uint32_t st = RZSwapBigToHost32(archs[i].cpusubtype);
-            if (ct != CPU_TYPE_ARM64) continue;
-            if (st & RZ_ARM64E_BIT) { sawArm64e = YES; continue; }  // arm64e slice
-            if (arm64Off < 0) {                             // first plain arm64 slice -> keep
-                arm64Off = RZSwapBigToHost32(archs[i].offset);
-                arm64Size = RZSwapBigToHost32(archs[i].size);
-            }
-        }
-        if (arm64Off >= 0 && arm64Size > 0 && (int64_t)data.length >= arm64Off + arm64Size) {
-            // FAT with a plain arm64 slice -> thin to arm64 (drop arm64e).
-            NSData *thin = [data subdataWithRange:NSMakeRange((NSUInteger)arm64Off, (NSUInteger)arm64Size)];
-            const struct mach_header_64 *h = (const struct mach_header_64 *)thin.bytes;
-            if (thin.length == (NSUInteger)arm64Size && h->magic == MH_MAGIC_64 &&
-                (h->cputype == CPU_TYPE_ARM64)) {
-                NSError *werr = nil;
-                if ([thin writeToFile:path options:NSDataWritingAtomic error:&werr] && !werr) {
-                    chmod(path.UTF8String, 0755);
-                    RPVDiagnostic(RPVDiagInfo, @"sign", @"thinned arm64e -> arm64: %@", [path lastPathComponent]);
-                    return YES;
-                }
-            }
-        }
-        // No plain arm64 slice (arm64e-only FAT) -> patch in place, keep arm64e.
-        if (sawArm64e) {
-            return RZPatchArm64eSliceInFile(path);
-        }
-        return NO;
+// 把 Info.plist 里对安装校验有决定性影响的键打进日志。
+// Relaxin 的 Info.plist 里 UIRequiredDeviceCapabilities = ["arm64e"]，
+// 而 Apple 官方允许的 capability 取值里并没有 "arm64e"（只有 arm64 / armv7
+// 这类）。这类非法值是否被 installd 接受，只能靠真机日志确认，所以先如实
+// 打印出来，不擅自改用户 App 的 Info.plist。
+static void RZLogInstallCriticalInfoPlistKeys(NSString *bundlePath) {
+    NSString *plistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    if (!info) return;
+    id caps = info[@"UIRequiredDeviceCapabilities"];
+    if (caps) {
+        BOOL suspicious = [caps isKindOfClass:[NSArray class]] && [(NSArray *)caps containsObject:@"arm64e"];
+        RPVDiagnostic(suspicious ? RPVDiagWarning : RPVDiagInfo, @"sign",
+                      @"Info.plist UIRequiredDeviceCapabilities = %@%@", caps,
+                      suspicious ? @"（含 arm64e —— 非 Apple 标准取值，留意 installd 是否因此拒绝）" : @"");
     }
-
-    if (magic == MH_MAGIC_64) {
-        const struct mach_header_64 *h = (const struct mach_header_64 *)data.bytes;
-        if ((h->cpusubtype & RZ_ARM64E_BIT)) {
-            // arm64e-only single slice -> patch in place, keep arm64e.
-            return RZPatchArm64eSliceInFile(path);
-        }
-        return NO;
-    }
-    return NO;
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"Info.plist MinimumOSVersion=%@ CFBundleIdentifier=%@",
+                  info[@"MinimumOSVersion"] ?: @"(none)", info[@"CFBundleIdentifier"] ?: @"(none)");
 }
 
-static void RZThinArm64eInBundle(NSString *bundlePath) {
+// 用 ChOma 只读解析代码签名，返回每个切片的 "arch:identifier/teamID" 描述。
+// 这比原来那句 "signed=yes" 有用得多：Relaxin 的 dylib 出厂就带作者签名，
+// 光看"有没有签名"永远分不清 zsign 到底重签成功没有——只有 identifier 和
+// teamID 变成我们这次用的 Apple ID 团队，才说明真的重签上了。
+static NSString *RZDescribeSignature(NSString *path) {
+    Fat *fat = fat_init_from_path(path.UTF8String);
+    if (!fat) return nil;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    fat_enumerate_slices(fat, ^(MachO *macho, bool *stop) {
+        struct mach_header *h = macho_get_mach_header(macho);
+        NSString *arch = h ? RZArchName(h->cputype, h->cpusubtype) : @"?";
+        CS_SuperBlob *sb = macho_read_code_signature(macho);
+        if (!sb) {
+            [parts addObject:[NSString stringWithFormat:@"%@:UNSIGNED", arch]];
+            return;
+        }
+        NSString *ident = nil, *team = nil;
+        CS_DecodedSuperBlob *dec = csd_superblob_decode(sb);
+        if (dec) {
+            CS_DecodedBlob *cd = csd_superblob_find_blob(dec, CSSLOT_CODEDIRECTORY, NULL);
+            if (cd) {
+                char *i = csd_code_directory_copy_identifier(cd, NULL);
+                char *t = csd_code_directory_copy_team_id(cd, NULL);
+                if (i) { ident = [NSString stringWithUTF8String:i]; free(i); }
+                if (t) { team  = [NSString stringWithUTF8String:t]; free(t); }
+            }
+            csd_superblob_free(dec);   // 先放解码结构，它引用的是 sb 里的数据
+        }
+        free(sb);
+        [parts addObject:[NSString stringWithFormat:@"%@:%@/%@", arch,
+                          ident.length ? ident : @"(no-id)",
+                          team.length ? team : @"(no-team)"]];
+    });
+    fat_free(fat);
+    return parts.count ? [parts componentsJoinedByString:@" "] : nil;
+}
+
+// 重签前把 bundle 里每个 Mach-O 的架构打进日志。纯只读，不改任何文件。
+// 目的是让"arm64e 有没有被保住"这件事在日志里一眼可见，杜绝再出现
+// 悄悄瘦身却没人发现的情况。
+static void RZInspectArchsInBundle(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
         includingPropertiesForKeys:@[NSURLIsDirectoryKey]
         options:NSDirectoryEnumerationSkipsHiddenFiles
         errorHandler:nil];
+    int count = 0;
     for (NSURL *url in enumerator) {
         NSNumber *isDir = nil;
         [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
         if (isDir.boolValue) continue;
         NSString *path = url.path;
-        if (RZFileLooksLikeMachO(path)) {
-            RZThinArm64eSliceInFile(path);
+        if (!RZFileLooksLikeMachO(path)) continue;
+        NSString *archs = RZDescribeArchs(path);
+        if (archs) {
+            RPVDiagnostic(RPVDiagInfo, @"sign", @"重签前指纹 %@ : %@", [path lastPathComponent], archs);
+            count++;
         }
     }
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"共 %d 个 Mach-O，架构一律原样保留（不瘦身、不 patch、不写一个字节）", count);
+    RZLogInstallCriticalInfoPlistKeys(bundlePath);
 }
 
-// Returns YES if the Mach-O slice at `off` within `data` contains an
-// LC_CODE_SIGNATURE load command.
-static BOOL RZSliceHasSig(NSData *data, uint32_t off) {
-    if (data.length < off + 32) return NO;
-    const char *b = data.bytes;
-    uint32_t magic = *(const uint32_t *)(b + off);
-    BOOL le = (magic == 0xfeedfacf || magic == 0xfeedface);
-    uint32_t ncmds = le ? *(const uint32_t *)(b + off + 16)
-                        : CFSwapInt32BigToHost(*(const uint32_t *)(b + off + 16));
-    uint32_t co = off + 32;
-    for (uint32_t i = 0; i < ncmds; i++) {
-        if (data.length < co + 8) break;
-        uint32_t cmd, cmdsize;
-        if (le) { cmd = *(const uint32_t *)(b + co); cmdsize = *(const uint32_t *)(b + co + 4); }
-        else   { cmd = CFSwapInt32BigToHost(*(const uint32_t *)(b + co)); cmdsize = CFSwapInt32BigToHost(*(const uint32_t *)(b + co + 4)); }
-        if (cmd == 0x1d) return YES; // LC_CODE_SIGNATURE
-        if (cmdsize == 0) break;
-        co += cmdsize;
-    }
-    return NO;
-}
-
-// Returns YES if ANY Mach-O slice in the file at `path` is code-signed.
-static BOOL RZMachOHasCodeSignature(NSString *path) {
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (data.length < 4) return NO;
-    uint32_t magic = *(const uint32_t *)data.bytes;
-    if (magic == 0xcafebabe) { // FAT (big-endian on disk)
-        if (data.length < 8) return NO;
-        uint32_t nfat = CFSwapInt32BigToHost(*(const uint32_t *)(data.bytes + 4));
-        for (uint32_t i = 0; i < nfat; i++) {
-            if (data.length < 8 + i * 20 + 20) break;
-            uint32_t off = CFSwapInt32BigToHost(*(const uint32_t *)(data.bytes + 8 + i * 20 + 8));
-            if (RZSliceHasSig(data, off)) return YES;
-        }
-        return NO;
-    }
-    if (magic == 0xfeedfacf || magic == 0xfeedface) {
-        return RZSliceHasSig(data, 0);
-    }
-    return NO;
-}
-
-// Jailbreak / roothide apps (e.g. Relaxin) sometimes ship a .framework whose
-// only contents are a dylib + a placeholder file, with NO Info.plist. A
-// framework bundle without Info.plist is malformed; installd's nested-bundle
-// validation rejects the whole app at install time (0xe8008015). This walks the
-// bundle and writes a minimal valid Info.plist into any .framework that lacks
-// one, so installd accepts it as a proper nested framework.
+// 越狱 / roothide App（如 Relaxin）有时会带一个只有 dylib、没有 Info.plist 的
+// .framework。没有 Info.plist，zsign 不会把它识别为嵌套 bundle，里面的 Mach-O
+// 就会带着原作者的旧签名一路进到 installd。这里给缺失的补一个最小 Info.plist，
+// 并清掉历史版本误注入的 embedded.mobileprovision。
 static void RZFixFrameworkBundles(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
-    // The app's own provisioning profile (written by _provisionBundleAtPath just
-    // before this runs) is copied into every nested framework so each framework
-    // carries a valid embedded.mobileprovision. installd verifies nested bundles
-    // independently and rejects a framework that has no profile with
-    // 0xe8008015 — this is the most common cause of jailbreak-app re-sign
-    // failures (Relaxin's CydiaSubstrate.framework, etc.).
-    NSString *mainProfile = [bundlePath stringByAppendingPathComponent:@"embedded.mobileprovision"];
-    NSData *mainProfileData = [fm fileExistsAtPath:mainProfile] ? [NSData dataWithContentsOfFile:mainProfile] : nil;
+
+    // 1.1.28 曾往每个嵌套 framework 里塞一份主 App 的 embedded.mobileprovision，
+    // 理由是"installd 会独立校验嵌套 bundle"。这个理由是错的：按 Apple 的规则，
+    // 只有 .app 和 .appex 这种可执行 bundle 才允许带描述文件，framework 带
+    // embedded.mobileprovision 反而会被当成一个独立的可执行 bundle 去校验，
+    // 而它并没有配套的 application-identifier —— 这本身就足以触发 0xe8008015。
+    // 1.1.32 起彻底移除这段注入；同时把历史遗留的注入文件清掉，避免用户上次
+    // 重签留下的 embedded.mobileprovision 继续在 framework 里作祟。
 
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
                                           includingPropertiesForKeys:@[NSURLIsDirectoryKey]
@@ -337,14 +273,16 @@ static void RZFixFrameworkBundles(NSString *bundlePath) {
             }
         }
 
-        // 2) Inject the app's profile into the framework so it has a valid
-        //    embedded.mobileprovision (installd requires one for nested bundles).
+        // 2) framework 里不该有描述文件。清掉历史版本注入的那份，避免它被
+        //    installd 当成独立可执行 bundle 校验。
         NSString *fwProfile = [path stringByAppendingPathComponent:@"embedded.mobileprovision"];
-        if (mainProfileData.length && ![fm fileExistsAtPath:fwProfile]) {
-            if ([mainProfileData writeToFile:fwProfile atomically:YES]) {
-                RPVDiagnostic(RPVDiagInfo, @"sign", @"injected app profile into framework: %@", [path lastPathComponent]);
+        if ([fm fileExistsAtPath:fwProfile]) {
+            NSError *rmErr = nil;
+            if ([fm removeItemAtPath:fwProfile error:&rmErr]) {
+                RPVDiagnostic(RPVDiagInfo, @"sign", @"已移除 framework 内非法的 embedded.mobileprovision: %@", [path lastPathComponent]);
             } else {
-                RPVDiagnostic(RPVDiagError, @"sign", @"WARN: could not inject profile into framework %@", [path lastPathComponent]);
+                RPVDiagnostic(RPVDiagWarning, @"sign", @"framework %@ 内的 embedded.mobileprovision 删除失败: %@",
+                              [path lastPathComponent], rmErr.localizedDescription);
             }
         }
     }
@@ -354,32 +292,47 @@ static void RZFixFrameworkBundles(NSString *bundlePath) {
 // signature. If zsign silently failed to sign an arm64e-only / unusual binary,
 // installd rejects the whole app with 0xe8008015 — this surfaces which binary
 // (if any) was left unsigned.
-static void RZVerifyBundleSigned(NSString *bundlePath) {
+// expectedTeamID 是本次重签用的 Apple ID 团队。凡是 CodeDirectory 里 teamID
+// 对不上的，就说明 zsign 压根没碰这个二进制（它还带着原作者的签名），
+// 这类"漏签"正是 installd 报 0xe8008015 的典型原因。
+static void RZVerifyBundleSigned(NSString *bundlePath, NSString *expectedTeamID) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:bundlePath]
                                           includingPropertiesForKeys:@[NSURLIsDirectoryKey]
                                                              options:0
                                                         errorHandler:nil];
-    int unsignedCount = 0;
+    int unsignedCount = 0, staleCount = 0, okCount = 0;
     for (NSURL *url in enumerator) {
         NSNumber *isDir = nil;
         [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
         if (isDir.boolValue) continue;
         NSString *path = url.path;
-        FILE *f = fopen(path.UTF8String, "rb");
-        uint32_t m = 0; size_t rn = f ? fread(&m, 1, 4, f) : 0;
-        if (f) fclose(f);
-        if (rn != 4) continue;
-        if (!(m == 0xfeedfacf || m == 0xcafebabe || m == 0xfeedface || m == 0xcffaedfe)) continue;
-        if (!RZMachOHasCodeSignature(path)) {
-            RPVDiagnostic(RPVDiagError, @"sign", @"UNSIGNED Mach-O after zsign: %@", path);
+        if (!RZFileLooksLikeMachO(path)) continue;
+
+        NSString *desc = RZDescribeSignature(path);
+        if (!desc) continue;   // ChOma 解析不了，跳过
+        NSString *name = [path lastPathComponent];
+
+        if ([desc containsString:@"UNSIGNED"]) {
+            RPVDiagnostic(RPVDiagError, @"sign", @"zsign 后仍未签名: %@ [%@]", name, desc);
             unsignedCount++;
+        } else if (expectedTeamID.length && ![desc containsString:expectedTeamID]) {
+            // teamID 不是本次用的团队 —— 还是旧签名，zsign 没重签它。
+            RPVDiagnostic(RPVDiagError, @"sign", @"仍是旧签名（teamID 非 %@）: %@ [%@]",
+                          expectedTeamID, name, desc);
+            staleCount++;
+        } else {
+            RPVDiagnostic(RPVDiagDebug, @"sign", @"重签成功 %@ [%@]", name, desc);
+            okCount++;
         }
     }
-    if (unsignedCount == 0) {
-        RPVDiagnostic(RPVDiagInfo, @"sign", @"all Mach-O binaries are code-signed after zsign");
+    if (unsignedCount == 0 && staleCount == 0) {
+        RPVDiagnostic(RPVDiagInfo, @"sign", @"全部 %d 个 Mach-O 都已用本次证书重签（teamID=%@）",
+                      okCount, expectedTeamID.length ? expectedTeamID : @"?");
     } else {
-        RPVDiagnostic(RPVDiagError, @"sign", @"%d unsigned Mach-O binaries remain (likely cause of 0xe8008015)", unsignedCount);
+        RPVDiagnostic(RPVDiagError, @"sign",
+                      @"重签不完整：%d 个未签名 + %d 个仍是旧签名（%d 个正常）——这就是 0xe8008015 的直接原因",
+                      unsignedCount, staleCount, okCount);
     }
 }
 
@@ -487,12 +440,10 @@ static void RZDumpProfileMatch(NSString *bundlePath, NSString *entitlementsPath)
     RPVDiagnostic(RPVDiagInfo, @"sign", @"=== end PROFILE MATCH DIAGNOSTICS ===");
 }
 
-// After zsign, report the on-disk code-signing artifacts so a failing re-sign
-// can be debugged from the app log: whether the main app (and each nested
-// framework, and each loose dylib at the app root) carries an
-// embedded.mobileprovision. The app's profile embedded into a nested bundle is
-// what installd requires to accept it — if any bundle lacks it, that's the
-// smoking gun for 0xe8008015.
+// zsign 之后报告磁盘上的描述文件布局：主 App 必须有 embedded.mobileprovision，
+// 嵌套 framework 必须**没有**（1.1.32 修正——framework 带描述文件是非法的，
+// 会被 installd 当成独立可执行 bundle 校验从而失败）。每个 Mach-O 的签名细节
+// 由 RZVerifyBundleSigned 用 ChOma 单独打印，这里不再重复。
 static void RZLogProfileDiagnostics(NSString *bundlePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *appName = [bundlePath lastPathComponent].stringByDeletingPathExtension;
@@ -507,27 +458,16 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
                                                          options:0
                                                     errorHandler:nil];
     for (NSURL *url in enumerator) {
-        NSNumber *isDir = nil;
-        [url getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
         NSString *p = url.path;
         if ([p hasSuffix:@".framework"]) {
             NSString *ip = [p stringByAppendingPathComponent:@"Info.plist"];
             NSString *prov2 = [p stringByAppendingPathComponent:@"embedded.mobileprovision"];
-            RPVDiagnostic(RPVDiagInfo, @"sign", @"framework %@ : Info.plist=%@ embedded.mobileprovision=%@",
+            BOOL hasProv = [fm fileExistsAtPath:prov2];
+            RPVDiagnostic(hasProv ? RPVDiagError : RPVDiagInfo, @"sign",
+                          @"framework %@ : Info.plist=%@ embedded.mobileprovision=%@",
                           [p lastPathComponent],
                           [fm fileExistsAtPath:ip] ? @"yes" : @"NO",
-                          [fm fileExistsAtPath:prov2] ? @"yes" : @"NO");
-        } else if (!isDir.boolValue) {
-            // A loose Mach-O at the app root (e.g. libjailbreak.dylib) — report
-            // whether it has its own profile (it normally shouldn't; it's covered
-            // by the app's signature, but report presence for completeness).
-            FILE *f = fopen(p.UTF8String, "rb");
-            uint32_t m = 0; size_t rn = f ? fread(&m, 1, 4, f) : 0;
-            if (f) fclose(f);
-            if (rn == 4 && (m == 0xfeedfacf || m == 0xcafebabe || m == 0xfeedface || m == 0xcffaedfe)) {
-                RPVDiagnostic(RPVDiagDebug, @"sign", @"loose Mach-O at root: %@ (signed=%@)",
-                              [p lastPathComponent], RZMachOHasCodeSignature(p) ? @"yes" : @"NO");
-            }
+                          hasProv ? @"yes（非法，应为 no）" : @"no（正确）");
         }
     }
     RPVDiagnostic(RPVDiagInfo, @"sign", @"=== end diagnostics ===");
@@ -634,14 +574,15 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         // entitlements, which is what fixes the iOS 17 re-sign launch crash.
         NSString *rootEntitlementsPath = context[@"entitlementsPath"];
 
-        // ARM64e fix (v1.1.10): drop the arm64e slice so dyld doesn't SIGBUS at
-        // launch. Must run after provisioning (which reads the original binary for
-        // entitlements) but before zsign signs the bundle.
-        RZThinArm64eInBundle(path);
+        // 只读侦测：把每个 Mach-O 的架构打进日志，确认 arm64e 被原样保留。
+        // 1.1.32 起这里不再对二进制做任何写操作（不瘦身、不 patch）。
+        RZInspectArchsInBundle(path);
 
-        // Relaxin / roothide jailbreak apps sometimes ship a .framework with NO
-        // Info.plist (e.g. CydiaSubstrate.framework). installd rejects such a
-        // malformed nested bundle with 0xe8008015, so fix it before zsign.
+        // Relaxin / roothide 这类越狱 App 会带一个没有 Info.plist 的 .framework
+        // （CydiaSubstrate.framework 其实是 ElleKit 的壳）。没有 Info.plist 的
+        // 目录 zsign 不会当作嵌套 bundle 去签，里面的 Mach-O 就会带着旧签名进
+        // installd。这里只补一个最小 Info.plist，不再往 framework 里塞
+        // embedded.mobileprovision（见 RZFixFrameworkBundles 里的说明）。
         RZFixFrameworkBundles(path);
 
         NSError *signError = nil;
@@ -654,9 +595,14 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
                                                                    useSHA256:YES
                                                                        error:&signError];
 
-        // Diagnostics for jailbreak-app re-sign failures (Relaxin etc.): surface
-        // any Mach-O zsign left unsigned, and dump the profile/bundle-id match.
-        RZVerifyBundleSigned(path);
+        // 越狱 App（Relaxin 等）重签失败的诊断。先从主 App 的描述文件里取出本次
+        // 使用的 TeamID，再逐个核对每个 Mach-O 的 CodeDirectory —— 只有 teamID
+        // 换成了本次的团队，才算真的重签上了。
+        NSDictionary *mainProfilePlist =
+            RZExtractProfilePlist([path stringByAppendingPathComponent:@"embedded.mobileprovision"]);
+        NSString *expectedTeamID = [mainProfilePlist[@"TeamIdentifier"] firstObject];
+
+        RZVerifyBundleSigned(path, expectedTeamID);
         RZLogProfileDiagnostics(path);
         RZDumpProfileMatch(path, rootEntitlementsPath);
 

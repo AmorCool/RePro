@@ -6,6 +6,7 @@
 //
 
 #import "RZSignRunner.h"
+#import "RPVDiagnostics.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -124,6 +125,10 @@
     }
     [args addObject:inputPath];
 
+    // 把真实命令行记进日志。参数传错（比如 -m 少给了某个 bundle 的描述文件、
+    // -e 指到了不存在的文件）以前只能靠猜，现在直接可见。
+    RPVDiagnostic(RPVDiagInfo, @"zsign", @"执行: %@ %@", zsign, [args componentsJoinedByString:@" "]);
+
     // Convert to a C string array for posix_spawn.
     NSUInteger count = args.count;
     const char **argv = (const char **)calloc(count + 2, sizeof(char *));
@@ -178,6 +183,24 @@
     [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
 
     NSLog(@"*** [ReProvision] zsign exit=%d\n%@", result.exitCode, log ?: @"(no output)");
+
+    // 关键：iOS 上 NSLog 不写 stderr，所以它永远进不了 App 的「日志」页。
+    // 从 1.1.32 起把 zsign 的完整输出逐行送进 RPVDiagnostic —— 之前连续好几个
+    // 版本都在猜"zsign 到底签了什么、跳过了哪个 bundle"，就是因为这段输出用户
+    // 根本看不到。zsign 会打印它识别到的每一个 bundle、匹配到的描述文件，
+    // 以及跳过的原因，是定位 0xe8008015 最直接的证据。
+    RPVDiagnostic(result.success ? RPVDiagInfo : RPVDiagError, @"zsign",
+                  @"===== zsign 输出开始（退出码 %d）=====", result.exitCode);
+    if (log.length == 0) {
+        RPVDiagnostic(RPVDiagWarning, @"zsign", @"(zsign 没有任何输出)");
+    } else {
+        for (NSString *line in [log componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+            NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (trimmed.length == 0) continue;
+            RPVDiagnostic(RPVDiagInfo, @"zsign", @"%@", trimmed);
+        }
+    }
+    RPVDiagnostic(RPVDiagInfo, @"zsign", @"===== zsign 输出结束 =====");
 
     if (!result.success && error) {
         NSString *detail = (log.length > 0)
