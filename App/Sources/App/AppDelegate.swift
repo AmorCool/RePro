@@ -8,7 +8,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private static let lastAutoResignKey = "lastAutoResignTimestamp"
     private static let ipcDir = "/var/mobile/Library/RePro"
-    private static let daemonLogPath = "/tmp/reprorefresh_at.log"
+
+    /// 动态推导 jbroot 下的日志路径（与 daemon 一致）
+    private static var daemonLogPath: String {
+        // 从 App bundle 路径推导 jbroot（与 daemon 同理）
+        let bundlePath = Bundle.main.bundlePath // <jbroot>/Applications/RePro.app
+        if let r = bundlePath.range(of: "/Applications/", options: .backwards) {
+            let jbroot = String(bundlePath[..<r.lowerBound])
+            return "\(jbroot)/var/log/reprorefresh_at.log"
+        }
+        return "/var/jb/var/log/reprorefresh_at.log"
+    }
 
     // MARK: - UIApplicationDelegate
 

@@ -1,20 +1,17 @@
 //
 //  repro-signingd.m
-//  RePro 后台定时续签守护进程
+//  RePro 后台定时续签守护进程（全程静默，不依赖拉 App）
 //
 //  以 root 身份由 launchd 拉起（RunAtLoad + KeepAlive），运行在 App jbroot
-//  namespace 外。职责：定时检查并触发续签。
-//  - 到达续签时间：写触发标记 + notify_post 通知 App
-//  - App 运行中 → 立即执行续签，写结果到 /tmp/reprorefresh_at.log
-//  - App 未运行 → 标记保留，下次 App 打开时自动处理
-//  - 所有日志写入 /tmp/reprorefresh_at.log（daemon + App 共同维护）
+//  namespace 外。职责：定时检查 → 到达续签时间 → 写触发标记 + 通知 App。
+//  App 运行中立即执行续签，未运行时下次打开时处理。全部日志写入
+//  <jbroot>/var/log/reprorefresh_at.log。
 //
 
 #include <notify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <dlfcn.h>
 #import <Foundation/Foundation.h>
 
 // ─── 常量 ────────────────────────────────────────────────────────
@@ -22,13 +19,36 @@
 static NSString *const kIpcDir          = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath      = @"/var/mobile/Library/RePro/signingd-config.plist";
 static NSString *const kTriggerPath     = @"/var/mobile/Library/RePro/auto-resign-trigger";
-static NSString *const kLogPath         = @"/tmp/reprorefresh_at.log";
-static NSString *const kAppBundleID     = @"com.reprovision.repro";
 
 static const BOOL       kDefaultAutoResign    = YES;
 static const NSInteger  kDefaultCheckMinutes  = 360;
 static const NSInteger  kDefaultThreshold     = 2;
 static const NSTimeInterval kMinTimerInterval = 60.0;
+
+// ─── 日志路径（动态：从 daemon 自身路径推导 jbroot）─────────────
+
+static NSString *gLogPath = nil;
+
+static NSString *SDResolveJbroot(void) {
+    // 从 argv[0] 推导（launchd 会传绝对路径）
+    NSString *argv0 = [[[NSProcessInfo processInfo] arguments] firstObject];
+    if (argv0.length > 0 && [argv0 containsString:@"/usr/libexec/"]) {
+        NSRange r = [argv0 rangeOfString:@"/usr/libexec/" options:NSBackwardsSearch];
+        if (r.location != NSNotFound) return [argv0 substringToIndex:r.location];
+    }
+
+    // 回退：扫描常见路径
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *cand in @[@"/var/jb",
+                             @"/private/var/jb",
+                             @"/var/mobile/Containers/Shared/AppGroup"]) {
+        NSString *test = [cand stringByAppendingPathComponent:@"usr/libexec/repro-signingd"];
+        if ([fm fileExistsAtPath:test]) return cand;
+    }
+
+    // 最后回退
+    return @"/var/jb";
+}
 
 // ─── 文件日志 ─────────────────────────────────────────────────────
 
@@ -55,13 +75,19 @@ static void SDLog(NSString *fmt, ...) {
 }
 
 static BOOL SDOpenLog(void) {
-    gLogFile = fopen(kLogPath.UTF8String, "a");
+    NSString *logDir = [gLogPath stringByDeletingLastPathComponent];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:logDir]) {
+        [fm createDirectoryAtPath:logDir withIntermediateDirectories:YES
+                       attributes:@{NSFilePosixPermissions: @0755} error:nil];
+    }
+
+    gLogFile = fopen(gLogPath.UTF8String, "a");
     if (!gLogFile) {
-        NSLog(@"[repro-signingd] 无法打开日志 %@: %s", kLogPath, strerror(errno));
+        NSLog(@"[repro-signingd] 无法打开日志 %@: %s", gLogPath, strerror(errno));
         return NO;
     }
-    chown(kLogPath.UTF8String, 501, 501);
-    chmod(kLogPath.UTF8String, 0644);
+    chmod(gLogPath.UTF8String, 0644);
     return YES;
 }
 
@@ -89,53 +115,6 @@ static NSDictionary *SDLoadConfig(void) {
     };
 }
 
-// ─── 后台拉起 App ───────────────────────────────────────────────
-//
-// 使用 SpringBoardServices 私有 API 以后台 content-fetch 模式拉起 App，
-// App 在 didFinishLaunchingWithOptions 中检测触发标记后执行续签。
-// daemon 无 entitlements 时该调用会失败，降级为纯 notify_post 方案。
-
-static BOOL SDLaunchAppBackgrounded(void) {
-    // 动态加载 SpringBoardServices
-    void *sbsHandle = dlopen(
-        "/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",
-        RTLD_LAZY);
-    if (!sbsHandle) {
-        SDLog(@"⚠ 无法加载 SpringBoardServices（将降级为 notify 方案）");
-        return NO;
-    }
-
-    typedef int (*SBSLaunchFunc)(CFStringRef, CFDictionaryRef, BOOL);
-    SBSLaunchFunc SBSLaunch =
-        (SBSLaunchFunc)dlsym(sbsHandle, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
-    if (!SBSLaunch) {
-        SDLog(@"⚠ 无法找到 SBSLaunchApplicationWithIdentifierAndLaunchOptions");
-        dlclose(sbsHandle);
-        return NO;
-    }
-
-    // BKSActivateForEventOptionTypeBackgroundContentFetching = 后台拉起的 key
-    NSString *eventKey = @"BKSActivateForEventOptionTypeBackgroundContentFetching";
-    NSString *optionKey = @"BKSOpenApplicationOptionKeyActivateForEvent";
-
-    NSDictionary *eventOpts = @{ eventKey: @"" };
-    NSDictionary *launchOpts = @{ optionKey: eventOpts };
-
-    int result = SBSLaunch(CFSTR("com.reprovision.repro"),
-                           (__bridge CFDictionaryRef)launchOpts,
-                           YES); // YES = suspended（后台）
-
-    dlclose(sbsHandle);
-
-    if (result == 0) {
-        SDLog(@"✅ 已后台拉起 App（pid 将由 App 侧写入日志）");
-        return YES;
-    } else {
-        SDLog(@"⚠ 后台拉起 App 失败（错误码 %d，可能缺少 entitlements）", result);
-        return NO;
-    }
-}
-
 // ─── NSTimer ────────────────────────────────────────────────────
 
 static NSTimer *gSigningTimer;
@@ -154,7 +133,7 @@ static void SDFireResignRequest(void) {
     NSInteger threshold = [cfg[@"resignThreshold"] integerValue];
     if (threshold < 1) threshold = kDefaultThreshold;
 
-    // 写触发标记（App 检测此文件判断是否由 daemon 触发）
+    // 写触发标记
     NSDictionary *trigger = @{
         @"timestamp": @(now),
         @"threshold": @(threshold),
@@ -162,21 +141,11 @@ static void SDFireResignRequest(void) {
     [trigger writeToFile:kTriggerPath atomically:YES];
     chown(kTriggerPath.UTF8String, 501, 501);
 
-    // 写日志
-    SDLog(@"══════ 定时续签触发 ══════");
-    SDLog(@"阈值: %ld 天, 触发时间戳: %lld", (long)threshold, (long long)now);
-
-    // 尝试后台拉起 App 执行续签
-    BOOL launched = SDLaunchAppBackgrounded();
-
-    // 同时 notify_post（App 在前台时能收到）
+    // 通知 App（App 在前台/后台时立即处理，否则下次打开时处理）
     notify_post("com.reprovision.schedule-resign");
 
-    if (launched) {
-        SDLog(@"续签触发完成 → App 已后台拉起，等待 App 写入续签结果…");
-    } else {
-        SDLog(@"续签触发完成 → App 未运行，续签将在 App 下次打开时自动执行");
-    }
+    SDLog(@"══════ 定时续签触发 ══════");
+    SDLog(@"阈值: %ld 天 | App 运行中则立即续签，否则下次打开时自动处理", (long)threshold);
 }
 
 static void SDScheduleTimer(NSTimeInterval interval) {
@@ -194,9 +163,13 @@ static void SDScheduleTimer(NSTimeInterval interval) {
 // ─── main ───────────────────────────────────────────────────────
 
 int main(void) {
+    // 确定 jbroot 及日志路径
+    NSString *jbroot = SDResolveJbroot();
+    gLogPath = [jbroot stringByAppendingPathComponent:@"var/log/reprorefresh_at.log"];
+
     SDOpenLog();
     SDLog(@"══════════════════════════════════════");
-    SDLog(@"repro-signingd 启动, pid=%d uid=%d", getpid(), getuid());
+    SDLog(@"repro-signingd 启动, pid=%d uid=%d, jbroot=%@", getpid(), getuid(), jbroot);
     SDEnsureIpcDir();
 
     NSDictionary *cfg = SDLoadConfig();
