@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #import "RPVDiagnostics.h"
+#include <notify.h>       // profiledaemon IPC: notify_post / notify_register_dispatch
 
 #pragma mark - 数据对象
 
@@ -687,6 +688,70 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 /// 把 Vendor 里两个需要 root 的回调接到 repro-helper 上。
 /// 原版这两件事是走 XPC 找常驻守护进程做的，现在改成一次性 setuid root 进程。
 /// helper 不存在时干脆不注册 —— Vendor 会走「自己直接写文件」的分支，
+/// 通过 notify(3) + 真实共享路径触发 repro-profiledaemon（LaunchDaemon）安装描述文件。
+/// daemon 由 launchd 在系统级上下文启动，不受 RootHide namespace 影响，能写真实
+/// /var/Managed Preferences/mobile 并 MC 直连真实 profiled。
+/// App 把描述文件数据写入真实共享路径 /var/mobile/Library/RePro/，发 notify 信号，
+/// 再轮询结果文件（最多 15 秒）。
+static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
+    if (profilePath.length == 0) return NO;
+
+    static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
+    static NSString *const kProfileData = @"/var/mobile/Library/RePro/profile-to-install.mobileprovision";
+    static NSString *const kResultPath  = @"/var/mobile/Library/RePro/profile-install-result";
+
+    // 确保共享目录存在（App 是 mobile，/var/mobile 下真实可读写）。
+    [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+
+    // 把描述文件数据写到真实共享路径（daemon 在真实上下文读得到）。
+    NSData *profileData = [NSData dataWithContentsOfFile:profilePath];
+    if (profileData.length == 0) {
+        RPVDiagnostic(RPVDiagError, @"profiledaemon", @"读取描述文件失败: %@", profilePath);
+        return NO;
+    }
+    NSError *writeErr = nil;
+    if (![profileData writeToFile:kProfileData options:NSDataWritingAtomic error:&writeErr]) {
+        RPVDiagnostic(RPVDiagError, @"profiledaemon", @"写共享描述文件失败: %@", writeErr);
+        return NO;
+    }
+
+    [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
+
+    // 发 notify 信号
+    uint32_t status = notify_post("com.reprovision.profile-install-request");
+    if (status != NOTIFY_STATUS_OK) {
+        RPVDiagnostic(RPVDiagError, @"profiledaemon", @"notify_post 失败: 0x%x", status);
+        return NO;
+    }
+    RPVDiagnostic(RPVDiagInfo, @"profiledaemon", @"已触发 profiledaemon (notify 已发)，等待结果...");
+
+    // 轮询结果文件（最多等 15 秒）
+    for (int i = 0; i < 150; i++) {
+        usleep(100000); // 100ms
+        NSString *result = [NSString stringWithContentsOfFile:kResultPath
+                                                       encoding:NSUTF8StringEncoding
+                                                          error:nil];
+        if (result.length > 0) {
+            result = [result stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            BOOL ok = [result hasPrefix:@"OK"];
+            RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError,
+                          @"profiledaemon",
+                          @"repro-profiledaemon 结果: %@ (耗时 %.1fs)",
+                          result, (i + 1) * 0.1);
+            [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
+            return ok;
+        }
+    }
+
+    RPVDiagnostic(RPVDiagError, @"profiledaemon",
+                  @"repro-profiledaemon 15 秒内未返回结果（daemon 可能未运行或未加载）");
+    return NO;
+}
+
 /// rootful 环境下本来就能写成功。
 + (void)installRootHelperHandlers {
     NSString *helperPath = RPVResolvedRootHelperPath();
@@ -703,9 +768,24 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
         return RPVRunRootHelper(helperPath, @[@"copy", srcPath, dstPath]);
     }];
 
-    // 2) 描述文件安装：对齐 test2，统一走 App 进程内 MCProfileConnection（见
-    //    RPVApplicationSigning._registerProvisioningProfileAtPath:），不再依赖
-    //    helper / daemon。此处不再注册 profile handler。
+    // 2) 描述文件安装：
+    //    RootHide：App 的 in-process MC 被 RootHide namespace 重定向到 overlay（假成功），
+    //             posix_spawn helper 继承 App namespace（写的也是 overlay）。
+    //             → 改用 LaunchDaemon（repro-profiledaemon），由 launchd 在系统级上下文
+    //               启动，完全在 App namespace 外，能写真实 /var/Managed Preferences/mobile
+    //               并 MC 直连真实 profiled。App 经 notify IPC 触发（RPVTriggerProfileDaemon）。
+    //    非 RootHide（rootless/rootful）：对齐 test2，纯 App MC 即可（无 namespace 隔离）。
+    if (RPVIsRootHideEnvironment()) {
+        [RPVApplicationSigning setDaemonProfileInstallHandler:^BOOL(NSString *profilePath) {
+            if (profilePath.length == 0) return NO;
+            return RPVTriggerProfileDaemon(profilePath);
+        }];
+    } else {
+        [RPVApplicationSigning setDaemonProfileInstallHandler:^BOOL(NSString *profilePath) {
+            if (profilePath.length == 0) return NO;
+            return RPVRunRootHelper(helperPath, @[@"install-profile", profilePath]);
+        }];
+    }
 }
 
 - (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVRegisteredAppID *> *_Nullable, NSError *_Nullable))completion {

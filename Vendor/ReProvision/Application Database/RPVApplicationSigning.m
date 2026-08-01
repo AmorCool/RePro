@@ -381,6 +381,21 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 }
 
 - (BOOL)_registerProvisioningProfileAtPath:(NSString *)profilePath {
+    // RootHide：App 进程在 jbroot namespace 内，in-process MCProfileConnection 的 XPC
+    // 被重定向到 overlay profiled（返回 1 是假成功），写 /var/Managed Preferences/mobile
+    // 也落 overlay —— installd（namespace 外）读不到，必 0xe8008015。test2 源码只有
+    // rootless/rootful 包（无 namespace 隔离），其纯 App MC 在 roothide 上并不适用。
+    // 故 RootHide 跳过 App MC，直接走 LaunchDaemon（repro-profiledaemon，系统级上下文、
+    // 在 namespace 外）写真实路径并注册真实 profiled。
+    if (RPVIsRootHideEnvironment()) {
+        RPVDiagnostic(RPVDiagInfo, @"profile",
+                      @"[RootHide] 跳过 App 内 MC（namespace 内为假成功），走 repro-profiledaemon");
+        BOOL ok = [self _registerProfileViaFileAtPath:profilePath];
+        return ok;
+    }
+
+    // 非 RootHide（rootless/rootful）：对齐 test2，App 进程内 MCProfileConnection 注册，
+    // 失败再走文件/daemon 兜底。
     NSMutableString *report = [NSMutableString string];
     BOOL success = NO;
 
@@ -429,8 +444,6 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         }
     }
 
-    // 对齐 test2：所有环境（含 RootHide）统一走 App 进程内 MCProfileConnection 注册到本地库，
-    // 不区分 namespace、不依赖 helper / daemon。test2 的 roothide 适配即此方式且重签成功。
     RPVDiagnostic(RPVDiagWarning, @"profile", @"profile register report:\n%@", report);
     NSLog(@"*** [ReProvision] profile register report:\n%@", report);
 
@@ -438,8 +451,11 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         // 给 profiled 时间扫描并加载新 profile，再继续安装。
         NSLog(@"*** [ReProvision] sleeping 2.0s for profiled to pick up new profile");
         [NSThread sleepForTimeInterval:2.0];
+        return success;
     }
-    return success;
+
+    // App MC 失败 → 文件/daemon 兜底（rootless/rootful 下通常能直接写成功）。
+    return [self _registerProfileViaFileAtPath:profilePath];
 }
 
 - (void)_installIpaAtPath:(NSString *)ipaPath withBundleIdentifier:(NSString *)bundleIdentifier displayBundleIdentifier:(NSString *)displayBundleIdentifier {

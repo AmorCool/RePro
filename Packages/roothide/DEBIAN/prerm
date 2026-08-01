@@ -22,7 +22,7 @@ rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true
 rm -rf /var/mobile/Library/ReProvision 2>/dev/null || true
 rm -f /var/mobile/Documents/ReProvisionDebug.txt 2>/dev/null || true
 rm -rf /tmp/reprovision_*.log 2>/dev/null || true
-rm -f /tmp/repro-profile-request /tmp/repro-profile-result 2>/dev/null || true
+rm -rf /var/mobile/Library/RePro 2>/dev/null || true
 echo "[RePro] 残留数据已清理"
 
 echo "[RePro] RootHide prerm 完成 $(date)"
