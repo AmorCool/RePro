@@ -104,7 +104,6 @@ int main(void) {
 
     int t; notify_register_dispatch("com.reprovision.signingd-config-updated", &t,
         dispatch_get_main_queue(), ^(int _){ sd_config nc = s_cfg();
-            s_log(@"配置已刷新 — 间隔 %ld 分", (long)nc.minutes);
             s_start_timer((NSTimeInterval)nc.minutes * 60.0); });
 
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,

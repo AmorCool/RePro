@@ -6,13 +6,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private static let lastAutoResignKey = "lastAutoResignTimestamp"
     private static let ipcDir = "/var/mobile/Library/RePro"
 
-    // MARK: - UIApplicationDelegate
-
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
-
         RPVBridge.installRootHelperHandlers()
         BridgeClient.shared.fetchEnvironment { _ in }
 
@@ -22,7 +19,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-foreground-resign"),
             object: nil, queue: .main) { [weak self] _ in self?.doAutoResign() }
-
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in self?.syncConfigSilent() }
@@ -31,13 +27,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in self?.doAutoResign() }
             return true
         }
-        scheduleAutoResignIfNeeded()
+        tryAutoResign()
         return true
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         if checkDaemonTrigger() { doAutoResign() }
-        else { scheduleAutoResignIfNeeded() }
+        else { tryAutoResign() }
     }
 
     // MARK: - 触发检测
@@ -53,12 +49,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     // MARK: - 自动续签
 
-    private func scheduleAutoResignIfNeeded() {
+    /// 每次 App 激活时检查：已登录 + 开启自动 = 执行续签
+    /// resignAllExpiring 内部会按阈值过滤，没有到期应用会快速返回
+    private func tryAutoResign() {
         let d = UserDefaults.standard
         guard (d.object(forKey: "autoResign") as? Bool ?? true), BridgeClient.shared.isSignedIn else { return }
-        let interval = d.object(forKey: "checkIntervalMin") as? Int ?? 360
-        if let last = d.object(forKey: Self.lastAutoResignKey) as? Date,
-           Date().timeIntervalSince(last) < TimeInterval(interval) * 60 { return }
         doAutoResign()
     }
 
@@ -67,7 +62,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
         d.set(Date(), forKey: Self.lastAutoResignKey)
 
-        // 开启 daemon 日志：后续所有 LogManager 日志同步写入 reprorefresh_at.log
         DaemonLogStart(DaemonLogDefaultPath())
         LogManager.shared.info("══════ 自动续签（阈值 \(threshold) 天）══════", source: "AppDelegate")
 
@@ -80,10 +74,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     // MARK: - daemon 配置同步
 
-    func syncSigningdConfig()   { _syncConfig(log: true) }
-    func syncConfigSilent()     { _syncConfig(log: false) }
+    func syncSigningdConfig() { _syncConfig() }
+    func syncConfigSilent()   { _syncConfig() }
 
-    private func _syncConfig(log: Bool) {
+    private func _syncConfig() {
         let d = UserDefaults.standard
         let config: [String: Any] = [
             "autoResign":       d.object(forKey: "autoResign") as? Bool ?? true,
@@ -96,7 +90,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         (config as NSDictionary).write(toFile: "\(Self.ipcDir)/signingd-config.plist", atomically: true)
         RPVSigningdNotify.notifyConfigUpdated()
-        if log { LogManager.shared.info("配置已同步到 daemon", source: "AppDelegate") }
     }
 
     private func setupSigningdNotify() { let _ = RPVSigningdNotify.shared }

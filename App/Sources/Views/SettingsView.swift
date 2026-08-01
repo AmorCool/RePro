@@ -17,6 +17,7 @@ struct SettingsView: View {
     /// 日志文件大小（onAppear 时更新）
     @State private var logFileSize: String = "—"
     @State private var showingClearLogAlert = false
+    @State private var needsConfigSync = false
 
     @ObservedObject private var account = BridgeClient.shared
 
@@ -49,9 +50,15 @@ struct SettingsView: View {
                 intervalHours = checkIntervalMin / 60
                 intervalMins  = checkIntervalMin % 60
                 refreshLogFileSize()
+                needsConfigSync = false
             }
+            .onChange(of: autoResign) { _ in needsConfigSync = true }
+            .onChange(of: checkIntervalMin) { _ in needsConfigSync = true }
+            .onChange(of: resignThreshold) { _ in needsConfigSync = true }
             .onDisappear {
-                NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
+                if needsConfigSync {
+                    NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
+                }
             }
             .alert("确认重启 SpringBoard", isPresented: $showingRespringAlert) {
                 Button("取消", role: .cancel) {}

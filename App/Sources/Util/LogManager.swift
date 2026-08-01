@@ -22,11 +22,10 @@ func DaemonLogStop() {
     gDaemonLogPath = nil
 }
 
-/// 清空 daemon 日志
+/// 清空 daemon 日志（fopen("w")截断，不依赖权限）
 func DaemonLogClear(_ path: String) {
-    DaemonLogStop()
-    try? "".write(toFile: path, atomically: true, encoding: .utf8)
-    chmod(path, 0666)
+    if let f = gDaemonLogFile { fclose(f); gDaemonLogFile = nil }
+    if let f = fopen(path, "w") { fclose(f); chmod(path, 0666) }
 }
 
 /// 获取 daemon 日志文件大小
