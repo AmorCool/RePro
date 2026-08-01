@@ -1,4 +1,5 @@
 import UIKit
+import Darwin
 
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
@@ -9,6 +10,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
+
+        // 无头续签模式（repro-signingd --resign-now 拉起）
+        if ProcessInfo.processInfo.environment["REPRO_HEADLESS_RESIGN"] == "1" {
+            return headlessResign(application)
+        }
+
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
         RPVBridge.installRootHelperHandlers()
         BridgeClient.shared.fetchEnvironment { _ in }
@@ -29,6 +36,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         tryAutoResign()
         return true
+    }
+
+    // MARK: - 无头续签（终端执行，不显示任何 UI）
+
+    private func headlessResign(_ application: UIApplication) -> Bool {
+        RPVBridge.installRootHelperHandlers()
+
+        // 无 GUI → 日志全量写入 reprorefresh_at.log
+        DaemonLogStart(DaemonLogDefaultPath())
+        LogManager.shared.info("══════ 无头续签模式 ══════", source: "AppDelegate")
+
+        let d = UserDefaults.standard
+        let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
+
+        let sema = DispatchSemaphore(value: 0)
+        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { result in
+            switch result {
+            case .success: LogManager.shared.info("无头续签完成", source: "AppDelegate")
+            case .failure(let e): LogManager.shared.warning("无头续签失败: \(e.localizedDescription)", source: "AppDelegate")
+            }
+            DaemonLogStop()
+            sema.signal()
+        }
+
+        sema.wait()
+        exit(0)
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
