@@ -123,12 +123,16 @@ struct SettingsView: View {
             Toggle("启用自动重签", isOn: $autoResign)
             Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...7)
             Stepper("最短间隔 \(checkInterval) 小时", value: $checkInterval, in: 1...24)
+            Button("测试发送通知") {
+                AppDelegate.postDaemonNotification(
+                    title: "RePro 测试通知",
+                    body: "如果你能看到这条通知，说明 repro-signingd 通知通道正常工作 ✓")
+            }
         } header: {
             Text("自动重签")
         } footer: {
-            Text("没有常驻守护进程，自动重签会在打开 RePro（进入前台）时按上面的最短间隔触发一次。")
+            Text("repro-signingd 守护进程会定时检查，续签完成后通过系统通知告知结果。")
         }
-    }
 
     // MARK: - 签名后端
 

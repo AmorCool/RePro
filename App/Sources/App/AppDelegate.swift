@@ -1,7 +1,6 @@
 import UIKit
-import UserNotifications
 
-class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     private static let lastAutoResignKey = "lastAutoResignTimestamp"
@@ -13,9 +12,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
-
-        // 仅首次索要通知权限（已授权/已拒绝时不弹窗）
-        setupNotifications()
 
         RPVBridge.installRootHelperHandlers()
 
@@ -81,17 +77,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
             switch result {
             case .success:
                 LogManager.shared.info("自动重签完成", source: "AppDelegate")
-                self.sendResignNotification(title: "自动续签完成",
+                self.postDaemonNotification(title: "自动续签完成",
                                             body: "所有临近过期的应用已成功续签 ✓")
             case .failure(let error):
                 let msg = error.localizedDescription
                 LogManager.shared.warning("自动重签结束: \(msg)", source: "AppDelegate")
                 if msg.contains("No applications need") || msg.contains("当前无需重签") {
-                    self.sendResignNotification(title: "自动续签",
+                    self.postDaemonNotification(title: "自动续签",
                                                 body: "当前没有需要续签的应用")
                 } else {
-                    self.sendResignNotification(title: "自动续签失败",
-                                                body: msg)
+                    self.postDaemonNotification(title: "自动续签失败", body: msg)
                 }
             }
         }
@@ -146,49 +141,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         return false
     }
 
-    // MARK: - 本地通知
+    // MARK: - 通过 Daemon 发通知（避免 RootHide namespace 假成功）
 
-    /// 请求通知权限。在越狱环境下 getNotificationSettings 可能被 namespace
-    /// 拦截误报 denied，所以不预查状态，直接请求（系统处理去重，不会反复弹窗）。
-    private func setupNotifications() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-            LogManager.shared.info(granted ? "通知权限已获取" : "通知权限请求未通过", source: "AppDelegate")
-        }
-        UNUserNotificationCenter.current().delegate = self
+    /// App 不直接调 UNUserNotificationCenter（RootHide 下权限/注册可能落 overlay 假成功），
+    /// 而是把通知内容写到共享路径，再由 repro-signingd 以 root 身份用 CFUserNotification 显示。
+    static func postDaemonNotification(title: String, body: String) {
+        let notiPath = "\(ipcDir)/auto-resign-notification.plist"
+        let dict: [String: Any] = [
+            "title": title,
+            "body": body,
+            "timestamp": Int(Date().timeIntervalSince1970),
+        ]
+        (dict as NSDictionary).write(toFile: notiPath, atomically: true)
+        notify_post("com.reprovision.show-notification")
+        LogManager.shared.info("已通知 daemon 发通知: 「\(title)」", source: "AppDelegate")
     }
 
-    /// 发送本地通知。前台时也显示横幅（willPresent 回调控制）。
-    /// trigger 用 1 秒而不是 0.1 秒，避免某些 iOS 版本忽略过短的触发间隔。
-    private func sendResignNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = UNNotificationSound.default
-        content.badge = nil
-
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
-        let identifier = "auto-resign-\(Int(Date().timeIntervalSince1970))"
-        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                LogManager.shared.warning("发送本地通知失败: \(error.localizedDescription)", source: "AppDelegate")
-            } else {
-                LogManager.shared.info("已发送本地通知: 「\(title)」→ \(body)", source: "AppDelegate")
-            }
-        }
-    }
-
-    // MARK: - UNUserNotificationCenterDelegate
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                willPresent notification: UNNotification,
-                                withCompletionHandler completionHandler:
-                                @escaping (UNNotificationPresentationOptions) -> Void) {
-        if #available(iOS 14.0, *) {
-            completionHandler([.banner, .sound])
-        } else {
-            completionHandler([.alert, .sound])
-        }
+    /// 实例方法，供内部 self 调用
+    private func postDaemonNotification(title: String, body: String) {
+        AppDelegate.postDaemonNotification(title: title, body: body)
     }
 }
