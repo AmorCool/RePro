@@ -107,8 +107,31 @@ static BOOL SDEnsureIpcDir(void) {
 }
 
 static NSDictionary *SDLoadConfig(void) {
+    // 1. 优先读 App 同步的 plist
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    return cfg ?: @{
+    if (cfg) return cfg;
+
+    // 2. 回退：从 CFPreferences 直接读 App 的 UserDefaults（跨进程，原 reprovisiond 方案）
+    CFStringRef appID = CFSTR("com.reprovision.repro");
+    CFPreferencesAppSynchronize(appID);
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (keys) {
+        NSDictionary *prefs = (__bridge_transfer NSDictionary *)
+            CFPreferencesCopyMultiple(keys, appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFRelease(keys);
+        if (prefs.count > 0) {
+            // 适配 key 名：App 用 "resignThreshold" / "checkIntervalMin" / "autoResign"
+            NSNumber *autoR = prefs[@"autoResign"];
+            NSNumber *interval = prefs[@"checkIntervalMin"];
+            NSNumber *threshold = prefs[@"resignThreshold"];
+            return @{
+                @"autoResign":       autoR ?: @(kDefaultAutoResign),
+                @"checkIntervalMin": interval ?: @(kDefaultCheckMinutes),
+                @"resignThreshold":  threshold ?: @(kDefaultThreshold),
+            };
+        }
+    }
+    return @{
         @"autoResign":       @(kDefaultAutoResign),
         @"checkIntervalMin": @(kDefaultCheckMinutes),
         @"resignThreshold":  @(kDefaultThreshold),

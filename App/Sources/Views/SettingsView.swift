@@ -14,6 +14,10 @@ struct SettingsView: View {
     @State private var intervalMins: Int = 0
     @State private var showIntervalPicker: Bool = false
 
+    /// 日志文件大小（onAppear 时更新）
+    @State private var logFileSize: String = "—"
+    @State private var showingClearLogAlert = false
+
     @ObservedObject private var account = BridgeClient.shared
 
     @State private var appleID: String = ""
@@ -42,9 +46,9 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .onAppear {
                 refreshEnvironment()
-                // 从 checkIntervalMin 初始化小时/分钟
                 intervalHours = checkIntervalMin / 60
                 intervalMins  = checkIntervalMin % 60
+                refreshLogFileSize()
             }
             .onDisappear {
                 NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
@@ -65,6 +69,12 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("退出后需要重新登录才能继续重签名。")
+            }
+            .alert("清理续签日志", isPresented: $showingClearLogAlert) {
+                Button("取消", role: .cancel) {}
+                Button("清理", role: .destructive) { clearDaemonLog() }
+            } message: {
+                Text("确定要清空 reprorefresh_at.log 吗？此操作不可撤销。")
             }
             .sheet(isPresented: $showingTeamSheet) { teamSheet }
         }
@@ -185,7 +195,22 @@ struct SettingsView: View {
         } header: {
             Text("自动重签")
         } footer: {
-            Text("repro-signingd 守护进程以 root 权限定时检查并触发续签。全部日志写入 <jbroot>/var/log/reprorefresh_at.log（daemon + App 共同维护）。")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("repro-signingd 守护进程以 root 权限定时检查并触发续签。全部日志写入 <jbroot>/var/log/reprorefresh_at.log（daemon + App 共同维护）。")
+
+                HStack {
+                    Text("日志大小：")
+                    Text(logFileSize)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Button("清理日志") {
+                        showingClearLogAlert = true
+                    }
+                    .font(.caption)
+                    .foregroundColor(.red)
+                }
+                .padding(.top, 4)
+            }
         }
     }
 
@@ -394,6 +419,38 @@ struct SettingsView: View {
         BridgeClient.shared.fetchEnvironment { snapshot in
             zsignPath = snapshot.zsignPath
         }
+    }
+
+    /// daemon 日志路径（与 AppDelegate.daemonLogPath 一致）
+    private func daemonLogPath() -> String {
+        let bundlePath = Bundle.main.bundlePath
+        if let r = bundlePath.range(of: "/Applications/", options: .backwards) {
+            return "\(bundlePath[..<r.lowerBound])/var/log/reprorefresh_at.log"
+        }
+        return "/var/jb/var/log/reprorefresh_at.log"
+    }
+
+    private func refreshLogFileSize() {
+        let path = daemonLogPath()
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? Int64 else {
+            logFileSize = "—"
+            return
+        }
+        if size < 1024 {
+            logFileSize = "\(size) B"
+        } else if size < 1024 * 1024 {
+            logFileSize = String(format: "%.1f KB", Double(size) / 1024.0)
+        } else {
+            logFileSize = String(format: "%.1f MB", Double(size) / (1024.0 * 1024.0))
+        }
+    }
+
+    private func clearDaemonLog() {
+        let path = daemonLogPath()
+        try? "".write(toFile: path, atomically: true, encoding: .utf8)
+        refreshLogFileSize()
+        LogManager.shared.info("已清空 daemon 日志: \(path)", source: "SettingsView")
     }
 
     private func performRespring() {
