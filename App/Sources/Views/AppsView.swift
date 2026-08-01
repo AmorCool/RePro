@@ -43,10 +43,11 @@ struct IPADocumentPicker: UIViewControllerRepresentable {
         }
 
         private func presentPicker() {
-            let ipaType = UTType(filenameExtension: "ipa") ?? UTType.data
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [ipaType, .archive, .item], asCopy: true)
+            // iOS 17 上 UTType(filenameExtension:"ipa") 可能返回过窄的 UTI
+            // 导致 IPA 文件在 picker 中灰色不可选。用 .archive（zip类）+ .data（通用）
+            // 覆盖所有情况，允许用户选择任意 IPA 文件。
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.archive, .data], asCopy: true)
             picker.delegate = self
-            // 允许选择目录（某些 IPA 可能在包内）
             picker.allowsMultipleSelection = false
             self.present(picker, animated: true)
         }
