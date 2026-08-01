@@ -114,7 +114,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         (config as NSDictionary).write(toFile: configPath, atomically: true)
 
         // 通知 daemon 重新加载配置
-        notify_post("com.reprovision.signingd-config-updated")
+        RPVSigningdNotify.notifyConfigUpdated()
         LogManager.shared.info("已同步 signingd 配置: autoResign=\(config["autoResign"] ?? true), "
                                + "间隔=\(config["checkInterval"] ?? 6)h, 阈值=\(config["resignThreshold"] ?? 2)d",
                                source: "AppDelegate")

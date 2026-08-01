@@ -68,6 +68,10 @@
         });
 }
 
++ (void)notifyConfigUpdated {
+    notify_post("com.reprovision.signingd-config-updated");
+}
+
 - (void)dealloc {
     if (_token > 0) notify_cancel(_token);
 }

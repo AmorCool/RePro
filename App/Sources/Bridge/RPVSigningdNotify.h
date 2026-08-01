@@ -11,6 +11,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)shared;
 
+/// 通知 repro-signingd LaunchDaemon 重新加载配置（设置页保存后调用）
++ (void)notifyConfigUpdated;
+
 @end
 
 NS_ASSUME_NONNULL_END
