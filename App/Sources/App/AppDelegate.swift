@@ -72,14 +72,29 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         else { tryAutoResign() }
     }
 
-    // MARK: - 快捷指令 / URL Scheme（reprovision://refresh）
+    // MARK: - 快捷指令入口（从 ReProApp.onOpenURL 调用）
 
-    func application(_ app: UIApplication, open url: URL,
-                     options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-        if url.scheme == "reprovision" && url.host == "refresh" {
-            return silentResignAndExit()
+    /// URL scheme / 快捷指令触发静默续签，完成后 exit(0)
+    static func sharedSilentResign() -> Bool {
+        RPVBridge.installRootHelperHandlers()
+        DaemonLogStart(DaemonLogDefaultPath())
+        LogManager.shared.info("══════ 快捷指令静默续签 ══════", source: "AppDelegate")
+
+        let d = UserDefaults.standard
+        let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
+        let sema = DispatchSemaphore(value: 0)
+
+        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { result in
+            switch result {
+            case .success: LogManager.shared.info("静默续签完成", source: "AppDelegate")
+            case .failure(let e): LogManager.shared.warning("静默续签失败: \(e.localizedDescription)", source: "AppDelegate")
+            }
+            DaemonLogStop()
+            sema.signal()
         }
-        return false
+
+        sema.wait()
+        exit(0)
     }
 
     // MARK: - 触发检测
