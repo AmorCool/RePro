@@ -4,9 +4,7 @@ import UserNotifications
 class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var window: UIWindow?
 
-    /// 上一次自动重签的时间戳（UserDefaults key）
     private static let lastAutoResignKey = "lastAutoResignTimestamp"
-    /// IPC 共享目录
     private static let ipcDir = "/var/mobile/Library/RePro"
 
     // MARK: - UIApplicationDelegate
@@ -16,14 +14,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         LogManager.shared.initialize()
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
 
-        // 请求本地通知权限（后台自动续签结果通知）
-        requestNotificationPermission()
-        UNUserNotificationCenter.current().delegate = self
+        // 仅首次索要通知权限（已授权/已拒绝时不弹窗）
+        setupNotifications()
 
-        // 注册需要 root 的两个回调
         RPVBridge.installRootHelperHandlers()
 
-        // 环境体检
         BridgeClient.shared.fetchEnvironment { snapshot in
             LogManager.shared.info(
                 "环境: \(snapshot.jailbreak.displayName), zsign=\(snapshot.zsignPath ?? "未找到"), "
@@ -31,17 +26,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
                 source: "AppDelegate")
         }
 
-        // 把当前自动续签设置同步到共享 plist（供 repro-signingd LaunchDaemon 读取）
         syncSigningdConfig()
-        // 注册 notify 监听（Daemon 每小时发一次信号）
         setupSigningdNotify()
-        // 前台收到 daemon 的 notify 时直接跑自动续签
+
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-foreground-resign"),
             object: nil, queue: .main) { [weak self] _ in
                 self?.doAutoResign()
             }
-        // 设置页保存时通知 daemon 重读配置
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in
@@ -53,7 +45,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // 检查 daemon 是否发了续签请求（daemon 写时间戳文件 → 比上次执行更新则触发）
         if checkSigningdRequest() {
             LogManager.shared.info("收到 repro-signingd 续签请求，触发自动重签", source: "AppDelegate")
             doAutoResign()
@@ -62,7 +53,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         }
     }
 
-    // MARK: - 自动续签（App 前台时按间隔触发）
+    // MARK: - 自动续签
 
     private func scheduleAutoResignIfNeeded() {
         let defaults = UserDefaults.standard
@@ -91,7 +82,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
             case .success:
                 LogManager.shared.info("自动重签完成", source: "AppDelegate")
                 self.sendResignNotification(title: "自动续签完成",
-                                            body: "所有临近过期的应用已成功续签")
+                                            body: "所有临近过期的应用已成功续签 ✓")
             case .failure(let error):
                 let msg = error.localizedDescription
                 LogManager.shared.warning("自动重签结束: \(msg)", source: "AppDelegate")
@@ -106,10 +97,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         }
     }
 
-    // MARK: - repro-signingd IPC（后台定时续签守护进程）
+    // MARK: - repro-signingd IPC
 
-    /// 同步当前自动续签设置到共享 plist，供 repro-signingd LaunchDaemon 读取。
-    /// 调用时机：App 启动、设置页保存时（通过 notify_post 通知 daemon 重读）。
     func syncSigningdConfig() {
         let defaults = UserDefaults.standard
         let config: [String: Any] = [
@@ -118,7 +107,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
             "resignThreshold": defaults.object(forKey: "resignThreshold") as? Int ?? 2,
         ]
 
-        // 确保 IPC 目录存在
         let fm = FileManager.default
         if !fm.fileExists(atPath: Self.ipcDir) {
             try? fm.createDirectory(atPath: Self.ipcDir,
@@ -129,22 +117,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         let configPath = "\(Self.ipcDir)/signingd-config.plist"
         (config as NSDictionary).write(toFile: configPath, atomically: true)
 
-        // 通知 daemon 重新加载配置
         RPVSigningdNotify.notifyConfigUpdated()
         LogManager.shared.info("已同步 signingd 配置: autoResign=\(config["autoResign"] ?? true), "
                                + "间隔=\(config["checkInterval"] ?? 6)h, 阈值=\(config["resignThreshold"] ?? 2)d",
                                source: "AppDelegate")
     }
 
-    /// 注册 notify 监听：当 repro-signingd 触发续签时，如果 App 正在前台，
-    /// 直接跑自动续签。
     private func setupSigningdNotify() {
         let _ = RPVSigningdNotify.shared
     }
 
-    /// 检查 daemon 是否发了续签请求：
-    /// 读 /var/mobile/Library/RePro/auto-resign-request 的 mtime，
-    /// 比 UserDefaults 里记录的「上次处理时间」更新 → 返回 true。
     private func checkSigningdRequest() -> Bool {
         let requestPath = "\(Self.ipcDir)/auto-resign-request"
         let fm = FileManager.default
@@ -164,42 +146,51 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         return false
     }
 
-    // MARK: - 本地通知（后台自动续签结果）
+    // MARK: - 本地通知
 
-    private func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-            if granted {
-                LogManager.shared.info("本地通知权限已获取", source: "AppDelegate")
-            } else if let error = error {
-                LogManager.shared.warning("本地通知权限请求失败: \(error.localizedDescription)", source: "AppDelegate")
+    /// 仅首次索要通知权限，已授权或已拒绝时不弹窗打扰用户。
+    private func setupNotifications() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                    LogManager.shared.info(granted ? "通知权限已获取" : "用户拒绝了通知权限", source: "AppDelegate")
+                }
+            case .denied:
+                LogManager.shared.warning("通知权限已被拒绝，续签结果通知不会显示", source: "AppDelegate")
+            case .authorized, .provisional, .ephemeral:
+                LogManager.shared.info("通知权限已就绪", source: "AppDelegate")
+            @unknown default:
+                break
             }
         }
+        UNUserNotificationCenter.current().delegate = self
     }
 
-    /// 发送一条本地通知，让用户知道后台自动续签的結果。
-    /// 如果 App 正在前台运行，通知会无声地出现在通知中心（不会弹出横幅干扰操作）。
+    /// 发送本地通知。前台时也显示横幅（willPresent 回调控制）。
+    /// trigger 用 1 秒而不是 0.1 秒，避免某些 iOS 版本忽略过短的触发间隔。
     private func sendResignNotification(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
+        content.sound = UNNotificationSound.default
+        content.badge = nil
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
-        let request = UNNotificationRequest(identifier: "auto-resign-\(Date().timeIntervalSince1970)",
-                                             content: content, trigger: trigger)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
+        let identifier = "auto-resign-\(Int(Date().timeIntervalSince1970))"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
                 LogManager.shared.warning("发送本地通知失败: \(error.localizedDescription)", source: "AppDelegate")
             } else {
-                LogManager.shared.info("已发送本地通知: \(title) - \(body)", source: "AppDelegate")
+                LogManager.shared.info("已发送本地通知: 「\(title)」→ \(body)", source: "AppDelegate")
             }
         }
     }
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// App 在前台时也显示通知（banner 形式），不静默丢掉
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler:
