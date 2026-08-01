@@ -1,15 +1,14 @@
 import UIKit
 
-/// 复刻原 ReProvision-Reborn 架构：
-/// - Daemon（repro-signingd）独立定时检查，写请求文件 + notify_post
-/// - App 收到后执行续签；App 未运行时 daemon 独立记录日志到 /tmp/reprorefresh_at.log
-/// - App 下次打开时读取请求文件执行续签
-/// - 不使用 UNUserNotificationCenter（RootHide namespace 下不可靠）
+/// Daemon（repro-signingd）定时触发续签：写触发标记 → notify_post/后台拉起 App
+/// → App 执行续签 → 结果写入 /tmp/reprorefresh_at.log。
+/// App 未运行时 daemon 仍独立完成检查并记录。
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     private static let lastAutoResignKey = "lastAutoResignTimestamp"
     private static let ipcDir = "/var/mobile/Library/RePro"
+    private static let daemonLogPath = "/tmp/reprorefresh_at.log"
 
     // MARK: - UIApplicationDelegate
 
@@ -41,17 +40,48 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 self?.syncSigningdConfig()
             }
 
+        // daemon 后台拉起 App → 检测触发标记 → 直接执行续签
+        if checkDaemonTrigger() {
+            LogManager.shared.info("检测到 daemon 触发标记，即将执行后台续签", source: "AppDelegate")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.doAutoResign()
+            }
+            return true
+        }
+
         scheduleAutoResignIfNeeded()
         return true
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        if checkSigningdRequest() {
-            LogManager.shared.info("收到 repro-signingd 续签请求，触发自动重签", source: "AppDelegate")
+        if checkDaemonTrigger() {
+            LogManager.shared.info("检测到 daemon 触发标记，执行自动续签", source: "AppDelegate")
             doAutoResign()
         } else {
             scheduleAutoResignIfNeeded()
         }
+    }
+
+    // MARK: - daemon 触发检测
+
+    /// 检查 daemon 是否写入了触发标记
+    private func checkDaemonTrigger() -> Bool {
+        let triggerPath = "\(Self.ipcDir)/auto-resign-trigger"
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: triggerPath) else { return false }
+
+        guard let attrs = try? fm.attributesOfItem(atPath: triggerPath),
+              let mtime = attrs[.modificationDate] as? Date else { return false }
+
+        let key = "lastDaemonTriggerTime"
+        let defaults = UserDefaults.standard
+        let lastProcessed = defaults.object(forKey: key) as? Date ?? .distantPast
+
+        if mtime > lastProcessed {
+            defaults.set(mtime, forKey: key)
+            return true
+        }
+        return false
     }
 
     // MARK: - 自动续签
@@ -82,19 +112,38 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
             RPVSigningdNotify.notifySigningComplete()
 
+            let message: String
             switch result {
             case .success:
+                message = "续签成功"
                 LogManager.shared.info("自动重签完成", source: "AppDelegate")
             case .failure(let error):
-                let msg = error.localizedDescription
-                LogManager.shared.warning("自动重签结束: \(msg)", source: "AppDelegate")
+                message = error.localizedDescription
+                LogManager.shared.warning("自动重签结束: \(message)", source: "AppDelegate")
             }
+
+            // 写入 daemon 共享日志（/tmp/reprorefresh_at.log）
+            self.appendDaemonLog("续签结果 — \(message)")
         }
+    }
+
+    // MARK: - /tmp/reprorefresh_at.log 写入
+
+    private func appendDaemonLog(_ msg: String) {
+        guard let file = fopen(Self.daemonLogPath, "a") else { return }
+        time_t now = time(nil)
+        var tmNow = tm()
+        localtime_r(&now, &tmNow)
+        var ts: [CChar] = Array(repeating: 0, count: 64)
+        strftime(&ts, 64, "%Y-%m-%d %H:%M:%S", &tmNow)
+        fprintf(file, "[%s] [App] %s\n", ts, (msg as NSString).utf8String)
+        fflush(file)
+        fclose(file)
+        chmod(Self.daemonLogPath, 0o644)
     }
 
     // MARK: - repro-signingd IPC
 
-    /// 同步配置到 daemon 共享 plist。间隔字段名为 checkIntervalMin，单位分钟。
     func syncSigningdConfig() {
         let defaults = UserDefaults.standard
         let intervalMin = defaults.object(forKey: "checkIntervalMin") as? Int ?? 360
@@ -121,24 +170,5 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private func setupSigningdNotify() {
         let _ = RPVSigningdNotify.shared
-    }
-
-    private func checkSigningdRequest() -> Bool {
-        let requestPath = "\(Self.ipcDir)/auto-resign-request"
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: requestPath) else { return false }
-
-        guard let attrs = try? fm.attributesOfItem(atPath: requestPath),
-              let mtime = attrs[.modificationDate] as? Date else { return false }
-
-        let key = "lastSigningdRequestTime"
-        let defaults = UserDefaults.standard
-        let lastProcessed = defaults.object(forKey: key) as? Date ?? .distantPast
-
-        if mtime > lastProcessed {
-            defaults.set(mtime, forKey: key)
-            return true
-        }
-        return false
     }
 }

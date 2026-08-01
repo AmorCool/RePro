@@ -185,7 +185,7 @@ struct SettingsView: View {
         } header: {
             Text("自动重签")
         } footer: {
-            Text("repro-signingd 守护进程以 root 权限定时检查是否需要续签。App 未运行时 daemon 独立记录检查日志到 /tmp/reprorefresh_at.log，App 下次打开时执行续签。")
+            Text("repro-signingd 守护进程以 root 权限定时检查，到达续签时间后自动触发续签。全部检查与续签日志写入 /tmp/reprorefresh_at.log（daemon + App 共同维护）。")
         }
     }
 

@@ -48,10 +48,9 @@
                 NSLog(@"[RePro] App 在前台，直接触发自动续签");
 
                 NSString *ts = [NSString stringWithFormat:@"%lld", (long long)time(NULL)];
-                [ts writeToFile:@"/var/mobile/Library/RePro/auto-resign-request"
-                     atomically:YES
-                       encoding:NSUTF8StringEncoding
-                          error:nil];
+                NSString *triggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";
+                NSDictionary *trigger = @{@"timestamp": @(time(NULL)), @"threshold": @(2)};
+                [trigger writeToFile:triggerPath atomically:YES];
 
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                     dispatch_get_main_queue(), ^{
