@@ -12,6 +12,18 @@ class LogManager: ObservableObject {
 
     private init() {}
 
+    // MARK: daemon 日志转发
+    /// 设为非 nil 时，所有日志同时追加写入该文件（实时，一行一条）。
+    /// 用于自动续签期间把详尽日志写入 reprorefresh_at.log。
+    var daemonLogPath: String? {
+        didSet {
+            if let path = daemonLogPath, !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: nil)
+                chmod(path, 0o644)
+            }
+        }
+    }
+
     // MARK: 初始化
     func initialize() {
         loadFromDisk()
@@ -95,6 +107,20 @@ class LogManager: ObservableObject {
             }()
             os_log("[%@][%@] %@", log: OSLog(subsystem: "com.reprovision", category: source),
                type: osLogType, level.displayName, source, message)
+
+            // daemon 日志转发（自动续签时实时写入 reprorefresh_at.log）
+            if let dp = self?.daemonLogPath {
+                let df = DateFormatter()
+                df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                let ts = df.string(from: entry.timestamp)
+                if let line = "[\(ts)] [\(source)] \(message)\n".data(using: .utf8) {
+                    if let fh = FileHandle(forWritingAtPath: dp) {
+                        fh.seekToEndOfFile()
+                        fh.write(line)
+                        fh.closeFile()
+                    }
+                }
+            }
         }
     }
 

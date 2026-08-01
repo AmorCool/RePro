@@ -1,21 +1,20 @@
 import UIKit
 
-/// Daemon（repro-signingd）定时触发续签：写触发标记 → notify_post/后台拉起 App
-/// → App 执行续签 → 结果写入 /tmp/reprorefresh_at.log。
-/// App 未运行时 daemon 仍独立完成检查并记录。
+/// Daemon（repro-signingd）定时触发续签：写触发标记 → notify_post。
+/// App 检测触发标记后执行续签，LogManager 所有详细日志（哪个应用、进度、
+/// 成功/失败）实时写入 <jbroot>/var/log/reprorefresh_at.log。
+/// daemon 不拉 App，App 未运行时触发标记保留，下次打开自动处理。
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     private static let lastAutoResignKey = "lastAutoResignTimestamp"
     private static let ipcDir = "/var/mobile/Library/RePro"
 
-    /// 动态推导 jbroot 下的日志路径（与 daemon 一致）
-    private static var daemonLogPath: String {
-        // 从 App bundle 路径推导 jbroot（与 daemon 同理）
-        let bundlePath = Bundle.main.bundlePath // <jbroot>/Applications/RePro.app
+    /// 从 App bundle 路径推导 jbroot（与 daemon 一致）
+    static func daemonLogPath() -> String {
+        let bundlePath = Bundle.main.bundlePath
         if let r = bundlePath.range(of: "/Applications/", options: .backwards) {
-            let jbroot = String(bundlePath[..<r.lowerBound])
-            return "\(jbroot)/var/log/reprorefresh_at.log"
+            return "\(bundlePath[..<r.lowerBound])/var/log/reprorefresh_at.log"
         }
         return "/var/jb/var/log/reprorefresh_at.log"
     }
@@ -50,9 +49,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 self?.syncSigningdConfig()
             }
 
-        // daemon 后台拉起 App → 检测触发标记 → 直接执行续签
         if checkDaemonTrigger() {
-            LogManager.shared.info("检测到 daemon 触发标记，即将执行后台续签", source: "AppDelegate")
+            LogManager.shared.info("检测到 daemon 触发标记，即将执行自动续签", source: "AppDelegate")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 self?.doAutoResign()
             }
@@ -74,7 +72,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     // MARK: - daemon 触发检测
 
-    /// 检查 daemon 是否写入了触发标记
     private func checkDaemonTrigger() -> Bool {
         let triggerPath = "\(Self.ipcDir)/auto-resign-trigger"
         let fm = FileManager.default
@@ -115,49 +112,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let defaults = UserDefaults.standard
         let threshold = defaults.object(forKey: "resignThreshold") as? Int ?? 2
         defaults.set(Date(), forKey: Self.lastAutoResignKey)
-        LogManager.shared.info("触发自动重签（阈值 \(threshold) 天）", source: "AppDelegate")
+
+        // 开启 daemon 日志转发：续签期间所有 LogManager 详细日志实时写入 reprorefresh_at.log
+        LogManager.shared.daemonLogPath = Self.daemonLogPath()
+        LogManager.shared.info("══════ 自动续签开始（阈值 \(threshold) 天）══════", source: "AppDelegate")
 
         BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
             guard let self = self else { return }
 
             RPVSigningdNotify.notifySigningComplete()
 
-            let message: String
             switch result {
             case .success:
-                message = "续签成功"
-                LogManager.shared.info("自动重签完成", source: "AppDelegate")
+                LogManager.shared.info("自动续签完成", source: "AppDelegate")
             case .failure(let error):
-                message = error.localizedDescription
-                LogManager.shared.warning("自动重签结束: \(message)", source: "AppDelegate")
+                LogManager.shared.warning("自动续签结束: \(error.localizedDescription)", source: "AppDelegate")
             }
 
-            // 写入 daemon 共享日志（/tmp/reprorefresh_at.log）
-            self.appendDaemonLog("续签结果 — \(message)")
+            // 关闭 daemon 日志转发
+            LogManager.shared.daemonLogPath = nil
         }
-    }
-
-    // MARK: - /tmp/reprorefresh_at.log 写入
-
-    private func appendDaemonLog(_ msg: String) {
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let ts = df.string(from: Date())
-        let line = "[\(ts)] [App] \(msg)\n"
-
-        guard let data = line.data(using: .utf8) else { return }
-        let path = Self.daemonLogPath
-
-        if FileManager.default.fileExists(atPath: path) {
-            if let fh = FileHandle(forWritingAtPath: path) {
-                fh.seekToEndOfFile()
-                fh.write(data)
-                fh.closeFile()
-            }
-        } else {
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
-        chmod(path, 0o644)
     }
 
     // MARK: - repro-signingd IPC
