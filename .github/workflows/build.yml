@@ -180,7 +180,6 @@ jobs:
             -arch arm64 -miphoneos-version-min=15.0 \
             -O2 \
             -framework Foundation \
-            -framework CoreFoundation \
             -o build/repro-signingd \
             Helper/repro-signingd.m 2>&1 | tee signingd_build.log
 

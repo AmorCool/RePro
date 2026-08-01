@@ -20,6 +20,7 @@
 
 @implementation RPVSigningdNotify {
     int _token;
+    int _notifyToken;
 }
 
 + (instancetype)shared {
@@ -33,6 +34,7 @@
 }
 
 - (void)setup {
+    // 1. 监听 daemon 的续签触发信号（schedule-resign）
     notify_register_dispatch("com.reprovision.schedule-resign",
         &_token,
         dispatch_get_main_queue(),
@@ -66,6 +68,16 @@
                     });
             }
         });
+
+    // 2. 监听 daemon 回传的通知显示信号
+    notify_register_dispatch("com.reprovision.show-notification-done",
+        &_notifyToken,
+        dispatch_get_main_queue(),
+        ^(int unused) {
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"com.reprovision.show-notification-done"
+                              object:nil];
+        });
 }
 
 + (void)notifyConfigUpdated {
@@ -74,6 +86,7 @@
 
 - (void)dealloc {
     if (_token > 0) notify_cancel(_token);
+    if (_notifyToken > 0) notify_cancel(_notifyToken);
 }
 
 + (void)notifyShowNotification {

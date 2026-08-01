@@ -1,26 +1,20 @@
 //
 //  repro-signingd.m
-//  RePro 后台定时续签守护进程 + 系统通知
+//  RePro 后台定时续签守护进程
 //
-//  由 launchd 在系统启动时拉起（RunAtLoad / KeepAlive），完全在 App jbroot
-//  namespace 外运行，以 root 身份工作。两件事：
+//  由 launchd 在系统启动时拉起（RunAtLoad / KeepAlive），root 身份，
+//  App jbroot namespace 外运行。唯一职责：NSTimer 定时检查是否需要续签，
+//  通过 notify_post + 共享文件通知 App。
 //
-//  1. 定时续签检查：NSTimer 每 N 小时 fire → 写入 request 时间戳
-//     → notify_post("com.reprovision.schedule-resign") → App 收到后执行续签
-//
-//  2. 系统通知：监听 notify_post("com.reprovision.show-notification")，
-//     读 /var/mobile/Library/RePro/auto-resign-notification.plist，
-//     用 CFUserNotification 显示系统横幅通知。
-//     这是通知的唯一出口——App 不直接调 UNUserNotificationCenter
-//     （RootHide namespace 内 XPC 可能落 overlay 假成功），
-//     全部改由本 daemon 在 namespace 外以 root 身份发出。
+//  通知不由 daemon 直接发（iOS 没有 daemon 可用的通知 API），
+//  而是由 App 在收到续签请求并执行完毕后自己发 UNUserNotificationCenter。
+//  App 端在 didFinishLaunching 中一次性请求通知权限（系统去重，不会反复弹窗）。
 //
 
 #include <notify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 
 static NSString *const kIpcDir              = @"/var/mobile/Library/RePro";
@@ -33,8 +27,6 @@ static const NSInteger  kDefaultCheckInterval = 6;
 static const NSInteger  kDefaultThreshold     = 2;
 static const NSTimeInterval kMinTimerInterval = 3600.0;
 
-// ─── 日志 ───────────────────────────────────────────────────────
-
 static void SDLog(NSString *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -42,8 +34,6 @@ static void SDLog(NSString *fmt, ...) {
     va_end(args);
     NSLog(@"[repro-signingd] %@", msg);
 }
-
-// ─── 共享目录 ───────────────────────────────────────────────────
 
 static BOOL SDEnsureIpcDir(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -58,8 +48,6 @@ static BOOL SDEnsureIpcDir(void) {
     return YES;
 }
 
-// ─── 读配置 ─────────────────────────────────────────────────────
-
 static NSDictionary *SDLoadConfig(void) {
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     return cfg ?: @{
@@ -69,8 +57,6 @@ static NSDictionary *SDLoadConfig(void) {
     };
 }
 
-// ─── 定时续签触发 ───────────────────────────────────────────────
-
 static void SDFireResignRequest(void) {
     NSDictionary *cfg = SDLoadConfig();
     NSInteger threshold = [cfg[@"resignThreshold"] integerValue];
@@ -79,12 +65,33 @@ static void SDFireResignRequest(void) {
 
     SDEnsureIpcDir();
 
+    // 写 request 时间戳 + 通知内容
     NSString *ts = [NSString stringWithFormat:@"%lld", (long long)now];
     [ts writeToFile:kRequestPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
     chown(kRequestPath.UTF8String, 501, 501);
 
+    NSDictionary *noti = @{
+        @"title": @"后台定时续签检查",
+        @"body":  [NSString stringWithFormat:@"repro-signingd 已触发续签检查，下次打开 RePro 将自动续签", (long)threshold],
+        @"timestamp": @(now),
+    };
+    [noti writeToFile:kNotificationPath atomically:YES];
+    chown(kNotificationPath.UTF8String, 501, 501);
+
+    // 通知 App
     notify_post("com.reprovision.schedule-resign");
     SDLog(@"已触发自动续签请求（阈值 %ld 天）", (long)threshold);
+}
+
+// App 续签完成后也会通过这个 notify 告诉 daemon 显示结果通知，
+// 但因为 iOS 不支持 daemon 级的通知 API（CFUserNotification 是 macOS only），
+// daemon 收到后把通知内容写共享路径，App 自己发 UNUserNotificationCenter。
+static void SDHandleShowNotification(void) {
+    // App 已经写好了通知内容 plist，daemon 的职责只是协调——
+    // 通过 notify_post 回传给 App 让它发通知。
+    // 这里直接转发：发一个 notify 让 App 的 dispatch source 触发。
+    notify_post("com.reprovision.show-notification-done");
+    SDLog(@"转发通知请求回 App");
 }
 
 // ─── NSTimer ────────────────────────────────────────────────────
@@ -106,58 +113,12 @@ static void SDScheduleTimer(NSTimeInterval interval) {
     }];
 }
 
-// ─── 系统通知（CFUserNotification banner） ──────────────────────
-
-/// 用 CFUserNotification 显示非阻塞横幅通知。
-/// CFUserNotification 是 CoreFoundation 的 C API，任何 root 进程都可以调用，
-/// 不受 App namespace 影响——这正是我们让 daemon 发通知的原因。
-static void SDShowNotificationBanner(NSString *title, NSString *body) {
-    if (!title.length && !body.length) return;
-
-    // CFUserNotificationDisplayNotice: 非阻塞，显示横幅后立即返回
-    // kCFUserNotificationNoteAlertLevel: 系统通知级别（带声音）
-    CFOptionFlags flags = 0;
-    CFUserNotificationDisplayNotice(
-        0,                                  // timeout: 0 = system default
-        kCFUserNotificationNoteAlertLevel,   // alert level
-        NULL,                                // icon URL
-        NULL,                                // sound URL
-        NULL,                                // localization URL
-        (__bridge CFStringRef)(title ?: @""),
-        (__bridge CFStringRef)(body ?: @""),
-        NULL                                 // default button
-    );
-
-    SDLog(@"已显示系统通知: %@ — %@", title, body);
-}
-
-/// 从共享 plist 读取通知内容并显示。
-static void SDHandleShowNotification(void) {
-    NSDictionary *noti = [NSDictionary dictionaryWithContentsOfFile:kNotificationPath];
-    if (!noti) {
-        SDLog(@"收到显示通知请求但没有内容文件");
-        return;
-    }
-
-    NSString *title = [noti[@"title"] description] ?: @"";
-    NSString *body  = [noti[@"body"] description] ?: @"";
-
-    // 去重：同一个时间戳的通知只显示一次
-    NSInteger ts = [noti[@"timestamp"] integerValue];
-    static NSInteger gLastNotiTimestamp = 0;
-    if (ts && ts == gLastNotiTimestamp) return;
-    gLastNotiTimestamp = ts;
-
-    SDShowNotificationBanner(title, body);
-}
-
-// ─── main ────────────────────────────────────────────────��──────
+// ─── main ───────────────────────────────────────────────────────
 
 int main(void) {
     SDLog(@"启动，pid=%d", getpid());
     SDEnsureIpcDir();
 
-    // 1. 加载配置，启动定时续签检查
     NSDictionary *cfg = SDLoadConfig();
     NSInteger intervalHours = [cfg[@"checkInterval"] integerValue];
     if (intervalHours < 1) intervalHours = kDefaultCheckInterval;
@@ -165,13 +126,11 @@ int main(void) {
 
     BOOL autoResign = [cfg[@"autoResign"] boolValue];
     SDLog(@"自动续签: %@, 间隔: %.0f 分钟, 阈值: %@ 天",
-          autoResign ? @"开启" : @"关闭",
-          interval / 60.0,
+          autoResign ? @"开启" : @"关闭", interval / 60.0,
           cfg[@"resignThreshold"] ?: @(kDefaultThreshold));
 
     SDScheduleTimer(interval);
 
-    // 2. 监听 App 配置更新
     int configToken;
     notify_register_dispatch("com.reprovision.signingd-config-updated", &configToken,
         dispatch_get_main_queue(), ^(int unused) {
@@ -186,11 +145,10 @@ int main(void) {
             SDScheduleTimer(inv);
         });
 
-    // 3. 监听 App 的通知请求（续签完成后 App 写共享 plist 然后 notify_post）
+    // 接收 App 的通知显示请求，转发回 App
     int notifyToken;
     notify_register_dispatch("com.reprovision.show-notification", &notifyToken,
         dispatch_get_main_queue(), ^(int unused) {
-            SDLog(@"收到显示通知请求");
             SDHandleShowNotification();
         });
 
