@@ -54,7 +54,11 @@ static BOOL RZFileLooksLikeMachO(NSString *path) {
 }
 
 // Drops the arm64e slice of a single Mach-O file if a non-arm64e arm64 slice
-// exists. Returns YES if the file was rewritten as a thin arm64 binary.
+// exists. For arm64e-only binaries (no arm64 slice), converts the arm64e slice
+// in place to plain arm64 by clearing the ARM64E cpusubtype bit (and the
+// MH_HAS_AUTHENTICATED_POINTERS flag). arm64e code is valid as arm64 because
+// PAC/Auth instructions are HINT-space NOPs. Returns YES if the file was
+// rewritten as (or converted to) a thin arm64 binary.
 static BOOL RZThinArm64eSliceInFile(NSString *path) {
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (data.length < sizeof(uint32_t)) return NO;
@@ -81,7 +85,37 @@ static BOOL RZThinArm64eSliceInFile(NSString *path) {
             }
         }
         if (arm64Off < 0 && sawArm64e) {
-            RPVDiagnostic(RPVDiagWarning, @"sign", @"%@ is arm64e-only (FAT); cannot thin to arm64, kept arm64e.", [path lastPathComponent]);
+            // arm64e-only FAT: convert the arm64e slice in place to plain arm64.
+            // arm64e code runs as arm64 (PAC/Auth instructions are HINT-space NOPs),
+            // and free provisioning installs arm64 binaries reliably — arm64e main
+            // binaries trip MICodeSigningVerifier -> 0xe8008015 on iOS 15+.
+            int64_t eOff = -1, eSize = -1;
+            for (uint32_t i = 0; i < nfat; i++) {
+                uint32_t ct = RZSwapBigToHost32(archs[i].cputype);
+                uint32_t st = RZSwapBigToHost32(archs[i].cpusubtype);
+                if (ct == CPU_TYPE_ARM64 && (st & RZ_ARM64E_BIT)) {
+                    eOff = RZSwapBigToHost32(archs[i].offset);
+                    eSize = RZSwapBigToHost32(archs[i].size);
+                    break;
+                }
+            }
+            if (eOff >= 0 && eSize > 0 && (int64_t)data.length >= eOff + eSize) {
+                NSMutableData *md = [data mutableCopy];
+                if ((int64_t)md.length >= eOff + (int64_t)sizeof(struct mach_header_64)) {
+                    struct mach_header_64 *sh = (struct mach_header_64 *)((char *)md.mutableBytes + eOff);
+                    if (sh->magic == MH_MAGIC_64 && sh->cputype == CPU_TYPE_ARM64) {
+                        sh->cpusubtype &= ~RZ_ARM64E_BIT;
+                        sh->flags &= ~0x02000000u; // MH_HAS_AUTHENTICATED_POINTERS
+                        NSError *werr = nil;
+                        if ([md writeToFile:path options:NSDataWritingAtomic error:&werr] && !werr) {
+                            chmod(path.UTF8String, 0755);
+                            RPVDiagnostic(RPVDiagInfo, @"sign", @"converted arm64e -> arm64 (in place, FAT slice): %@", [path lastPathComponent]);
+                            return YES;
+                        }
+                    }
+                }
+            }
+            RPVDiagnostic(RPVDiagWarning, @"sign", @"%@ is arm64e-only (FAT); cannot convert to arm64, kept arm64e.", [path lastPathComponent]);
         }
         if (arm64Off >= 0 && arm64Size > 0 && (int64_t)data.length >= arm64Off + arm64Size) {
             NSData *thin = [data subdataWithRange:NSMakeRange((NSUInteger)arm64Off, (NSUInteger)arm64Size)];
@@ -103,7 +137,21 @@ static BOOL RZThinArm64eSliceInFile(NSString *path) {
     if (magic == MH_MAGIC_64) {
         const struct mach_header_64 *h = (const struct mach_header_64 *)data.bytes;
         if ((h->cputype == CPU_TYPE_ARM64) && (h->cpusubtype & RZ_ARM64E_BIT)) {
-            RPVDiagnostic(RPVDiagWarning, @"sign", @"%@ is arm64e-only; cannot thin to arm64 (kept arm64e).", [path lastPathComponent]);
+            // arm64e-only single slice: convert in place to plain arm64 so zsign
+            // produces a signature installd accepts under free provisioning.
+            // arm64e instruction stream is valid as arm64 (PAC/Auth are HINT NOPs).
+            NSMutableData *md = [data mutableCopy];
+            struct mach_header_64 *mh = (struct mach_header_64 *)md.mutableBytes;
+            mh->cpusubtype &= ~RZ_ARM64E_BIT;
+            mh->flags &= ~0x02000000u; // MH_HAS_AUTHENTICATED_POINTERS
+            NSError *werr = nil;
+            if ([md writeToFile:path options:NSDataWritingAtomic error:&werr] && !werr) {
+                chmod(path.UTF8String, 0755);
+                RPVDiagnostic(RPVDiagInfo, @"sign", @"converted arm64e -> arm64 (in place): %@", [path lastPathComponent]);
+                return YES;
+            } else {
+                RPVDiagnostic(RPVDiagWarning, @"sign", @"arm64e-only %@: in-place convert failed: %@", [path lastPathComponent], werr.localizedDescription);
+            }
         }
         return NO;
     }
