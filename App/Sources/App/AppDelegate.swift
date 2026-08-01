@@ -11,9 +11,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
 
-        // 无头续签模式（repro-signingd --resign-now 拉起）
-        if ProcessInfo.processInfo.environment["REPRO_HEADLESS_RESIGN"] == "1" {
-            return headlessResign(application)
+        // 检测到 daemon 触发标记且 App 被后台拉起 → 静默续签不显示 UI
+        if isDaemonTriggeredResign() {
+            return silentResignAndExit()
         }
 
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
@@ -30,31 +30,34 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in self?.syncConfigSilent() }
 
-        if checkDaemonTrigger() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in self?.doAutoResign() }
-            return true
-        }
         tryAutoResign()
         return true
     }
 
-    // MARK: - 无头续签（终端执行，不显示任何 UI）
+    // MARK: - 静默续签（无 UI，完成后退出）
 
-    private func headlessResign(_ application: UIApplication) -> Bool {
+    /// daemon 后台拉起：触发标记在过去 10 秒内写入
+    private func isDaemonTriggeredResign() -> Bool {
+        let p = "\(Self.ipcDir)/auto-resign-trigger"
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: p),
+              let mtime = attrs[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(mtime) < 10
+    }
+
+    /// 执行续签，不创建窗口，完成后 exit(0)
+    private func silentResignAndExit() -> Bool {
         RPVBridge.installRootHelperHandlers()
-
-        // 无 GUI → 日志全量写入 reprorefresh_at.log
         DaemonLogStart(DaemonLogDefaultPath())
-        LogManager.shared.info("══════ 无头续签模式 ══════", source: "AppDelegate")
+        LogManager.shared.info("══════ 静默续签 ══════", source: "AppDelegate")
 
         let d = UserDefaults.standard
         let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
-
         let sema = DispatchSemaphore(value: 0)
+
         BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { result in
             switch result {
-            case .success: LogManager.shared.info("无头续签完成", source: "AppDelegate")
-            case .failure(let e): LogManager.shared.warning("无头续签失败: \(e.localizedDescription)", source: "AppDelegate")
+            case .success: LogManager.shared.info("静默续签完成", source: "AppDelegate")
+            case .failure(let e): LogManager.shared.warning("静默续签失败: \(e.localizedDescription)", source: "AppDelegate")
             }
             DaemonLogStop()
             sema.signal()
