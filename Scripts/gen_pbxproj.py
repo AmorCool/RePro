@@ -26,7 +26,7 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "RePro"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.33"
+MARKETING_VERSION = "1.1.34"
 CURRENT_PROJECT_VERSION = "48"
 DEPLOYMENT_TARGET = "15.0"
 BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
@@ -142,7 +142,8 @@ def walk(rel_root, exts=None, skip_dirs=()):
 # ---------------------------------------------------------------------------
 def collect():
     swift = walk("App/Sources", exts={".swift"})
-    bridge_src = ["App/Sources/Bridge/RPVBridge.m"]
+    bridge_src = ["App/Sources/Bridge/RPVBridge.m",
+                  "App/Sources/Bridge/RPVSigningdNotify.m"]
     bridge_hdr = ["App/Sources/Bridge/RPVBridge.h", BRIDGING_HEADER]
 
     vendor_all = walk("Vendor/ReProvision", exts={".m", ".mm", ".c", ".cpp", ".h", ".hpp"})

@@ -33,12 +33,14 @@ for c in /bin/launchctl /usr/bin/launchctl; do
 		for domain in "gui/501" "user/501" "system"; do
 			"$c" bootout "$domain/jp.soh.reprovisiond" 2>/dev/null || true
 			"$c" bootout "$domain/jp.soh.reprovision.profiledaemon" 2>/dev/null || true
+			"$c" bootout "$domain/jp.soh.reprovision.signingd" 2>/dev/null || true
 		done
 		break
 	fi
 done
 pkill -x reprovisiond 2>/dev/null || true
 pkill -x repro-profiledaemon 2>/dev/null || true
+pkill -x repro-signingd 2>/dev/null || true
 
 # 按需 root helper：必须 root:wheel + setuid（4755），
 # 否则 mobile 身份的 App 拉起它时拿不到 root。
@@ -76,6 +78,27 @@ fi
 APP_BIN="/Applications/RePro.app/RePro"
 if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
+fi
+
+# 后台定时续签守护进程
+SIGNINGD="/usr/libexec/repro-signingd"
+if [ -f "$SIGNINGD" ]; then
+	chown root:wheel "$SIGNINGD" 2>/dev/null || true
+	chmod 0755 "$SIGNINGD" 2>/dev/null || true
+	echo "signing daemon: $(ls -l "$SIGNINGD")"
+fi
+
+# 加载 signingd LaunchDaemon（定时检查是否需要续签，通知 App）
+SIGNINGD_PLIST="/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
+if [ -n "$LAUNCHCTL" ] && [ -f "$SIGNINGD_PLIST" ]; then
+	chown root:wheel "$SIGNINGD_PLIST" 2>/dev/null || true
+	chmod 644 "$SIGNINGD_PLIST" 2>/dev/null || true
+	echo "Loading signingd..."
+	"$LAUNCHCTL" bootout system "$SIGNINGD_PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$SIGNINGD_PLIST" >/dev/null 2>&1 || true
+	"$LAUNCHCTL" bootstrap system "$SIGNINGD_PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" load "$SIGNINGD_PLIST" >/dev/null 2>&1 || true
+	echo "signingd launched (定时续签守护进程)"
+else
+	echo "WARNING: 无法加载 signingd（launchctl 或 plist 不存在）"
 fi
 
 # 加载 profiledaemon LaunchDaemon（系统级上下文，不受 App namespace 影响）

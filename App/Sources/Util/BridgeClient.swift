@@ -160,6 +160,17 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    /// 重签所有已安装应用（不按阈值过滤，手动刷新专用）
+    func resignAllApplications(completion: @escaping (Result<Void, Error>) -> Void) {
+        bridge.resignAllApplications { error in
+            if let error = error {
+                completion(.failure(error))
+            } else {
+                completion(.success(()))
+            }
+        }
+    }
+
     @discardableResult
     func remove(bundleID: String) -> Bool {
         bridge.removeApplication(bundleIdentifier: bundleID)

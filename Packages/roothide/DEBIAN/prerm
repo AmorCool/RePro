@@ -11,11 +11,14 @@ for c in /bin/launchctl /usr/bin/launchctl; do
 	if [ -x "$c" ]; then
 		"$c" bootout system /Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist 2>/dev/null || \
 		"$c" unload /Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist 2>/dev/null || true
+		"$c" bootout system /Library/LaunchDaemons/jp.soh.reprovision.signingd.plist 2>/dev/null || \
+		"$c" unload /Library/LaunchDaemons/jp.soh.reprovision.signingd.plist 2>/dev/null || true
 		break
 	fi
 done
 pkill -x repro-profiledaemon 2>/dev/null || true
-echo "[RePro] profiledaemon 已停止"
+pkill -x repro-signingd 2>/dev/null || true
+echo "[RePro] profiledaemon / signingd 已停止"
 
 # 清理残留数据
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true

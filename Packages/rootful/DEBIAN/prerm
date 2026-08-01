@@ -2,9 +2,19 @@
 set -e
 
 # RePro rootful 包 prerm
-# 本版本没有常驻守护进程，repro-helper 是一次性进程，不需要停服务。
+# 停止后台定时续签守护进程，清理残留数据。
 
 echo "[RePro] rootful prerm 开始 $(date)"
+
+# 停止 signingd
+for c in "/bin/launchctl" "/usr/bin/launchctl"; do
+	if [ -x "$c" ]; then
+		"$c" bootout system /Library/LaunchDaemons/jp.soh.reprovision.signingd.plist 2>/dev/null || \
+		"$c" unload /Library/LaunchDaemons/jp.soh.reprovision.signingd.plist 2>/dev/null || true
+		break
+	fi
+done
+pkill -x repro-signingd 2>/dev/null || true
 
 # 清理残留数据
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true

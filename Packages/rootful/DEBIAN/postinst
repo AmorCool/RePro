@@ -40,6 +40,14 @@ if [ -f "$HELPER_BIN" ]; then
 	echo "root helper: $(ls -l "$HELPER_BIN")"
 fi
 
+# 后台定时续签守护进程
+SIGNINGD_BIN="${JB_PREFIX}/usr/libexec/repro-signingd"
+if [ -f "$SIGNINGD_BIN" ]; then
+	chown root:wheel "$SIGNINGD_BIN" 2>/dev/null || true
+	chmod 0755 "$SIGNINGD_BIN" 2>/dev/null || true
+	echo "signing daemon: $(ls -l "$SIGNINGD_BIN")"
+fi
+
 ZSIGN_BIN="${JB_PREFIX}/usr/local/bin/zsign"
 if [ -f "$ZSIGN_BIN" ]; then
 	chown root:wheel "$ZSIGN_BIN" 2>/dev/null || true
@@ -60,6 +68,20 @@ for c in "/usr/bin/uicache" "/bin/uicache"; do
 done
 if [ -n "$UICACHE" ]; then
 	"$UICACHE" -p "/Applications/RePro.app" || "$UICACHE" -a || true
+fi
+
+# 加载后台定时续签守护进程
+SIGNINGD_PLIST="/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
+LAUNCHCTL=""
+for c in "/bin/launchctl" "/usr/bin/launchctl"; do
+	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
+done
+if [ -n "$LAUNCHCTL" ] && [ -f "$SIGNINGD_PLIST" ]; then
+	chown root:wheel "$SIGNINGD_PLIST" 2>/dev/null || true
+	chmod 644 "$SIGNINGD_PLIST" 2>/dev/null || true
+	"$LAUNCHCTL" bootout system "$SIGNINGD_PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$SIGNINGD_PLIST" >/dev/null 2>&1 || true
+	"$LAUNCHCTL" bootstrap system "$SIGNINGD_PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" load "$SIGNINGD_PLIST" >/dev/null 2>&1 || true
+	echo "signingd launched（后台定时续签守护进程）"
 fi
 
 echo "Do, or do not. There is no try."

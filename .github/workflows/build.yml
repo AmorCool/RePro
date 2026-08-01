@@ -167,6 +167,32 @@ jobs:
           chmod +x build/repro-profiledaemon
           echo "profile daemon built successfully"
 
+      - name: Build signing daemon (repro-signingd)
+        # repro-signingd 是后台定时续签守护进程。由 launchd 在系统启动时
+        # 拉起（RunAtLoad + KeepAlive），用 NSTimer 定时检查是否需要续签，
+        # 通过 notify_post + 共享文件通知 App 执行自动续签。
+        run: |
+          set -e
+          mkdir -p build
+
+          xcrun -sdk iphoneos clang \
+            -x objective-c -fobjc-arc \
+            -arch arm64 -miphoneos-version-min=15.0 \
+            -O2 \
+            -framework Foundation \
+            -o build/repro-signingd \
+            Helper/repro-signingd.m 2>&1 | tee signingd_build.log
+
+          if [ ! -f build/repro-signingd ]; then
+            echo "error: repro-signingd build failed"
+            cat signingd_build.log
+            exit 1
+          fi
+
+          file build/repro-signingd
+          chmod +x build/repro-signingd
+          echo "signing daemon built successfully"
+
       - name: Cross-compile zsign for iOS (arm64)
         # zsign 是设备端签名后端（纯 C/C++，仅依赖 OpenSSL）。
         # zlib/minizip 已内嵌在其源码树中。交叉编译为 iOS arm64 静态链接版，
@@ -255,7 +281,8 @@ jobs:
           PKG="Packages/rootless"
           RL="$PKG/var/jb"
           mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" \
-                   "$RL/usr/share/reprovision/certificates"
+                   "$RL/usr/share/reprovision/certificates" \
+                   "$RL/Library/LaunchDaemons"
           APP_DIR=$(find build -name "RePro.app" -type d | head -1)
           cp -R "$APP_DIR" "$RL/Applications/"
           cp build/repro-helper "$RL/usr/libexec/"
@@ -280,6 +307,8 @@ jobs:
           chmod 0755 "$RL/Applications/RePro.app/RePro"
           do_sign "$RL/Applications/RePro.app/RePro" Resources/entitlements-base.plist
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
+          cp build/repro-signingd "$RL/usr/libexec/"
+          cp Resources/jp.soh.reprovision.signingd.plist "$RL/Library/LaunchDaemons/"
           do_sign_bare "$RL/usr/local/bin/zsign"
           # 4755 = setuid root。postinst 里还会再设一次（CI 非 root，dpkg-deb 存不住属主）
           chmod 4755 "$RL/usr/libexec/repro-helper"
@@ -287,7 +316,8 @@ jobs:
           # --- Rootful deb ---
           PKG2="Packages/rootful"
           mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/usr/local/bin" \
-                   "$PKG2/usr/share/reprovision/certificates"
+                   "$PKG2/usr/share/reprovision/certificates" \
+                   "$PKG2/Library/LaunchDaemons"
           cp -R "$APP_DIR" "$PKG2/Applications/"
           cp build/repro-helper "$PKG2/usr/libexec/"
           cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
@@ -296,6 +326,8 @@ jobs:
           cp Resources/Icon.png "$PKG2/Applications/RePro.app/Icon.png"
           do_sign "$PKG2/Applications/RePro.app/RePro" Resources/entitlements-base.plist
           do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
+          cp build/repro-signingd "$PKG2/usr/libexec/"
+          cp Resources/jp.soh.reprovision.signingd.plist "$PKG2/Library/LaunchDaemons/"
           do_sign_bare "$PKG2/usr/local/bin/zsign"
           chmod 4755 "$PKG2/usr/libexec/repro-helper"
 
@@ -307,14 +339,17 @@ jobs:
           cp -R "$APP_DIR" "$PKG3/Applications/"
           cp build/repro-helper "$PKG3/usr/libexec/"
           cp build/repro-profiledaemon "$PKG3/usr/libexec/"
+          cp build/repro-signingd "$PKG3/usr/libexec/"
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           cp Resources/jp.soh.reprovision.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
+          cp Resources/jp.soh.reprovision.signingd.plist "$PKG3/Library/LaunchDaemons/"
           do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
+          do_sign_bare "$PKG3/usr/libexec/repro-signingd"
           do_sign_bare "$PKG3/usr/local/bin/zsign"
           chmod 4755 "$PKG3/usr/libexec/repro-helper"
 

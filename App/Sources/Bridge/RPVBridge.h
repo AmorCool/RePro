@@ -168,6 +168,10 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
                                         completion:(void (^)(NSError *_Nullable error))completion
     NS_SWIFT_NAME(resignAllExpiringApplications(thresholdDays:completion:));
 
+/// 重签所有应用（不按阈值过滤，用户手动触发的批量刷新）
+- (void)resignAllApplicationsWithCompletion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(resignAllApplications(completion:));
+
 /// 卸载指定应用
 - (BOOL)removeApplicationWithBundleIdentifier:(NSString *)bundleIdentifier
     NS_SWIFT_NAME(removeApplication(bundleIdentifier:));

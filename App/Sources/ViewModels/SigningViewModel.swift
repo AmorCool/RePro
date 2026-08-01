@@ -150,6 +150,26 @@ final class SigningViewModel: ObservableObject {
         }
     }
 
+    /// 重签所有已安装应用（不按阈值过滤）。用户点击刷新按钮时调用。
+    func resignAllApplications() {
+        guard beginWork("正在批量刷新签名…") else { return }
+
+        LogManager.shared.info("手动批量刷新签名（全部应用）", source: "SigningViewModel")
+
+        client.resignAllApplications { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success:
+                LogManager.shared.info("手动批量刷新完成", source: "SigningViewModel")
+                self.endWork(message: "批量刷新完成")
+            case .failure(let error):
+                LogManager.shared.error("手动批量刷新失败: \(error.localizedDescription)", source: "SigningViewModel")
+                self.endWork(message: "批量刷新失败", error: error)
+            }
+            Task { await self.refreshApps() }
+        }
+    }
+
     // MARK: - 卸载
 
     func uninstall(app: InstalledApp) {

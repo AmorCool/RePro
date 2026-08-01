@@ -36,6 +36,9 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .onAppear { refreshEnvironment() }
+            .onDisappear {
+                NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
+            }
             .alert("确认重启 SpringBoard", isPresented: $showingRespringAlert) {
                 Button("取消", role: .cancel) {}
                 Button("重启", role: .destructive) { performRespring() }
@@ -212,8 +215,8 @@ struct SettingsView: View {
                 Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-")
                     .foregroundColor(.secondary)
             }
-            if let url = URL(string: "https://github.com/AmorCool/RePro") {
-                Link("开源项目", destination: url)
+            if let url = URL(string: "https://www.coolapk.com/u/32152768") {
+                Link("作者主页", destination: url)
             }
         }
     }

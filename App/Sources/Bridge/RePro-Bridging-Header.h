@@ -12,5 +12,6 @@
 #define RePro_Bridging_Header_h
 
 #import "RPVBridge.h"
+#import "RPVSigningdNotify.h"
 
 #endif /* RePro_Bridging_Header_h */

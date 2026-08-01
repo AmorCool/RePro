@@ -92,7 +92,7 @@ struct AppsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
-                        viewModel.resignAllExpiring()
+                        viewModel.resignAllApplications()
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                     }

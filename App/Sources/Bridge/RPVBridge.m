@@ -431,6 +431,29 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     });
 }
 
+- (void)resignAllApplicationsWithCompletion:(void (^)(NSError *_Nullable))completion {
+    if (!self.isSignedIn) {
+        RPVBridgeCallOnMain(^{
+            if (completion) {
+                completion([RPVBridge errorWithCode:RPVBridgeErrorNotSignedIn
+                                            message:@"请先登录 Apple ID"]);
+            }
+        });
+        return;
+    }
+
+    if (![self _beginPipelineWithCompletion:completion]) return;
+
+    dispatch_async(self.workQueue, ^{
+        // resignApplications:NO → 不按阈值过滤，重签所有已安装的应用
+        [[RPVApplicationSigning sharedInstance] resignApplications:NO
+                                            thresholdForExpiration:0
+                                                        withTeamID:[RPVResources getTeamID]
+                                                          username:[RPVResources getUsername]
+                                                          password:[RPVResources getPassword]];
+    });
+}
+
 - (BOOL)removeApplicationWithBundleIdentifier:(NSString *)bundleIdentifier {
     return [[RPVApplicationSigning sharedInstance] removeApplicationWithBundleIdentifier:bundleIdentifier];
 }
