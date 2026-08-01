@@ -88,6 +88,12 @@ if [ -f "$SIGNINGD" ]; then
 	echo "signing daemon: $(ls -l "$SIGNINGD")"
 fi
 
+# 找 launchctl（signingd + profiledaemon 共用）
+LAUNCHCTL=""
+for c in /bin/launchctl /usr/bin/launchctl; do
+	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
+done
+
 # 加载 signingd LaunchDaemon（定时检查是否需要续签，通知 App）
 SIGNINGD_PLIST="/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
 if [ -n "$LAUNCHCTL" ] && [ -f "$SIGNINGD_PLIST" ]; then
@@ -103,10 +109,6 @@ fi
 
 # 加载 profiledaemon LaunchDaemon（系统级上下文，不受 App namespace 影响）
 PLIST="/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist"
-LAUNCHCTL=""
-for c in /bin/launchctl /usr/bin/launchctl; do
-	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
-done
 
 if [ -n "$LAUNCHCTL" ] && [ -f "$PLIST" ]; then
 	chown root:wheel "$PLIST" 2>/dev/null || true
