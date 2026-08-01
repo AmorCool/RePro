@@ -19,6 +19,7 @@
 #import <stdio.h>
 #import <sys/stat.h>
 #import "RPVDiagnostics.h"
+#import "libMobileGestalt.h"
 
 #pragma mark - ARM64e thinning (fixes SIGBUS on arm64e devices after re-sign)
 
@@ -382,6 +383,110 @@ static void RZVerifyBundleSigned(NSString *bundlePath) {
     }
 }
 
+// Extract the embedded plist from a .mobileprovision (CMS/PKCS#7-wrapped) by
+// locating the <?xml ... </plist> markers in the raw bytes. security/CMSDecoder
+// is unavailable in the iOS SDK, but the CMS eContent (the profile plist) is
+// stored verbatim as the OCTET STRING value, so the ASCII plist markers are
+// present in the file. This is the standard on-device trick to read a profile
+// without CMSDecoder. Returns nil if no plist can be found/parsed.
+static NSDictionary *RZExtractProfilePlist(NSString *provPath) {
+    NSData *data = [NSData dataWithContentsOfFile:provPath];
+    if (!data || data.length < 16) return nil;
+    NSData *open = [@"<?xml" dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *close = [@"</plist>" dataUsingEncoding:NSUTF8StringEncoding];
+    NSRange r1 = [data rangeOfData:open options:0 range:NSMakeRange(0, data.length)];
+    NSRange r2 = [data rangeOfData:close options:NSBackwardsSearch range:NSMakeRange(0, data.length)];
+    if (r1.location == NSNotFound || r2.location == NSNotFound) return nil;
+    NSUInteger end = r2.location + r2.length;
+    if (end <= r1.location) return nil;
+    NSData *plistData = [data subdataWithRange:NSMakeRange(r1.location, end - r1.location)];
+    return [NSPropertyListSerialization propertyListWithData:plistData options:0 format:NULL error:nil];
+}
+
+// Dump the provisioning-profile ↔ signed-entitlements match — the actual root
+// cause of install-time 0xe8008015 (per the LiveContainer/ReproVision guides:
+// application-identifier exact match + device UDID registration + TeamIdentifier
+// consistency + entitlements ⊆ profile whitelist). On iOS we cannot use
+// CMSDecoder, so we parse the profile plist via RZExtractProfilePlist.
+static void RZDumpProfileMatch(NSString *bundlePath, NSString *entitlementsPath) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *mainProv = [bundlePath stringByAppendingPathComponent:@"embedded.mobileprovision"];
+
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"=== PROFILE MATCH DIAGNOSTICS (0xe8008015 root cause) ===");
+
+    NSDictionary *prof = RZExtractProfilePlist(mainProv);
+    if (!prof) {
+        RPVDiagnostic(RPVDiagError, @"sign", @"! cannot parse embedded.mobileprovision (present=%@) — cannot verify profile match",
+                      [fm fileExistsAtPath:mainProv] ? @"yes" : @"NO");
+        RPVDiagnostic(RPVDiagInfo, @"sign", @"=== end PROFILE MATCH DIAGNOSTICS ===");
+        return;
+    }
+    NSDictionary *pe = prof[@"Entitlements"];
+    NSString *aid = pe[@"application-identifier"];
+    NSArray *teams = prof[@"TeamIdentifier"];
+    NSArray *devs = prof[@"ProvisionedDevices"];
+    NSString *exp = [prof[@"ExpirationDate"] description] ?: @"(unknown)";
+
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"profile.application-identifier = %@", aid);
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"profile.TeamIdentifier = %@", teams.firstObject);
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"profile.ProvisionedDevices count = %lu (empty => wildcard/team profile)",
+                  (unsigned long)(devs ? devs.count : 0));
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"profile.ExpirationDate = %@", exp);
+
+    NSDictionary *ent = [NSDictionary dictionaryWithContentsOfFile:entitlementsPath];
+    NSString *eaid = ent[@"application-identifier"];
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"signed entitlements.application-identifier = %@", eaid);
+
+    // Wildcard-aware application-identifier match: profile "<Team>.*" matches
+    // signed "<Team>.<bundleid>". Non-wildcard requires exact bundle id.
+    BOOL aidMatch = NO;
+    if (aid.length && eaid.length) {
+        NSArray *pa = [aid componentsSeparatedByString:@"."];
+        NSArray *ea = [eaid componentsSeparatedByString:@"."];
+        if (pa.count >= 2 && ea.count >= 2) {
+            NSString *pTeam = pa[0];
+            NSString *pBundle = [[pa subarrayWithRange:NSMakeRange(1, pa.count - 1)] componentsJoinedByString:@"."];
+            NSString *eTeam = ea[0];
+            NSString *eBundle = [[ea subarrayWithRange:NSMakeRange(1, ea.count - 1)] componentsJoinedByString:@"."];
+            BOOL teamOK = [pTeam isEqualToString:eTeam];
+            BOOL bundleOK = [pBundle isEqualToString:@"*"] || [pBundle isEqualToString:eBundle];
+            aidMatch = teamOK && bundleOK;
+        }
+    }
+    RPVDiagnostic(aidMatch ? RPVDiagInfo : RPVDiagError, @"sign",
+                  @"application-identifier MATCH = %@",
+                  aidMatch ? @"YES" : @"NO (MISMATCH -> 0xe8008015)");
+
+    // Device UDID registration (the guide's stated primary 0xe8008015 cause).
+    CFStringRef udidRef = MGCopyAnswer(kMGUniqueDeviceID);
+    NSString *udid = udidRef ? (__bridge_transfer NSString *)udidRef : nil;
+    if (udid.length) {
+        BOOL inProfile = (devs.count == 0) ? YES : [devs containsObject:udid];
+        RPVDiagnostic(inProfile ? RPVDiagInfo : RPVDiagError, @"sign",
+                      @"device UDID = %@ | in profile.ProvisionedDevices = %@",
+                      udid, inProfile ? @"YES" : @"NO (NOT REGISTERED -> 0xe8008015)");
+    } else {
+        RPVDiagnostic(RPVDiagWarning, @"sign", @"! could not read device UDID via MGCopyAnswer");
+    }
+
+    // Entitlements subset check vs profile whitelist.
+    if (pe && ent) {
+        NSMutableArray *extra = [NSMutableArray array];
+        for (NSString *k in ent) {
+            if (pe[k] == nil) [extra addObject:k];
+        }
+        if (extra.count) {
+            RPVDiagnostic(RPVDiagError, @"sign",
+                          @"entitlements NOT in profile whitelist: %@ -> reject",
+                          [extra componentsJoinedByString:@", "]);
+        } else {
+            RPVDiagnostic(RPVDiagInfo, @"sign", @"entitlements ⊆ profile whitelist: YES");
+        }
+    }
+
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"=== end PROFILE MATCH DIAGNOSTICS ===");
+}
+
 // After zsign, report the on-disk code-signing artifacts so a failing re-sign
 // can be debugged from the app log: whether the main app (and each nested
 // framework, and each loose dylib at the app root) carries an
@@ -553,6 +658,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         // any Mach-O zsign left unsigned, and dump the profile/bundle-id match.
         RZVerifyBundleSigned(path);
         RZLogProfileDiagnostics(path);
+        RZDumpProfileMatch(path, rootEntitlementsPath);
 
         [self _cleanupTempFilesInContext:context];
 
