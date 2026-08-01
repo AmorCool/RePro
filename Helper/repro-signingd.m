@@ -109,5 +109,9 @@ int main(void) {
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
         dispatch_get_main_queue(), ^(int _){ s_log(@"续签完成"); });
 
+    // 手动触发（终端: notify_post com.reprovision.manual-resign）
+    int t3; notify_register_dispatch("com.reprovision.manual-resign", &t3,
+        dispatch_get_main_queue(), ^(int _){ s_log(@"收到手动触发信号"); s_fire(); });
+
     [[NSRunLoop mainRunLoop] run]; return 0;
 }
