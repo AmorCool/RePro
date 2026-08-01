@@ -12,12 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <mach-o/dyld.h>
 #import <Foundation/Foundation.h>
-
-extern char **environ;
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
@@ -99,55 +94,16 @@ static void s_start_timer(NSTimeInterval sec) {
 int main(int argc, char *argv[]) {
     s_open_log();
 
-    // --resign-now: 终端直接执行续签，不进入守护循环
+    // --resign-now: 终端直接触发续签
     if (argc >= 2 && strcmp(argv[1], "--resign-now") == 0) {
-        s_log(@"收到 --resign-now，启动无头续签…");
+        s_log(@"收到 --resign-now，触发续签…");
 
-        // 从自身可执行文件路径推 jbroot（用 _NSGetExecutablePath，RootHide 兼容）
-        char selfPath[PATH_MAX] = {0};
-        uint32_t sz = sizeof(selfPath);
-        NSString *a0 = nil;
-        if (_NSGetExecutablePath(selfPath, &sz) == 0)
-            a0 = [NSString stringWithUTF8String:selfPath];
-        if (!a0) a0 = [NSString stringWithUTF8String:argv[0]];
+        // 直接调用 s_fire()：写触发标记 + notify_post + 日志
+        s_fire();
 
-        NSString *jb = nil;
-        NSRange r = [a0 rangeOfString:@"/usr/libexec/" options:NSBackwardsSearch];
-        if (r.location != NSNotFound) jb = [a0 substringToIndex:r.location];
-
-        // RootHide 回退：扫描常见路径
-        if (!jb) {
-            NSFileManager *fm = [NSFileManager defaultManager];
-            for (NSString *c in @[@"/var/jb", @"/private/var/jb"]) {
-                if ([fm fileExistsAtPath:[c stringByAppendingPathComponent:@"usr/libexec/repro-signingd"]])
-                    { jb = c; break; }
-            }
-        }
-        if (!jb) jb = @"/var/jb";
-
-        s_log(@"jbroot=%@, self=%@", jb, a0);
-
-        NSString *appBin = [jb stringByAppendingPathComponent:@"Applications/RePro.app/RePro"];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:appBin]) {
-            s_log(@"❌ 找不到 App 二进制: %@", appBin);
-            return 1;
-        }
-
-        // 设置环境变量，App 检测到后做无头续签
-        setenv("REPRO_HEADLESS_RESIGN", "1", 1);
-
-        pid_t pid = 0;
-        char *spawnArgv[] = { (char *)appBin.UTF8String, NULL };
-        int rc = posix_spawn(&pid, appBin.UTF8String, NULL, NULL, spawnArgv, environ);
-        if (rc != 0) {
-            s_log(@"❌ posix_spawn 失败: %d", rc);
-            return 1;
-        }
-
-        int status = 0;
-        waitpid(pid, &status, 0);
-        s_log(@"无头续签进程结束（pid=%d, status=%d）", pid, status);
-        return (status == 0) ? 0 : 1;
+        s_log(@"触发完成 — 打开 RePro App 时将自动执行续签");
+        s_log(@"日志路径: <jbroot>/var/log/reprorefresh_at.log");
+        return 0;
     }
 
     // 正常守护模式
