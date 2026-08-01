@@ -14,6 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 通知 repro-signingd LaunchDaemon 重新加载配置（设置页保存后调用）
 + (void)notifyConfigUpdated;
 
+/// 通知 repro-signingd 显示系统通知
++ (void)notifyShowNotification;
+
 @end
 
 NS_ASSUME_NONNULL_END

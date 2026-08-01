@@ -77,3 +77,4 @@
 }
 
 @end
++ (void)notifyShowNotification { notify_post("com.reprovision.show-notification"); }

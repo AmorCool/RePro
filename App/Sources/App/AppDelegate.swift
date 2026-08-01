@@ -153,7 +153,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             "timestamp": Int(Date().timeIntervalSince1970),
         ]
         (dict as NSDictionary).write(toFile: notiPath, atomically: true)
-        notify_post("com.reprovision.show-notification")
+        RPVSigningdNotify.notifyShowNotification()
         LogManager.shared.info("已通知 daemon 发通知: 「\(title)」", source: "AppDelegate")
     }
 

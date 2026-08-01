@@ -133,6 +133,7 @@ struct SettingsView: View {
         } footer: {
             Text("repro-signingd 守护进程会定时检查，续签完成后通过系统通知告知结果。")
         }
+    }
 
     // MARK: - 签名后端
 
