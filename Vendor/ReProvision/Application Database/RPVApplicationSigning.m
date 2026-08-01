@@ -429,48 +429,15 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         }
     }
 
-    // RootHide：App 的 in-process MC 被 RootHide namespace 重定向到 overlay（假成功），
-    // posix_spawn helper 继承 App namespace（写的也是 overlay）。
-    // → 唯一可靠路径是 LaunchDaemon（repro-profiledaemon）：
-    //   由 launchd 在系统级上下文启动，完全在 App namespace 外面，
-    //   能写真实 /var/Managed Preferences/mobile + MC 直连真实 profiled。
-    //   App 通过 notify(3) + 文件 IPC 触发 daemon（见 RPVBridge.m 的 RPVTriggerProfileDaemon）。
-    BOOL fileOK = NO;
-    if (RPVIsRootHideEnvironment()) {
-        // RootHide：跳过 App MC（被重定向），直接走 daemon
-        if (_rpvDaemonProfileInstallHandler) {
-            fileOK = _rpvDaemonProfileInstallHandler(profilePath);
-            RPVDiagnostic(fileOK ? RPVDiagInfo : RPVDiagError,
-                          @"profile",
-                          @"[RootHide] profiledaemon 描述文件安装 %@（daemon 运行在系统级上下文，不受 namespace 影响）",
-                          fileOK ? @"成功" : @"失败");
-        } else {
-            RPVDiagnostic(RPVDiagError, @"profile",
-                          @"[RootHide] 未挂载 daemon handler，无法安装描述文件（请确认 repro-profiledaemon 已通过 launchctl 加载）");
-        }
-        success = fileOK;
-    } else {
-        // 非 RootHide（rootless/rootful）：App MC + 文件/daemon 兜底，保持原行为
-        fileOK = [self _registerProfileViaFileAtPath:profilePath];
-        if (!success) {
-            RPVDiagnostic(RPVDiagWarning, @"profile",
-                          @"MCProfileConnection did not register profile (report: %@); relying on file/daemon fallback", report);
-            success = fileOK;
-        } else if (fileOK) {
-            RPVDiagnostic(RPVDiagInfo, @"profile",
-                          @"profile registered via MCProfileConnection; file/daemon fallback also written");
-        }
-    }
-
+    // 对齐 test2：所有环境（含 RootHide）统一走 App 进程内 MCProfileConnection 注册到本地库，
+    // 不区分 namespace、不依赖 helper / daemon。test2 的 roothide 适配即此方式且重签成功。
     RPVDiagnostic(RPVDiagWarning, @"profile", @"profile register report:\n%@", report);
+    NSLog(@"*** [ReProvision] profile register report:\n%@", report);
 
     if (success) {
-        // Give profiled time to pick up the new/updated profile before install.
-        // RootHide 下 profiled 扫描 /var/Managed Preferences/mobile 可能需要更长时间，
-        // 因为 repro-helper 通过 setuid 写入后 profiled 不一定立即被唤醒。
-        NSTimeInterval sleepTime = fileOK ? 2.0 : 0.5;
-        NSLog(@"*** [ReProvision] sleeping %.1fs for profiled to pick up new profile", sleepTime);
-        [NSThread sleepForTimeInterval:sleepTime];
+        // 给 profiled 时间扫描并加载新 profile，再继续安装。
+        NSLog(@"*** [ReProvision] sleeping 2.0s for profiled to pick up new profile");
+        [NSThread sleepForTimeInterval:2.0];
     }
     return success;
 }

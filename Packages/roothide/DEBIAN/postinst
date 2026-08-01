@@ -2,12 +2,11 @@
 #
 # RePro (RootHide) postinst
 #
-# RootHide 下描述文件安装由 LaunchDaemon（repro-profiledaemon）完成：
-#   由 launchd 以 root 在系统级上下文启动，不受 App namespace 影响，
-#   能写真实 /var/Managed Preferences/mobile、MC 直连真实 profiled。
-#   这是解决 0xe8008015 的最终方案（App MC / spawn helper 均被 namespace 拦截）。
+# 描述文件安装已对齐 test2：统一由 App 进程内 MCProfileConnection 注册到本地库，
+# 不再依赖任何 helper / daemon。
 #
-# IPA 搬运仍由 repro-helper（setuid，App posix_spawn 按需拉起）完成。
+# IPA 搬运由 repro-helper（setuid，App posix_spawn 按需拉起）完成。
+# 升级旧版（含 repro-profiledaemon）时，下面的清理段会停止并移除残留 daemon。
 #
 # RootHide 的 dpkg 维护脚本运行在 vroot shell 中——脚本里的 "/" 就是 jbroot，
 # 下面这些标准根路径会被自动映射到 <jbroot>/... ，直接用即可。
@@ -48,13 +47,7 @@ if [ -f "$HELPER" ]; then
 	echo "root helper: $(ls -l "$HELPER")"
 fi
 
-# 描述文件安装守护进程：root:wheel + 0755（不需要 setuid，launchd 已以 root 启动）
-DAEMON="/usr/libexec/repro-profiledaemon"
-if [ -f "$DAEMON" ]; then
-	chown root:wheel "$DAEMON" 2>/dev/null || true
-	chmod 0755 "$DAEMON" 2>/dev/null || true
-	echo "profile daemon: $(ls -l "$DAEMON")"
-fi
+# （新版不再打包 repro-profiledaemon；旧版残留由上面的 bootout/pkill 段清理）
 
 ZSIGN="/usr/local/bin/zsign"
 if [ -f "$ZSIGN" ]; then
@@ -68,23 +61,7 @@ if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
 fi
 
-# 加载 profiledaemon LaunchDaemon（系统级上下文，不受 namespace 影响）
-PLIST="/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist"
-LAUNCHCTL=""
-for c in /bin/launchctl /usr/bin/launchctl; do
-	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
-done
-
-if [ -n "$LAUNCHCTL" ] && [ -f "$PLIST" ]; then
-	chown root:wheel "$PLIST" 2>/dev/null || true
-	chmod 644 "$PLIST" 2>/dev/null || true
-	echo "Loading profiledaemon..."
-	"$LAUNCHCTL" bootout system "$PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$PLIST" >/dev/null 2>&1 || true
-	"$LAUNCHCTL" bootstrap system "$PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" load "$PLIST" >/dev/null 2>&1 || true
-	echo "profiledaemon launched (system context, outside App namespace)"
-else
-	echo "WARNING: 无法加载 profiledaemon（launchctl 或 plist 不存在）"
-fi
+# 描述文件安装已统一走 App 内 MCProfileConnection，不再加载任何守护进程。
 
 # Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）
 echo "Reloading application cache"
