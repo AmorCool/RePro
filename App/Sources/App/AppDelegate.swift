@@ -148,21 +148,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
 
     // MARK: - 本地通知
 
-    /// 仅首次索要通知权限，已授权或已拒绝时不弹窗打扰用户。
+    /// 请求通知权限。在越狱环境下 getNotificationSettings 可能被 namespace
+    /// 拦截误报 denied，所以不预查状态，直接请求（系统处理去重，不会反复弹窗）。
     private func setupNotifications() {
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            switch settings.authorizationStatus {
-            case .notDetermined:
-                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                    LogManager.shared.info(granted ? "通知权限已获取" : "用户拒绝了通知权限", source: "AppDelegate")
-                }
-            case .denied:
-                LogManager.shared.warning("通知权限已被拒绝，续签结果通知不会显示", source: "AppDelegate")
-            case .authorized, .provisional, .ephemeral:
-                LogManager.shared.info("通知权限已就绪", source: "AppDelegate")
-            @unknown default:
-                break
-            }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            LogManager.shared.info(granted ? "通知权限已获取" : "通知权限请求未通过", source: "AppDelegate")
         }
         UNUserNotificationCenter.current().delegate = self
     }

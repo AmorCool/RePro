@@ -192,7 +192,7 @@ static void RZInspectArchsInBundle(NSString *bundlePath) {
             count++;
         }
     }
-    RPVDiagnostic(RPVDiagInfo, @"sign", @"共 %d 个 Mach-O，架构一律原样保留（不瘦身、不 patch、不写一个字节）", count);
+    RPVDiagnostic(RPVDiagInfo, @"sign", @"共 %d 个 Mach-O，保留架构原样", count);
     RZLogInstallCriticalInfoPlistKeys(bundlePath);
 }
 
