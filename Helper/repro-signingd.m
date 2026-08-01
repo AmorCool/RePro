@@ -14,6 +14,7 @@
 #include <time.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <mach-o/dyld.h>
 #import <Foundation/Foundation.h>
 
 extern char **environ;
@@ -102,12 +103,29 @@ int main(int argc, char *argv[]) {
     if (argc >= 2 && strcmp(argv[1], "--resign-now") == 0) {
         s_log(@"收到 --resign-now，启动无头续签…");
 
-        // 从自身路径推 jbroot
-        NSString *a0 = [NSString stringWithUTF8String:argv[0]];
+        // 从自身可执行文件路径推 jbroot（用 _NSGetExecutablePath，RootHide 兼容）
+        char selfPath[PATH_MAX] = {0};
+        uint32_t sz = sizeof(selfPath);
+        NSString *a0 = nil;
+        if (_NSGetExecutablePath(selfPath, &sz) == 0)
+            a0 = [NSString stringWithUTF8String:selfPath];
+        if (!a0) a0 = [NSString stringWithUTF8String:argv[0]];
+
         NSString *jb = nil;
         NSRange r = [a0 rangeOfString:@"/usr/libexec/" options:NSBackwardsSearch];
         if (r.location != NSNotFound) jb = [a0 substringToIndex:r.location];
+
+        // RootHide 回退：扫描常见路径
+        if (!jb) {
+            NSFileManager *fm = [NSFileManager defaultManager];
+            for (NSString *c in @[@"/var/jb", @"/private/var/jb"]) {
+                if ([fm fileExistsAtPath:[c stringByAppendingPathComponent:@"usr/libexec/repro-signingd"]])
+                    { jb = c; break; }
+            }
+        }
         if (!jb) jb = @"/var/jb";
+
+        s_log(@"jbroot=%@, self=%@", jb, a0);
 
         NSString *appBin = [jb stringByAppendingPathComponent:@"Applications/RePro.app/RePro"];
         if (![[NSFileManager defaultManager] fileExistsAtPath:appBin]) {
