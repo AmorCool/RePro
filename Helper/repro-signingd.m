@@ -107,27 +107,39 @@ static BOOL SDEnsureIpcDir(void) {
 }
 
 static NSDictionary *SDLoadConfig(void) {
-    // 1. 优先读 App 同步的 plist
+    // 1. 优先读 App 同步的 plist（/var/mobile/Library/RePro/signingd-config.plist）
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (cfg) return cfg;
+    if (cfg) {
+        NSInteger th = [cfg[@"resignThreshold"] integerValue];
+        NSInteger im = [cfg[@"checkIntervalMin"] integerValue];
+        if (th >= 1 && im >= 1) return cfg; // 有效值才用
+    }
 
-    // 2. 回退：从 CFPreferences 直接读 App 的 UserDefaults（跨进程，原 reprovisiond 方案）
+    // 2. 回退：从 CFPreferences 读 App 的 UserDefaults
+    //    关键：必须用 CFSTR("mobile") 而非 kCFPreferencesCurrentUser，
+    //    因为 daemon 以 root 运行，而 App 以 mobile 写入。
+    //    这是原 reprovisiond（test2源码）的做法。
     CFStringRef appID = CFSTR("com.reprovision.repro");
     CFPreferencesAppSynchronize(appID);
-    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, CFSTR("mobile"), kCFPreferencesAnyHost);
     if (keys) {
         NSDictionary *prefs = (__bridge_transfer NSDictionary *)
-            CFPreferencesCopyMultiple(keys, appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            CFPreferencesCopyMultiple(keys, appID, CFSTR("mobile"), kCFPreferencesAnyHost);
         CFRelease(keys);
         if (prefs.count > 0) {
-            // 适配 key 名：App 用 "resignThreshold" / "checkIntervalMin" / "autoResign"
             NSNumber *autoR = prefs[@"autoResign"];
             NSNumber *interval = prefs[@"checkIntervalMin"];
             NSNumber *threshold = prefs[@"resignThreshold"];
+            NSInteger th = threshold ? [threshold integerValue] : kDefaultThreshold;
+            NSInteger im = interval ? [interval integerValue] : kDefaultCheckMinutes;
+            if (th < 1) th = kDefaultThreshold;
+            if (im < 1) im = kDefaultCheckMinutes;
+            SDLog(@"从 CFPreferences(mobile) 读取到: autoResign=%@, 间隔=%ld分, 阈值=%ld天",
+                  autoR, (long)im, (long)th);
             return @{
                 @"autoResign":       autoR ?: @(kDefaultAutoResign),
-                @"checkIntervalMin": interval ?: @(kDefaultCheckMinutes),
-                @"resignThreshold":  threshold ?: @(kDefaultThreshold),
+                @"checkIntervalMin": @(im),
+                @"resignThreshold":  @(th),
             };
         }
     }
@@ -167,8 +179,8 @@ static void SDFireResignRequest(void) {
     // 通知 App（App 在前台/后台时立即处理，否则下次打开时处理）
     notify_post("com.reprovision.schedule-resign");
 
-    SDLog(@"══════ 定时续签触发 ══════");
-    SDLog(@"阈值: %ld 天 | App 运行中则立即续签，否则下次打开时自动处理", (long)threshold);
+    SDLog(@"══════ 到达续签时间 ══════");
+    SDLog(@"阈值: %ld 天 | 已写入触发标记，App 可用时自动执行续签", (long)threshold);
 }
 
 static void SDScheduleTimer(NSTimeInterval interval) {
@@ -200,10 +212,10 @@ int main(void) {
     if (intervalMin < 1) intervalMin = kDefaultCheckMinutes;
     NSTimeInterval interval = MAX((NSTimeInterval)intervalMin * 60.0, kMinTimerInterval);
 
-    SDLog(@"配置 — 自动续签: %@, 间隔: %ld 分钟, 阈值: %@ 天",
-          [cfg[@"autoResign"] boolValue] ? @"开启" : @"关闭",
+    SDLog(@"启动完成 — 间隔: %ld 分钟, 阈值: %ld 天, 自动: %@",
           (long)intervalMin,
-          cfg[@"resignThreshold"] ?: @(kDefaultThreshold));
+          (long)[cfg[@"resignThreshold"] integerValue],
+          [cfg[@"autoResign"] boolValue] ? @"开启" : @"关闭");
 
     if ([cfg[@"autoResign"] boolValue]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
