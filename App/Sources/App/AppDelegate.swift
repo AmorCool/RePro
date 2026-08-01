@@ -1,6 +1,7 @@
 import UIKit
+import UserNotifications
 
-class AppDelegate: UIResponder, UIApplicationDelegate {
+class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var window: UIWindow?
 
     /// 上一次自动重签的时间戳（UserDefaults key）
@@ -14,6 +15,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
+
+        // 请求本地通知权限（后台自动续签结果通知）
+        requestNotificationPermission()
+        UNUserNotificationCenter.current().delegate = self
 
         // 注册需要 root 的两个回调
         RPVBridge.installRootHelperHandlers()
@@ -80,12 +85,23 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         defaults.set(Date(), forKey: Self.lastAutoResignKey)
         LogManager.shared.info("触发自动重签（阈值 \(threshold) 天）", source: "AppDelegate")
 
-        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { result in
+        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+            guard let self = self else { return }
             switch result {
             case .success:
                 LogManager.shared.info("自动重签完成", source: "AppDelegate")
+                self.sendResignNotification(title: "自动续签完成",
+                                            body: "所有临近过期的应用已成功续签")
             case .failure(let error):
-                LogManager.shared.warning("自动重签结束: \(error.localizedDescription)", source: "AppDelegate")
+                let msg = error.localizedDescription
+                LogManager.shared.warning("自动重签结束: \(msg)", source: "AppDelegate")
+                if msg.contains("No applications need") || msg.contains("当前无需重签") {
+                    self.sendResignNotification(title: "自动续签",
+                                                body: "当前没有需要续签的应用")
+                } else {
+                    self.sendResignNotification(title: "自动续签失败",
+                                                body: msg)
+                }
             }
         }
     }
@@ -146,5 +162,52 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             return true
         }
         return false
+    }
+
+    // MARK: - 本地通知（后台自动续签结果）
+
+    private func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if granted {
+                LogManager.shared.info("本地通知权限已获取", source: "AppDelegate")
+            } else if let error = error {
+                LogManager.shared.warning("本地通知权限请求失败: \(error.localizedDescription)", source: "AppDelegate")
+            }
+        }
+    }
+
+    /// 发送一条本地通知，让用户知道后台自动续签的結果。
+    /// 如果 App 正在前台运行，通知会无声地出现在通知中心（不会弹出横幅干扰操作）。
+    private func sendResignNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        let request = UNNotificationRequest(identifier: "auto-resign-\(Date().timeIntervalSince1970)",
+                                             content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LogManager.shared.warning("发送本地通知失败: \(error.localizedDescription)", source: "AppDelegate")
+            } else {
+                LogManager.shared.info("已发送本地通知: \(title) - \(body)", source: "AppDelegate")
+            }
+        }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    /// App 在前台时也显示通知（banner 形式），不静默丢掉
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler:
+                                @escaping (UNNotificationPresentationOptions) -> Void) {
+        if #available(iOS 14.0, *) {
+            completionHandler([.banner, .sound])
+        } else {
+            completionHandler([.alert, .sound])
+        }
     }
 }
