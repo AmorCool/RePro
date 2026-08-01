@@ -14,8 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 通知 repro-signingd LaunchDaemon 重新加载配置（设置页保存后调用）
 + (void)notifyConfigUpdated;
 
-/// 通知 repro-signingd 显示系统通知
-+ (void)notifyShowNotification;
+/// 通知 repro-signingd LaunchDaemon 续签已完成（匹配原项目 applicationDidFinishTask）
++ (void)notifySigningComplete;
 
 @end
 

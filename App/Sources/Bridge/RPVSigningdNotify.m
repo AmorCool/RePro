@@ -2,12 +2,11 @@
 //  RPVSigningdNotify.m
 //  RePro — 接收 repro-signingd LaunchDaemon 的 notify 信号
 //
-//  repro-signingd 每小时 fire 一次 NSTimer，如果自动续签已开启，
-//  就 notify_post("com.reprovision.schedule-resign") 通知 App。
-//  本类用 notify_register_dispatch 监听这个信号：
-//    - App 在前台时直接跑自动续签
-//    - App 不在前台时信号被忽略，但下次 didBecomeActive 会检查
-//      /var/mobile/Library/RePro/auto-resign-request 发现
+//  复刻原 ReProvision-Reborn 的 notify + XPC 通信模式：
+//  - Daemon 通过 NSTimer 定时检查，触发时 notify_post("com.reprovision.schedule-resign")
+//  - App 收到后通过共享文件确认是否有待处理的续签请求
+//  - App 在前台时直接触发续签，不在前台时等下次 didBecomeActive 检查
+//  - 续签完成后 App 直接发 UNUserNotificationCenter 通知 + notify daemon 完成
 //
 
 #include <notify.h>
@@ -20,7 +19,6 @@
 
 @implementation RPVSigningdNotify {
     int _token;
-    int _notifyToken;
 }
 
 + (instancetype)shared {
@@ -34,13 +32,14 @@
 }
 
 - (void)setup {
-    // 1. 监听 daemon 的续签触发信号（schedule-resign）
+    // 监听 daemon 的续签触发信号
     notify_register_dispatch("com.reprovision.schedule-resign",
         &_token,
         dispatch_get_main_queue(),
         ^(int unused) {
             NSLog(@"[RePro] 收到 repro-signingd 的 notify，检查自动续签");
-            // 读共享 plist 确认自动续签仍开启
+
+            // 读共享配置确认自动续签仍开启
             NSString *configPath = @"/var/mobile/Library/RePro/signingd-config.plist";
             NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:configPath];
             BOOL autoResign = cfg ? [cfg[@"autoResign"] boolValue] : YES;
@@ -52,14 +51,13 @@
             // App 在前台时直接触发自动续签
             if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
                 NSLog(@"[RePro] App 在前台，直接触发自动续签");
-                // 走 AppDelegate 的逻辑（通过检查 request 文件触发）
-                // 简单方式：写一个时间戳到共享路径让 didBecomeActive 能读到
+                // 写时间戳让 didBecomeActive 能读到
                 NSString *ts = [NSString stringWithFormat:@"%lld", (long long)time(NULL)];
                 [ts writeToFile:@"/var/mobile/Library/RePro/auto-resign-request"
                      atomically:YES
                        encoding:NSUTF8StringEncoding
                           error:nil];
-                // 模拟 didBecomeActive 检查
+
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                     dispatch_get_main_queue(), ^{
                         [[NSNotificationCenter defaultCenter]
@@ -68,29 +66,18 @@
                     });
             }
         });
-
-    // 2. 监听 daemon 回传的通知显示信号
-    notify_register_dispatch("com.reprovision.show-notification-done",
-        &_notifyToken,
-        dispatch_get_main_queue(),
-        ^(int unused) {
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"com.reprovision.show-notification-done"
-                              object:nil];
-        });
 }
 
 + (void)notifyConfigUpdated {
     notify_post("com.reprovision.signingd-config-updated");
 }
 
-- (void)dealloc {
-    if (_token > 0) notify_cancel(_token);
-    if (_notifyToken > 0) notify_cancel(_notifyToken);
++ (void)notifySigningComplete {
+    notify_post("com.reprovision.signing-complete");
 }
 
-+ (void)notifyShowNotification {
-    notify_post("com.reprovision.show-notification");
+- (void)dealloc {
+    if (_token > 0) notify_cancel(_token);
 }
 
 @end
