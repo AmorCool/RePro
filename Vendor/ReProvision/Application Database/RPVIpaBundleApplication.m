@@ -8,6 +8,9 @@
 
 #import "RPVIpaBundleApplication.h"
 
+// 声明 App 侧的 RootHide 环境探测（定义在 RPVBridge.m，App 二进制内可链接）。
+extern BOOL RPVIsRootHideEnvironment(void);
+
 #define IS_IPAD (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
 
 @interface UIImage (Private)
@@ -76,9 +79,16 @@ static BOOL (^_rpvDaemonFileCopyHandler)(NSString *srcPath, NSString *dstPath) =
     NSString *tmp = NSTemporaryDirectory();
     if (!tmp) tmp = @"/tmp";
 
+    // RootHide：App 的 NSTemporaryDirectory() 落在 jbroot overlay namespace，
+    // 而拷贝兜底（repro-importdaemon）跑在真实 rootfs 命名空间，两边看不到对方的
+    // 路径。统一落到真实共享路径 /var/mobile/Library/RePro/imports/<uuid>（App 与
+    // rootfs daemon 都能读写，正是 profiledaemon 用的 IPC 目录），避免路径对不上。
+    BOOL isRootHide = RPVIsRootHideEnvironment();
+    NSString *baseDir = isRootHide ? @"/var/mobile/Library/RePro/imports" : tmp;
+
     // Namespace the copy so concurrent imports don't clash, but keep the original
     // filename so the .ipa extension (checked downstream) is preserved.
-    NSString *destDir = [tmp stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
+    NSString *destDir = [baseDir stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
     [[NSFileManager defaultManager] createDirectoryAtPath:destDir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *dest = [destDir stringByAppendingPathComponent:[url lastPathComponent]];
 
@@ -105,14 +115,12 @@ static BOOL (^_rpvDaemonFileCopyHandler)(NSString *srcPath, NSString *dstPath) =
         }
     }
 
-    // Final fallback: a file vended by another app's / provider's File Provider often can't
-    // be read by this no-container app at all - the picker's security-scoped URL grants no
-    // real access without a container to extend. Hand the raw path to the root daemon,
-    // which can read any on-disk path and writes the copy into destDir (created above, and
-    // which we can read back). Covers browser Downloads, other apps' "On My iPhone" folders
-    // and iCloud: the picker downloads (materialises) an iCloud item as part of selection,
-    // before our delegate fires, so the path we hand the daemon points at the real,
-    // downloaded file - not the .icloud stub - even for items that weren't downloaded yet.
+    // Final fallback: hand the raw path to the daemon copy handler. On rootless/rootful
+    // this is repro-helper (setuid root) doing the copy. On RootHide it's repro-importdaemon
+    // (launchd 在系统级 rootfs 命名空间拉起) —— 因为 App 及其 posix_spawn 出的
+    // helper 都在 jbroot overlay namespace 内，读不到 iCloud 真实路径；只有跑在真实
+    // rootfs 的 LaunchDaemon 能读真实 /var/mobile/Library/Mobile Documents 下的文件，
+    // 把它拷到真实共享路径 /var/mobile/Library/RePro/imports/（App 也能读回）。
     if (!ok && _rpvDaemonFileCopyHandler && [url isFileURL] && [url path].length > 0) {
         ok = _rpvDaemonFileCopyHandler([url path], dest);
     }

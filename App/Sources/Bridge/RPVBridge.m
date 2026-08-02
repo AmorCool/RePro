@@ -785,11 +785,52 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
 
     RPVDiagnostic(RPVDiagInfo, @"repro-helper", @"已挂载 root helper: %@", helperPath);
 
-    // 1) 从「文件」App 的安全域读不到 IPA 时，让 root 把它搬进 App 的 tmp。
-    [RPVIpaBundleApplication setDaemonFileCopyHandler:^BOOL(NSString *srcPath, NSString *dstPath) {
-        if (srcPath.length == 0 || dstPath.length == 0) return NO;
-        return RPVRunRootHelper(helperPath, @[@"copy", srcPath, dstPath]);
-    }];
+    // 1) 从「文件」App 的安全域读不到 IPA 时，把文件搬到 App 能读到的位置。
+    //    RootHide：App 及其 posix_spawn 出的 repro-helper 都在 jbroot overlay namespace
+    //    内，iCloud 真实路径被重定向到空 overlay → 两者都读不到 iCloud 的 .ipa。
+    //    故改走 repro-importdaemon（launchd 在系统级 rootfs 命名空间拉起，能读真实
+    //    iCloud 文件），通过「写请求到真实共享路径 + notify + 轮询结果」回路完成拷贝。
+    if (RPVIsRootHideEnvironment()) {
+        [RPVIpaBundleApplication setDaemonFileCopyHandler:^BOOL(NSString *srcPath, NSString *dstPath) {
+            if (srcPath.length == 0 || dstPath.length == 0) return NO;
+            NSString *ipcDir = @"/var/mobile/Library/RePro";
+            NSString *reqPath  = [ipcDir stringByAppendingPathComponent:@"import-request.plist"];
+            NSString *reqId   = [[NSUUID UUID] UUIDString];
+            NSString *resPath = [ipcDir stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"import-result-%@.plist", reqId]];
+
+            // 清掉上一次的结果文件，避免读到陈旧结果。
+            [[NSFileManager defaultManager] removeItemAtPath:resPath error:nil];
+
+            NSDictionary *req = @{ @"src": srcPath, @"dst": dstPath, @"reqId": reqId };
+            if (![req writeToFile:reqPath atomically:YES]) {
+                RPVDiagnostic(RPVDiagWarning, @"import", @"无法写入 import-request.plist");
+                return NO;
+            }
+            notify_post("com.reprovision.import-request");
+
+            // 轮询结果（最多 ~30s，0.5s 一步）。daemon 拷完会写 import-result-<reqId>.plist。
+            for (int i = 0; i < 60; i++) {
+                if ([[NSFileManager defaultManager] fileExistsAtPath:resPath]) {
+                    NSString *res = [NSString stringWithContentsOfFile:resPath
+                                                             encoding:NSUTF8StringEncoding error:nil];
+                    [[NSFileManager defaultManager] removeItemAtPath:resPath error:nil];
+                    [[NSFileManager defaultManager] removeItemAtPath:reqPath error:nil];
+                    RPVDiagnostic(RPVDiagInfo, @"import", @"importdaemon 结果: %@", res);
+                    return [res hasPrefix:@"OK"];
+                }
+                usleep(500000);
+            }
+            [[NSFileManager defaultManager] removeItemAtPath:reqPath error:nil];
+            RPVDiagnostic(RPVDiagWarning, @"import", @"importdaemon 超时（30s 内无结果）");
+            return NO;
+        }];
+    } else {
+        [RPVIpaBundleApplication setDaemonFileCopyHandler:^BOOL(NSString *srcPath, NSString *dstPath) {
+            if (srcPath.length == 0 || dstPath.length == 0) return NO;
+            return RPVRunRootHelper(helperPath, @[@"copy", srcPath, dstPath]);
+        }];
+    }
 
     // 2) 描述文件安装：
     //    RootHide：App 的 in-process MC 被 RootHide namespace 重定向到 overlay（假成功），

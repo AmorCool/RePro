@@ -167,6 +167,35 @@ jobs:
           chmod +x build/repro-profiledaemon
           echo "profile daemon built successfully"
 
+      - name: Build import daemon (repro-importdaemon) for RootHide
+        # RootHide 下 App（及其 posix_spawn 出的 repro-helper）都在 jbroot overlay
+        # namespace 内，iCloud 真实路径 /var/mobile/Library/Mobile Documents 被重定向
+        # 到空 overlay，App 读不到 iCloud 的 .ipa。repro-importdaemon 由 launchd 在
+        # 系统级 rootfs 命名空间拉起（与 repro-profiledaemon 同款），能读真实 iCloud
+        # 文件并拷到真实共享路径 /var/mobile/Library/RePro/imports/，App 再读回。
+        run: |
+          set -e
+          mkdir -p build
+
+          xcrun -sdk iphoneos clang \
+            -x objective-c -fobjc-arc \
+            -arch arm64 -miphoneos-version-min=15.0 \
+            -O2 \
+            -framework Foundation \
+            -lobjc \
+            -o build/repro-importdaemon \
+            Helper/repro-importdaemon.m 2>&1 | tee importdaemon_build.log
+
+          if [ ! -f build/repro-importdaemon ]; then
+            echo "error: repro-importdaemon build failed"
+            cat importdaemon_build.log
+            exit 1
+          fi
+
+          file build/repro-importdaemon
+          chmod +x build/repro-importdaemon
+          echo "import daemon built successfully"
+
       - name: Build signing daemon (repro-signingd)
         # repro-signingd 是后台定时续签守护进程。由 launchd 在系统启动时
         # 拉起（RunAtLoad + KeepAlive），用 NSTimer 定时检查是否需要续签，
@@ -345,18 +374,21 @@ jobs:
           cp -R "$APP_DIR" "$PKG3/Applications/"
           cp build/repro-helper "$PKG3/usr/libexec/"
           cp build/repro-profiledaemon "$PKG3/usr/libexec/"
+          cp build/repro-importdaemon "$PKG3/usr/libexec/"
           cp build/repro-signingd "$PKG3/usr/libexec/"
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           cp Resources/jp.soh.reprovision.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
+          cp Resources/jp.soh.reprovision.importdaemon.plist "$PKG3/Library/LaunchDaemons/"
           # v1.1.65：roothide 用专属 LaunchDaemon plist（带 _MSSafeMode=1/_SafeMode=1，
           # 否则 RootHide 运行时剥离 backboardd.launchapplications → SBSLaunch 返回 7）
           cp Resources/jp.soh.reprovision.signingd-roothide.plist "$PKG3/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
           do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
+          do_sign "$PKG3/usr/libexec/repro-importdaemon" Resources/entitlements-importdaemon.plist
           chmod 0755 "$PKG3/usr/libexec/repro-signingd"
           do_sign "$PKG3/usr/libexec/repro-signingd" Resources/entitlements-signingd-roothide.plist
           do_sign_bare "$PKG3/usr/local/bin/zsign"
