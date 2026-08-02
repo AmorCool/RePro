@@ -109,6 +109,8 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 @property (nonatomic, readonly, copy, nullable) NSString *teamID;
 /// 三要素（账号 / 密码 / TeamID）齐全才算已登录
 @property (nonatomic, readonly) BOOL isSignedIn;
+/// 把已登录 Apple ID 密码的 Keychain accessible 升级为 AfterFirstUnlock（见 RPVResources）
++ (void)migrateKeychainAccessibility;
 /// 当前设备 UDID（供界面展示 / 排障）
 @property (nonatomic, readonly, copy, nullable) NSString *deviceUDID;
 

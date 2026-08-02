@@ -159,6 +159,10 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
         && [RPVResources getTeamID].length > 0;
 }
 
++ (void)migrateKeychainAccessibility {
+    [RPVResources migrateKeychainAccessibility];
+}
+
 - (NSString *)deviceUDID {
     NSString *udid = [[RPVAccountChecker sharedInstance] UDIDForCurrentDevice];
     return udid.length > 0 ? udid : nil;

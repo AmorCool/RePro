@@ -222,6 +222,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        // 已解锁前台：把 Apple ID 密码的 Keychain accessible 迁移为 AfterFirstUnlock，
+        // 这样即使设备再次锁屏（已解锁过一次），后台自动续签也能读到密码。
+        // 否则锁屏时 isSignedIn 为假，自动续签会被中止（手动续签因已解锁而正常）。
+        RPVBridge.migrateKeychainAccessibility()
+
         // daemon 静默续签正在进行时，不要重复触发前台续签
         if daemonResignInProgress { return }
         if checkDaemonTrigger() { doAutoResign() }

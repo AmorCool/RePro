@@ -132,12 +132,36 @@ static dispatch_once_t nanoRegistryOnceToken;
 }
 
 + (void)storeUsername:(NSString *)username password:(NSString *)password andTeamID:(NSString *)teamId {
+    // 关键修复：把 Apple ID 密码项的 accessible 设为 AfterFirstUnlock。
+    // 默认 SAMKeychain 不指定 accessible，系统按 kSecAttrAccessibleWhenUnlocked 处理 —
+    // 设备锁屏/未解锁时 Keychain 不可读，导致 isSignedIn 为假、后台自动续签被中止。
+    [SAMKeychain setAccessibilityType:kSecAttrAccessibleAfterFirstUnlock];
+
     [[NSUserDefaults standardUserDefaults] setObject:username forKey:@"cachedUsername"];
 
     [SAMKeychain setPassword:password forService:SERVICENAME account:username];
 
     [[NSUserDefaults standardUserDefaults] setObject:teamId forKey:@"cachedTeamID"];
     [[NSUserDefaults standardUserDefaults] setObject:CURRENT_CREDENTIALS_VERSION forKey:@"credentialsVersion"];
+}
+
+/// 把已存在的 Apple ID 密码 Keychain 项升级为 AfterFirstUnlock。
+/// 旧版未指定 accessible（默认 WhenUnlocked），锁屏时后台自动续签读不到密码而失败。
+/// 本方法应在 App 已解锁、处于前台时调用（此时密码可读），重写一次即可升级其 accessible。
+/// 升级后即使设备再次锁屏，只要解锁过一次，后台自动续签也能读到密码。
++ (void)migrateKeychainAccessibility {
+    [SAMKeychain setAccessibilityType:kSecAttrAccessibleAfterFirstUnlock];
+
+    NSString *username = [self getUsername];
+    NSString *teamID = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedTeamID"];
+    if (username.length == 0 || teamID.length == 0) {
+        return; // 未登录，无需迁移
+    }
+    // 仅在当前能读到密码时重写（调用方需已解锁）
+    NSString *pwd = [SAMKeychain passwordForService:SERVICENAME account:username];
+    if (pwd.length > 0) {
+        [SAMKeychain setPassword:pwd forService:SERVICENAME account:username];
+    }
 }
 
 + (void)userDidRequestAccountSignIn {
