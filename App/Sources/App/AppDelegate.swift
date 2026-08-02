@@ -136,10 +136,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let d = UserDefaults.standard
         let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
 
-        // 锁屏时 SAMKeychain 可能暂时读不到密码导致 isSignedIn 为假。
-        // 重试最多 3 次（每次间隔 5 秒），给系统/Keychain 解锁时间，
-        // 而不是像旧版那样直接放弃。v1.1.74 的 migrateKeychainAccessibility 已将
-        // accessible 升级为 AfterFirstUnlock，但首次迁移后仍需设备解锁过一次才生效。
+        // 锁屏/刚唤醒（锁屏界面尚未解锁）时 SAMKeychain 可能暂时读不到密码，导致 isSignedIn 为假。
+        // 重试最多 3 次（每次间隔 5 秒）兜底；但真正的修复在 v1.1.90：
+        // 旧版 migrateKeychainAccessibility 走 SecItemUpdate，根本改不了 kSecAttrAccessible
+        // （该属性只能在 SecItemAdd 创建时设定），所以密码项一直停留在 WhenUnlocked；
+        // v1.1.90 改为「删后重建」+ 刷新本地凭证缓存文件，后台锁屏也能读到密码。
         let maxRetry = 3
         for attempt in 1...maxRetry {
             BridgeClient.shared.refreshAccountState()

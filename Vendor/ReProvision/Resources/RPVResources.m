@@ -153,10 +153,17 @@ static NSString *kCredentialsCachePath = @"/var/mobile/Library/RePro/credentials
     // 关键修复：把 Apple ID 密码项的 accessible 设为 AfterFirstUnlock。
     // 默认 SAMKeychain 不指定 accessible，系统按 kSecAttrAccessibleWhenUnlocked 处理 —
     // 设备锁屏/未解锁时 Keychain 不可读，导致 isSignedIn 为假、后台自动续签被中止。
+    //
+    // ⚠️ 关键坑（v1.1.74 修复无效的真因）：iOS 的 SecItemUpdate 无法修改「已存在
+    // Keychain 项」的 kSecAttrAccessible，该属性只能在 SecItemAdd 创建时设定。
+    // SAMKeychain 的 save: 对已有项走的是 Update 分支，所以即便先 setAccessibilityType:
+    // 再 setPassword:，旧项的 accessible 也不会变（永远停留在首次创建时的 WhenUnlocked）。
+    // 因此此处改为「先删除再写入」，确保新项的 accessible=AfterFirstUnlock 真正生效。
     [SAMKeychain setAccessibilityType:kSecAttrAccessibleAfterFirstUnlock];
 
     [[NSUserDefaults standardUserDefaults] setObject:username forKey:@"cachedUsername"];
 
+    [SAMKeychain deletePasswordForService:SERVICENAME account:username];
     [SAMKeychain setPassword:password forService:SERVICENAME account:username];
 
     [[NSUserDefaults standardUserDefaults] setObject:teamId forKey:@"cachedTeamID"];
@@ -178,11 +185,12 @@ static NSString *kCredentialsCachePath = @"/var/mobile/Library/RePro/credentials
 
 /// 把已存在的 Apple ID 密码 Keychain 项升级为 AfterFirstUnlock。
 /// 旧版未指定 accessible（默认 WhenUnlocked），锁屏时后台自动续签读不到密码而失败。
-/// 本方法应在 App 已解锁、处于前台时调用（此时密码可读），重写一次即可升级其 accessible。
+/// 本方法应在 App 已解锁、处于前台时调用（此时密码可读），删后重建一次即可升级其 accessible。
 /// 升级后即使设备再次锁屏，只要解锁过一次，后台自动续签也能读到密码。
+///
+/// 注意：必须用「删后重建」而非 setPassword:（后者走 SecItemUpdate，无法改变
+/// kSecAttrAccessible）。详见 storeUsername: 的注释。
 + (void)migrateKeychainAccessibility {
-    [SAMKeychain setAccessibilityType:kSecAttrAccessibleAfterFirstUnlock];
-
     NSString *username = [self getUsername];
     NSString *teamID = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedTeamID"];
     if (username.length == 0 || teamID.length == 0) {
@@ -190,9 +198,25 @@ static NSString *kCredentialsCachePath = @"/var/mobile/Library/RePro/credentials
     }
     // 仅在当前能读到密码时重写（调用方需已解锁）
     NSString *pwd = [SAMKeychain passwordForService:SERVICENAME account:username];
-    if (pwd.length > 0) {
-        [SAMKeychain setPassword:pwd forService:SERVICENAME account:username];
+    if (pwd.length == 0) {
+        return;
     }
+    // 关键：SecItemUpdate 无法改变已存在项的 accessible，必须删后重建才能真正升级。
+    [SAMKeychain deletePasswordForService:SERVICENAME account:username];
+    [SAMKeychain setAccessibilityType:kSecAttrAccessibleAfterFirstUnlock];
+    [SAMKeychain setPassword:pwd forService:SERVICENAME account:username];
+
+    // 同时刷新本地凭证缓存文件，确保后台 Keychain 不可读时仍有 fallback
+    // （老用户登录早于缓存逻辑、缓存文件缺失时，这一步补齐）。
+    NSDictionary *cache = @{
+        @"username": username ?: @"",
+        @"password": pwd ?: @"",
+        @"teamID": teamID ?: @""
+    };
+    [cache writeToFile:kCredentialsCachePath atomically:YES];
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600}
+                                     ofItemAtPath:kCredentialsCachePath
+                                            error:nil];
 }
 
 + (void)userDidRequestAccountSignIn {
