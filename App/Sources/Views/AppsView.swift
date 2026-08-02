@@ -59,9 +59,9 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶栏：刷新(左对齐列表图标) + ReSign(正居中) + 导入(右对齐重签按钮)
+                // 顶栏：刷新(左) + ReSign(居中偏右) + 导入(右)
                 HStack {
-                    // 左侧：刷新（圆角胶囊按钮）— 左边缘对齐下面应用图标左边缘
+                    // 左侧：刷新（圆角胶囊按钮）
                     Button {
                         viewModel.resignAllApplications()
                     } label: {
@@ -76,15 +76,15 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy || !account.isSignedIn)
 
-                    // 中间：ReSign 标题（真正居中）
+                    // 中间：ReSign 标题（略偏右，补偿右侧导入按钮更宽的视觉差）
                     Spacer(minLength: 0)
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
                         .frame(height: 36)
-                    Spacer(minLength: 0)
+                    Spacer().frame(minWidth: 40, maxLength: .infinity)
 
-                    // 右侧：导入（圆角胶囊按钮）— 右边缘对齐下面"重签"按钮右边缘
+                    // 右侧：导入（圆角胶囊按钮）
                     Button {
                         openFilePicker()
                     } label: {
@@ -104,7 +104,7 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy)
                 }
-                .padding(.horizontal, 16) // 与 List 行内容 padding 一致
+                .padding(.horizontal, 16)
                 .padding(.top, 6)
                 .padding(.bottom, 8)
 
@@ -114,6 +114,7 @@ struct AppsView: View {
                     appList
                 }
             }
+            .background(Color(.systemGroupedBackground)) // 浅灰底，不刺眼
             .navigationBarHidden(true)
             .scrollContentBackground(.hidden) // iOS 16+ API，去掉 NavigationView 白色背景
             .safeAreaInset(edge: .bottom) { statusBar }
@@ -212,6 +213,7 @@ struct AppsView: View {
         .refreshable {
             await viewModel.refreshApps()
         }
+        .scrollContentBackground(.hidden) // 让 List 透出外层浅灰底
     }
 }
 
