@@ -82,7 +82,7 @@ struct AppsView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(height: 36)
-                        .padding(.leading, 14) // X轴右移约5格
+                        .padding(.leading, 22) // X轴右移约12格（用户要求再右移7格）
                     Spacer(minLength: 0)
 
                     // 右侧：导入（圆角胶囊按钮）

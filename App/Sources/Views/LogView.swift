@@ -105,6 +105,7 @@ struct LogView: View {
                 filterChip(title: "调试", icon: "bug.fill", level: .debug)
             }
             .padding(.horizontal, 16)
+            .contentShape(Rectangle()) // 让整行成为命中区域，避免 ScrollView 吞掉点击
         }
     }
 
@@ -117,24 +118,26 @@ struct LogView: View {
             HStack(spacing: 4) {
                 if let icon = icon {
                     Image(systemName: icon)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                 }
                 Text(title)
                     .font(.subheadline.weight(isSelected ? .semibold : .medium))
             }
             .foregroundColor(isSelected ? .white : .primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
             .background(
                 Capsule()
                     .fill(isSelected ? Color.blue : Color(.systemFill).opacity(0.6))
+                    .overlay(
+                        Capsule()
+                            .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
+                    )
             )
-            .overlay(
-                Capsule()
-                    .stroke(isSelected ? Color.clear : Color(.separator).opacity(0.5), lineWidth: 0.5)
-            )
+            .contentShape(Capsule()) // 整颗胶囊都是可点区域，消除"点不灵敏"
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
     }
 
     // MARK: 日志列表（纯列表，不含搜索/筛选）
