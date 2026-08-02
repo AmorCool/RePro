@@ -36,8 +36,8 @@ static FILE     *gLogFile   = NULL;
 static NSTimer  *gTimer     = nil;
 static time_t    gLastFire  = 0;
 static BOOL      gUpdateQueuedForUnlock = NO;  // 锁屏期间是否有到期任务
-static NSInteger gLockStateToken = 0;
-static NSInteger gBacklightToken = 0;
+static int gLockStateToken = 0;
+static int gBacklightToken = 0;
 
 // ─── 日志 ────────────────────────────────────────────────────────
 
@@ -98,6 +98,10 @@ static void s_setNextFireDate(NSDate *date) {
 static void s_clearNextFireDate(void) {
     [[NSFileManager defaultManager] removeItemAtPath:kStatePath error:nil];
 }
+
+// 前向声明：s_start_timer 在 s_initiateAndReschedule 之后定义，
+// 但 s_initiateAndReschedule 需要调用它。
+static void s_start_timer(NSTimeInterval sec);
 
 // ─── 触发 ────────────────────────────────────────────────────────
 
@@ -230,7 +234,7 @@ static void s_setupNotifyPosts(void) {
     // 设备锁定状态变化
     notify_register_dispatch("com.apple.springboard.lockstate", &gLockStateToken,
         dispatch_get_main_queue(), ^(int token) {
-        int state = 0;
+        uint64_t state = 0;
         notify_get_state(token, &state);
         if (state == 0) { // 0 = 解锁状态
             sb_didUIUnlockNotification();
@@ -240,9 +244,9 @@ static void s_setupNotifyPosts(void) {
     // 背光状态变化
     notify_register_dispatch("com.apple.backboardd.backlight.changed", &gBacklightToken,
         dispatch_get_main_queue(), ^(int token) {
-        int state = 0;
+        uint64_t state = 0;
         notify_get_state(token, &state);
-        bb_backlightChanged(state);
+        bb_backlightChanged((int)state);
     });
 
     s_log(@"已注册屏幕解锁/背光监听");
