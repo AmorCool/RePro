@@ -61,14 +61,14 @@ struct AppsView: View {
             VStack(spacing: 0) {
                 // 顶栏：刷新(左) + ReSign(居中偏右) + 导入(右)
                 HStack(alignment: .center) {
-                    // 左侧：刷新（圆角胶囊按钮）— Y轴对齐下方应用图标
+                    // 左侧：刷新（圆角胶囊按钮）— 图标X轴对齐下方应用行图标
                     Button {
                         viewModel.resignAllApplications()
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(.blue)
-                            .frame(width: 40, height: 40)
+                            .padding(11) // 四周均匀padding，按钮≈40x40，图标自然靠左
                             .background(
                                 Capsule()
                                     .fill(Color.blue.opacity(0.08))
@@ -109,7 +109,8 @@ struct AppsView: View {
                     .buttonStyle(.plain)
                     .disabled(viewModel.isBusy)
                 }
-                .padding(.horizontal, 16)
+                .padding(.leading, 6)   // 刷新图标左边缘 ≈ 6+11=17，对齐下方应用图标(leading:16)
+                .padding(.trailing, 16) // 右侧保持标准间距
                 .padding(.top, 4)
                 .padding(.bottom, 6)
 
