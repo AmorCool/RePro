@@ -81,7 +81,9 @@ struct LogView: View {
                     // 与列表同属一个滚动容器，触摸不再被拦截
                     VStack(spacing: 10) {
                         searchBar
+                            .padding(.horizontal, 16)
                         filterChips
+                            .padding(.horizontal, 16)
                     }
                     .padding(.top, 8)
                     .padding(.bottom, 4)
@@ -90,15 +92,11 @@ struct LogView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .onAppear {
-                if !filteredLogs.isEmpty {
-                    proxy.scrollTo(filteredLogs.count - 1, anchor: .bottom)
-                }
-            }
+            // 不再自动跳到底部，用户从顶部开始浏览
         }
     }
 
-    // MARK: 搜索栏（圆角卡片 + 淡边框）
+    // MARK: 搜索栏（圆角卡片 + 淡边框）— 注意：不包含水平 padding，由调用方统一控制
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -115,7 +113,6 @@ struct LogView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color(.separator).opacity(0.6), lineWidth: 0.5)
         )
-        .padding(.horizontal, 16)
     }
 
     // MARK: 筛选标签组（横向排列，100% 可点击）
@@ -165,8 +162,10 @@ struct LogView: View {
     private var emptyLogContent: some View {
         VStack(spacing: 0) {
             searchBar
+                .padding(.horizontal, 16)
                 .padding(.top, 12)
             filterChips
+                .padding(.horizontal, 16)
                 .padding(.vertical, 8)
 
             Spacer()

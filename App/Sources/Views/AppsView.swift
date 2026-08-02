@@ -59,7 +59,7 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶栏：刷新(左) + ReSign(居中偏右) + 导入(右)
+                // 顶栏：刷新(左) + ReSign(居中，Y轴对齐底栏中间) + 导入(右)
                 HStack {
                     // 左侧：刷新（圆角胶囊按钮）
                     Button {
@@ -76,13 +76,12 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy || !account.isSignedIn)
 
-                    // 中间：ReSign 标题（略偏右，补偿右侧导入按钮更宽的视觉差）
+                    // 中间：ReSign 标题（真正居中）
                     Spacer(minLength: 0)
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
                         .frame(height: 36)
-                        .padding(.trailing, 20) // 视觉右移，补偿右侧导入按钮更宽
                     Spacer(minLength: 0)
 
                     // 右侧：导入（圆角胶囊按钮）
@@ -106,8 +105,8 @@ struct AppsView: View {
                     .disabled(viewModel.isBusy)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 8)
+                .padding(.top, 10)
+                .padding(.bottom, 10)
 
                 if viewModel.installedApps.isEmpty {
                     emptyState
