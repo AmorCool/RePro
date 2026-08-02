@@ -134,9 +134,11 @@ static BOOL s_launchAppInBackground(void) {
     }
 
     // 构造 launch options：后台启动、不显示 UI、不添加到切换器
+    // 这些 key 是 SpringBoardServices 的 CFStringRef 常量，
+    // 不链接该框架时用等价字符串字面量替代。
     NSDictionary *options = @{
-        @(kSBSLaunchOptionBackgroundOnlyKey): @YES,          // 后台启动
-        @(kSBSLaunchOptionUnlockDeviceKey): @NO,             // 不解锁设备
+        @"SBSBackgroundOnly": @YES,          // 后台启动
+        @"SBSUnlockDevice": @NO,             // 不解锁设备
     };
 
     // 调用
