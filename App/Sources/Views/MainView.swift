@@ -2,22 +2,25 @@ import SwiftUI
 
 // MARK: - 主界面：自定义四标签容器 + 液态玻璃浮动底栏
 //
-// 架构决策：
-// - 不用 TabView（无 tabItem 时系统空 bar 拦截触摸，v1.1.78 已证实）
-// - 底栏用 .overlay(alignment:.bottom) + zIndex(100) 挂在最顶层，确保不被内容区遮挡
-// - 内容区加 .padding(.bottom, tabBarHeight) 避免列表内容被底栏盖住
+// 架构决策（v1.1.80 最终方案）：
+// - 彻底不用 TabView、不用 overlay——底栏作为 VStack 的真实子视图放在最底部。
+//   这是 iOS SwiftUI 中保证自定义底栏可点击的最可靠方式：
+//   TabView 无 tabItem → 空系统 bar 拦截（v1.1.78）；overlay+zIndex → NavigationView 手势穿透拦截（v1.1.79）。
+//   只有 VStack 真实子视图能保证触摸事件不被上层视图劫持。
 
 struct MainView: View {
     @ObservedObject private var resign = ResignProgress.shared
     @State private var selectedTab = 0
 
-    /// 底栏高度（含 padding）
-    private let tabBarHeight: CGFloat = 70
-
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // 内容区：按 selectedTab 切换，底部留出底栏空间
-            Group {
+        VStack(spacing: 0) {
+            // 续签横幅（顶部固定）
+            if resign.isResigning {
+                resignBanner
+            }
+
+            // 内容区：按 selectedTab 切换，占满剩余空间
+            ZStack {
                 switch selectedTab {
                 case 0: AppsView()
                 case 1: SettingsView()
@@ -28,17 +31,14 @@ struct MainView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // 液态玻璃浮动底栏——用 overlay + 高 zIndex 确保始终在最顶层可点击
+            // 液态玻璃浮动底栏（VStack 真实子视图，保证可点击）
             LiquidGlassTabBar(selectedTab: $selectedTab)
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
                 .padding(.bottom, 8)
-                .zIndex(100)
         }
         .accentColor(.blue)
-        .overlay(alignment: .top) {
-            if resign.isResigning {
-                resignBanner
-            }
-        }
+        .background(Color(.systemGroupedBackground)) // 整体背景与列表一致，避免断层
     }
 
     /// 续签进行中横幅
