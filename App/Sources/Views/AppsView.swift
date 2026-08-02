@@ -82,7 +82,8 @@ struct AppsView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(height: 36)
-                    Spacer().frame(minWidth: 40, maxLength: .infinity)
+                        .padding(.trailing, 20) // 视觉右移，补偿右侧导入按钮更宽
+                    Spacer(minLength: 0)
 
                     // 右侧：导入（圆角胶囊按钮）
                     Button {

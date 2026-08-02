@@ -24,6 +24,8 @@ struct LogView: View {
                     logList
                 }
             }
+            .background(Color(.systemGroupedBackground)) // 浅灰底，不刺眼
+            .scrollContentBackground(.hidden) // 去掉 NavigationView 白底
             .navigationTitle("日志")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -51,6 +53,7 @@ struct LogView: View {
                 Text(exportErrorMessage)
             }
         }
+        .navigationViewStyle(.stack)
     }
 
     // MARK: 搜索栏
@@ -63,6 +66,10 @@ struct LogView: View {
         .padding(8)
         .background(Color(.systemBackground))
         .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5) // 淡淡的透明边框
+        )
         .padding(.horizontal)
         .padding(.vertical, 4)
     }
@@ -94,6 +101,7 @@ struct LogView: View {
         .background(isSelected ? Color.blue : Color(.systemGray6))
         .foregroundColor(isSelected ? .white : .primary)
         .cornerRadius(16)
+        .contentShape(Rectangle()) // 确保整个区域可点击
     }
 
     // MARK: 日志列表
@@ -105,6 +113,7 @@ struct LogView: View {
                     .id(index)
                     .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
             }
+            .scrollContentBackground(.hidden) // 透出外层浅灰底
             .onAppear {
                 if !filteredLogs.isEmpty {
                     proxy.scrollTo(filteredLogs.count - 1, anchor: .bottom)
