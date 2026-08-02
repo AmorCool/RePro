@@ -7,8 +7,8 @@ import Darwin
 struct SettingsView: View {
     @AppStorage("autoResign") private var autoResign: Bool = true
     @AppStorage("resignThreshold") private var resignThreshold: Int = 2
-    // checkIntervalMin: 检查间隔，单位分钟，默认 360（6小时），最少 1 分钟
-    @AppStorage("checkIntervalMin") private var checkIntervalMin: Int = 360
+    // checkIntervalMin: 检查间隔，单位分钟，默认 120（2小时），最少 1 分钟
+    @AppStorage("checkIntervalMin") private var checkIntervalMin: Int = 120
 
     // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
@@ -18,7 +18,7 @@ struct SettingsView: View {
     @State private var notifyNeedsSystemSettings = false
 
     /// 从分钟数拆出的小时和分钟（纯展示用，不绑定 @AppStorage）
-    @State private var intervalHours: Int = 6
+    @State private var intervalHours: Int = 2
     @State private var intervalMins: Int = 0
     @State private var showIntervalPicker: Bool = false
 

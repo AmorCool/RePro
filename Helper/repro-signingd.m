@@ -1,19 +1,14 @@
 //
-//  repro-signingd.m — 后台静默重签守护进程（v1.1.58 增强）
+//  repro-signingd.m — 后台静默重签守护进程（v1.1.59 增强）
 //
-//  从 test2 (ReProvision-Reborn 0.8.4.4) 的 RPVDaemonListener 移植核心机制：
+//  核心能力：
 //    1. 定时器自动续签（可配置间隔，默认 2 小时）
 //    2. 屏幕解锁触发（锁屏期间到期 → 解锁时立即执行）
 //    3. 屏幕亮起触发（即将到期 ≤5s → 立即执行）
 //    4. 低电量模式跳过
 //    5. nextFireDate 持久化（daemon 重启后不丢失调度状态）
-//    6. --resign-now 手动触发（保留原有功能）
-//
-//  与 test2 的差异：
-//    - 不使用 XPC/Mach Service（RePro 用文件标记 + notify_post 轻量通信）
-//    - 不使用 SBSLaunchApplication（依赖 BackBoardServices 私有框架）
-//    - 不使用 BKSProcessAssertion（依赖 BackBoardBoardServices 私有框架）
-//    - 这些私有框架的依赖会增加编译复杂度，且当前文件标记方案在 RootHide 下已验证可用
+//    6. --resign-now 手动触发
+//    7. ★ 主动唤醒 App 到后台执行静默续签（不再依赖用户手动打开 App）
 //
 //  日志: fopen/fprintf 同步写入 <jbroot>/var/log/reprorefresh_at.log
 //
@@ -22,20 +17,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
+#include <dlfcn.h>
 #import <Foundation/Foundation.h>
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
 static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";
 static NSString *const kStatePath   = @"/var/mobile/Library/RePro/signingd-state.plist";
+static NSString *const kAppBundleID = @"jp.soh.reprovision";
 
-static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时（与 test2 一致）
+static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
 static const NSInteger  kFallbackDays    = 2;
 
 static FILE     *gLogFile   = NULL;
 static NSTimer  *gTimer     = nil;
 static time_t    gLastFire  = 0;
-static BOOL      gUpdateQueuedForUnlock = NO;  // 锁屏期间是否有到期任务
+static BOOL      gUpdateQueuedForUnlock = NO;
 static int gLockStateToken = 0;
 static int gBacklightToken = 0;
 
@@ -72,10 +69,22 @@ typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; } sd_config;
 
 static sd_config s_cfg(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (!d) return (sd_config){YES, kFallbackMinutes, kFallbackDays};
-    NSInteger m = [d[@"checkIntervalMin"] integerValue]; if (m < 1) m = kFallbackMinutes;
-    NSInteger dy = [d[@"resignThreshold"] integerValue]; if (dy < 1) dy = kFallbackDays;
-    BOOL en = d[@"autoResign"] ? [d[@"autoResign"] boolValue] : YES;
+    if (!d) {
+        s_log(@"配置文件不存在 (%@)，使用默认值: 间隔=%ld分 阈值=%ld天 启用=YES",
+              kConfigPath, (long)kFallbackMinutes, (long)kFallbackDays);
+        return (sd_config){YES, kFallbackMinutes, kFallbackDays};
+    }
+    // 打印原始值便于排查同步问题
+    id rawMin = d[@"checkIntervalMin"];
+    id rawEn  = d[@"autoResign"];
+    id rawDy  = d[@"resignThreshold"];
+
+    NSInteger m = [rawMin integerValue]; if (m < 1) m = kFallbackMinutes;
+    NSInteger dy = [rawDy integerValue]; if (dy < 1) dy = kFallbackDays;
+    BOOL en = rawEn ? [rawEn boolValue] : YES;
+
+    s_log(@"读取配置: autoResign=%@(%@) checkIntervalMin=%@(%ld) resignThreshold=%@(%ld)",
+          rawEn, en ? @"YES" : @"NO", rawMin, (long)m, rawDy, (long)dy);
     return (sd_config){en, m, dy};
 }
 
@@ -103,6 +112,41 @@ static void s_clearNextFireDate(void) {
 // 但 s_initiateAndReschedule 需要调用它。
 static void s_start_timer(NSTimeInterval sec);
 
+// ─── 唤醒 App 到后台执行静默续签 ─────────────────────────────
+// 通过 dlopen+dlsym 动态调用 SBSLaunchApplicationWithIdentifierAndLaunchOptions（SpringBoardServices 私有 API）。
+// 不需要在编译时链接私有框架。失败时降级为纯 notify_post（App 下次激活时检查）。
+
+static BOOL s_launchAppInBackground(void) {
+    // dlopen SpringBoardServices
+    void *handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+    if (!handle) {
+        s_log(@"无法加载 SpringBoardServices: %s", dlerror());
+        return NO;
+    }
+
+    // dlsym 获取 SBSLaunchApplicationWithIdentifierAndLaunchOptions
+    typedef void (*SBSLaunchFn)(CFStringRef identifier, CFDictionaryRef options, void **error);
+    SBSLaunchFn fn = (SBSLaunchFn)dlsym(handle, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
+    if (!fn) {
+        s_log(@"无法找到 SBSLaunchApplicationWithIdentifierAndLaunchOptions: %s", dlerror());
+        dlclose(handle);
+        return NO;
+    }
+
+    // 构造 launch options：后台启动、不显示 UI、不添加到切换器
+    NSDictionary *options = @{
+        @(kSBSLaunchOptionBackgroundOnlyKey): @YES,          // 后台启动
+        @(kSBSLaunchOptionUnlockDeviceKey): @NO,             // 不解锁设备
+    };
+
+    // 调用
+    fn((__bridge CFStringRef)kAppBundleID, (__bridge CFDictionaryRef)options, NULL);
+    dlclose(handle);
+
+    s_log(@"已发送后台启动请求给 %@", kAppBundleID);
+    return YES;
+}
+
 // ─── 触发 ────────────────────────────────────────────────────────
 
 static void s_fire(void) {
@@ -123,8 +167,17 @@ static void s_fire(void) {
         @"triggeredBy": @"daemon-timer",
     } writeToFile:kTriggerPath atomically:YES];
     chown(kTriggerPath.UTF8String, 501, 501);
-    notify_post("com.reprovision.schedule-resign");
-    s_log(@"触发续签 — 阈值 %ld 天", (long)c.days);
+
+    // ★ 主动唤醒 App 到后台执行静默续签
+    // App 被 launchd 拉起后，didFinishLaunchingWithOptions 检测到 trigger 文件新鲜（10秒内）
+    // → 走 silentResignAndExit() 路径 → 完成后续签后 exit(0)
+    if (s_launchAppInBackground()) {
+        s_log(@"触发续签 — 阈值 %ld 天（已唤醒 App 后台执行）", (long)c.days);
+    } else {
+        // 降级：仅发 notify_post，等用户下次打开 App 时触发
+        notify_post("com.reprovision.schedule-resign");
+        s_log(@"触发续签 — 阈值 %ld 天（唤醒失败，降级为 notify_post）", (long)c.days);
+    }
 }
 
 /// 执行一次完整的重签周期，然后重新设定时器。
@@ -273,6 +326,7 @@ int main(int argc, char *argv[]) {
     sd_config c = s_cfg();
     s_log(@"配置: 自动=%@ 间隔=%ld分 阈值=%ld天",
           c.enabled ? @"是" : @"否", (long)c.minutes, (long)c.days);
+    s_log(@"BundleID: %@ | 触发路径: %@", kAppBundleID, kTriggerPath);
 
     // 注册系统通知监听（解锁/背光）
     s_setupNotifyPosts();

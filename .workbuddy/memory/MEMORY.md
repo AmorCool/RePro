@@ -42,4 +42,9 @@
 - [x] CI 脚本完整化 — 补全所有源文件 + OpenSSL + 证书复制
 
 ## 待验证
-- [ ] CI 构建通过（v1.0.0 tag 已推送，等待 GitHub Actions 结果）
+- [x] CI 构建通过（截至 v1.1.57 全绿；通知移植已发版）
+- [ ] RootHide 真机验证通知授权持久化（杀后台重开是否还弹授权）—— CI 无法覆盖
+
+## 沙箱 git 推送注意事项
+- git 全局 `http.proxy/https.proxy` = `127.0.0.1:31180/31181`，但该端口**未监听**，直接 push 报「Failed to connect to 127.0.0.1 port 31180」。
+- 绕过：命令前加 `GIT_HTTP_PROXY= GIT_HTTPS_PROXY= HTTPS_PROXY= HTTP_PROXY=` 并追加 `git -c http.proxy= -c https.proxy=`。`gh` CLI 同样要清 `HTTPS_PROXY/HTTP_PROXY`。不动全局配置。

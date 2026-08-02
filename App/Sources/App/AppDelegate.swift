@@ -125,17 +125,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private func _syncConfig() {
         let d = UserDefaults.standard
+        let intervalMin = d.object(forKey: "checkIntervalMin") as? Int ?? 120
         let config: [String: Any] = [
             "autoResign":       d.object(forKey: "autoResign") as? Bool ?? true,
-            "checkIntervalMin": d.object(forKey: "checkIntervalMin") as? Int ?? 360,
+            "checkIntervalMin": intervalMin,
             "resignThreshold":  d.object(forKey: "resignThreshold") as? Int ?? 2,
         ]
         let fm = FileManager.default
         if !fm.fileExists(atPath: Self.ipcDir) {
             try? fm.createDirectory(atPath: Self.ipcDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
         }
-        (config as NSDictionary).write(toFile: "\(Self.ipcDir)/signingd-config.plist", atomically: true)
+        let plistPath = "\(Self.ipcDir)/signingd-config.plist"
+        (config as NSDictionary).write(toFile: plistPath, atomically: true)
         RPVSigningdNotify.notifyConfigUpdated()
+        LogManager.shared.info("配置已同步到 plist: autoResign=\(config["autoResign"] ?? "nil") checkIntervalMin=\(intervalMin)min", source: "AppDelegate")
     }
 
     private func setupSigningdNotify() { let _ = RPVSigningdNotify.shared }

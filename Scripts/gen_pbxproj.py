@@ -26,8 +26,8 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "RePro"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.58"
-CURRENT_PROJECT_VERSION = "49"
+MARKETING_VERSION = "1.1.59"
+CURRENT_PROJECT_VERSION = "50"
 DEPLOYMENT_TARGET = "15.0"
 BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
 ENTITLEMENTS = "Resources/entitlements-base.plist"
