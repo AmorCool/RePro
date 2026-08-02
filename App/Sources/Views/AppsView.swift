@@ -15,16 +15,19 @@ private final class IPAFilePicker: NSObject, UIDocumentPickerDelegate {
         var top = root
         while let p = top.presentedViewController { top = p }
 
-        // 用 open 模式 (asCopy: false) 而非 copy/import 模式。
-        // iCloud 云盘 / 第三方 File Provider 的文件在 copy 模式下常返回 .icloud 占位符或复制失败，
-        // 导致「无法读取这个 .ipa」。open 模式给的是带安全域的真实 URL，下方
-        // RPVIpaBundleApplication 的 NSFileCoordinator 协调读取会触发 iCloud 下载，从而正确导入。
-        // （test2/reborn 参考实现均使用 asCopy: NO，原因见 RPVInstalledViewController 注释。）
+        // 用 import/copy 模式 (asCopy: true)。
+        // 该模式下系统会在把文件交给 App 前自行完成下载：iCloud 云盘文件先在选择器里出现下载箭头，
+        // 下载完成后才回传一个本地真实副本的 security-scoped URL，不会像 open 模式那样直接给
+        // .icloud 占位符活体 URL 导致「无法读取这个 .ipa」。
+        // 同时这种模式下选择器右上角有「打开」按钮、文件带圆形勾选框，点击→勾选→打开的交互明确，
+        // 不会出现 open 模式「点了没反应」的问题（用户实测反馈）。
+        // 注：RootHide 下 App 跑在 overlay namespace，读不到 iCloud/真实路径，仍由 repro-importdaemon
+        // 在 rootfs 命名空间拷贝，RPVIpaBundleApplication 已有兜底；非 RootHide 由 repro-helper 拷贝。
         var types: [UTType] = []
         if let ipa = UTType(filenameExtension: "ipa") { types.append(ipa) }
         types.append(.archive)
         types.append(.data)
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         top.present(picker, animated: true)
