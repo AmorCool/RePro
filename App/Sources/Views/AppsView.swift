@@ -59,10 +59,9 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶栏：刷新(胶囊) + ReSign(居中) + 导入(胶囊) 三元素成组居中，
-                // 刷新/导入靠近 ReSign 但并非贴边（spacing 控制间距，不挨着也不推到屏幕两端）
-                HStack(spacing: 16) {
-                    // 左侧：刷新（圆角胶囊按钮，保留 v1.1.81 样式）
+                // 顶栏：刷新(左对齐列表图标) + ReSign(正居中) + 导入(右对齐重签按钮)
+                HStack {
+                    // 左侧：刷新（圆角胶囊按钮）— 左边缘对齐下面应用图标左边缘
                     Button {
                         viewModel.resignAllApplications()
                     } label: {
@@ -77,13 +76,15 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy || !account.isSignedIn)
 
-                    // 中间：ReSign 标题（居中加大）
+                    // 中间：ReSign 标题（真正居中）
+                    Spacer(minLength: 0)
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
                         .frame(height: 34)
+                    Spacer(minLength: 0)
 
-                    // 右侧：导入（圆角胶囊按钮，与刷新同尺寸）
+                    // 右侧：导入（圆角胶囊按钮）— 右边缘对齐下面"重签"按钮右边缘
                     Button {
                         openFilePicker()
                     } label: {
@@ -103,11 +104,9 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy)
                 }
-                .frame(maxWidth: .infinity, alignment: .center) // 整组居中，两按钮靠近 ReSign
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 16) // 与 List 行内容 padding 一致
                 .padding(.top, 6)
                 .padding(.bottom, 8)
-                .background(Color(.systemGroupedBackground))
 
                 if viewModel.installedApps.isEmpty {
                     emptyState
