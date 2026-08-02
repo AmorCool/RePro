@@ -809,8 +809,9 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
             }
             notify_post("com.reprovision.import-request");
 
-            // 轮询结果（最多 ~30s，0.5s 一步）。daemon 拷完会写 import-result-<reqId>.plist。
-            for (int i = 0; i < 60; i++) {
+            // 轮询结果（最多 ~150s，0.5s 一步）。daemon 需要先等 iCloud 下载完成再拷贝，
+            // 大文件可能要一两分钟，故超时放宽到 150s，避免 daemon 还在下、App 先超时返回失败。
+            for (int i = 0; i < 300; i++) {
                 if ([[NSFileManager defaultManager] fileExistsAtPath:resPath]) {
                     NSString *res = [NSString stringWithContentsOfFile:resPath
                                                              encoding:NSUTF8StringEncoding error:nil];

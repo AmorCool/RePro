@@ -83,6 +83,40 @@ static BOOL CopyFile(NSString *src, NSString *dst) {
     return NO;
 }
 
+// Block until an iCloud/ubiquitous item is fully downloaded locally (status ==
+// Current / Downloaded), or until `timeout` seconds elapse. Without this, CopyFile
+// below would grab a 0-byte stub and the IPA import would fail with
+// "needs to be cached, then errors out". Mirrors what the Files app does when you
+// tap an iCloud file: it downloads first, then opens.
+static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    BOOL everDownloading = NO;
+
+    while ([[NSDate date] compare:deadline] == NSOrderedAscending) {
+        NSError *err = nil;
+        NSDictionary *vals = [url resourceValuesForKeys:@[
+            NSURLUbiquitousItemDownloadingStatusKey,
+            NSURLUbiquitousItemIsDownloadingKey
+        ] error:&err];
+        if (err) {
+            RPVImportDaemonLog(@"ubiquitous status query failed (retry): %@", err);
+        } else if (vals) {
+            NSString *status = vals[NSURLUbiquitousItemDownloadingStatusKey];
+            NSNumber *downloading = vals[NSURLUbiquitousItemIsDownloadingKey];
+            if (downloading.boolValue) everDownloading = YES;
+            if ([status isEqualToString:NSURLUbiquitousItemDownloadingStatusCurrent] ||
+                [status isEqualToString:NSURLUbiquitousItemDownloadingStatusDownloaded]) {
+                RPVImportDaemonLog(@"iCloud item ready (status=%@)", status);
+                return;
+            }
+            RPVImportDaemonLog(@"waiting for iCloud download (status=%@, downloading=%@)", status, downloading);
+        }
+        usleep(500000); // 0.5s
+    }
+    RPVImportDaemonLog(@"timed out (%.0fs) waiting for iCloud download%@",
+                       timeout, everDownloading ? @" — download started but did not finish" : @"");
+}
+
 // Validate that dst is safely inside the IPC dir, then perform the copy and write
 // the per-request result file.
 static void HandleRequest(void) {
@@ -113,11 +147,18 @@ static void HandleRequest(void) {
 
     RPVImportDaemonLog(@"handling import (reqId=%@) src=%@", reqId, src);
 
-    // Best-effort trigger iCloud download of the source, in case it's a stub.
-    if ([src hasPrefix:@"/var/mobile/Library/Mobile Documents"]) {
+    // iCloud / File Provider 文件在下载前只是占位符（stub）。CopyFile 之前必须先把
+    // 文件真正下载（缓存）到本地，否则只会拷到 0 字节占位符，导致上游 initWithIpaURL
+    // 读不到 Info.plist → “无法读取这个 .ipa”。这里触发下载并**轮询等待**到下载完成
+    // （最多 120s），与 iOS 文件 App 点开 iCloud 文件“先下载缓存再打开”的行为一致。
+    NSURL *srcURL = [NSURL fileURLWithPath:src];
+    NSNumber *isUbiquitous = nil;
+    [srcURL getResourceValue:&isUbiquitous forKey:NSURLIsUbiquitousItemKey error:nil];
+    if (isUbiquitous.boolValue) {
         NSError *dlErr = nil;
-        [fm startDownloadingUbiquitousItemAtURL:[NSURL fileURLWithPath:src] error:&dlErr];
+        [fm startDownloadingUbiquitousItemAtURL:srcURL error:&dlErr];
         if (dlErr) RPVImportDaemonLog(@"startDownloadingUbiquitousItem: %@", dlErr);
+        RPVWaitForUbiquitousDownload(srcURL, 120.0);
     }
 
     BOOL ok = CopyFile(src, dst);
@@ -149,14 +190,19 @@ int main(int argc, char *argv[]) {
 
         // Handle a request that was already pending at launch.
         if ([[NSFileManager defaultManager] fileExistsAtPath:kRequestPath]) {
-            HandleRequest();
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                HandleRequest();
+            });
         }
 
         int token = 0;
         notify_register_dispatch(kNotifyName.UTF8String, &token,
                                  dispatch_get_main_queue(), ^(int t) {
             RPVImportDaemonLog(@"received notify (token %d)", t);
-            HandleRequest();
+            // 在后台队列处理，避免下载等待期间阻塞 daemon 的 run loop。
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                HandleRequest();
+            });
         });
 
         RPVImportDaemonLog(@"entering run loop");

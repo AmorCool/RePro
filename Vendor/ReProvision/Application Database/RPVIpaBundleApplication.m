@@ -31,6 +31,28 @@ extern BOOL RPVIsRootHideEnvironment(void);
 
 static BOOL (^_rpvDaemonFileCopyHandler)(NSString *srcPath, NSString *dstPath) = nil;
 
+// 等待 iCloud/File Provider 文件真正下载到本地（status==Current/Downloaded）或超时。
+// 避免把 0 字节占位符当真实 .ipa 拷走，导致“无法读取这个 .ipa”。
+static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
+    if (![url isFileURL]) return;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while ([[NSDate date] compare:deadline] == NSOrderedAscending) {
+        NSError *err = nil;
+        NSDictionary *vals = [url resourceValuesForKeys:@[
+            NSURLUbiquitousItemDownloadingStatusKey,
+            NSURLUbiquitousItemIsDownloadingKey
+        ] error:&err];
+        if (!err && vals) {
+            NSString *status = vals[NSURLUbiquitousItemDownloadingStatusKey];
+            if ([status isEqualToString:NSURLUbiquitousItemDownloadingStatusCurrent] ||
+                [status isEqualToString:NSURLUbiquitousItemDownloadingStatusDownloaded]) {
+                return;
+            }
+        }
+        usleep(500000);
+    }
+}
+
 @implementation RPVIpaBundleApplication
 
 + (void)setDaemonFileCopyHandler:(BOOL (^)(NSString *srcPath, NSString *dstPath))handler {
@@ -70,9 +92,16 @@ static BOOL (^_rpvDaemonFileCopyHandler)(NSString *srcPath, NSString *dstPath) =
     // 下面 coordinateReadingItemAtURL: 的访问器会触发下载，但提前显式 startDownloading
     // 能让快路径的 copyItemAtURL: 直接拿到真实文件而非 stub，避免复制到一个空占位符。
     if (scoped && [url isFileURL]) {
-        if ([[NSFileManager defaultManager] respondsToSelector:@selector(startDownloadingUbiquitousItemAtURL:error:)]) {
-            NSError *dlErr = nil;
-            [[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&dlErr];
+        NSNumber *isUb = nil;
+        [url getResourceValue:&isUb forKey:NSURLIsUbiquitousItemKey error:nil];
+        if (isUb.boolValue) {
+            // 触发 iCloud 下载，并**等待下载完成**再拷贝，否则下方 copyItemAtURL: 可能拷到占位符。
+            // （RootHide 下 App 在 overlay namespace，isUb 一般为 NO，会落到 importdaemon 走 rootfs 处理。）
+            if ([[NSFileManager defaultManager] respondsToSelector:@selector(startDownloadingUbiquitousItemAtURL:error:)]) {
+                NSError *dlErr = nil;
+                [[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&dlErr];
+            }
+            RPVWaitForUbiquitousDownload(url, 120.0);
         }
     }
 
