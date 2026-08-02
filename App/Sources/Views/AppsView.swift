@@ -65,8 +65,13 @@ struct AppsView: View {
                     appList
                 }
             }
-            .navigationTitle("ReSign")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Image("NavTitle")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 28)
+                }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
                         viewModel.resignAllApplications()
