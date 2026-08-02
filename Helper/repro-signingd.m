@@ -1,5 +1,5 @@
 //
-//  repro-signingd.m — 后台静默重签守护进程（v1.1.64 全面修复）
+//  repro-signingd.m — 后台静默重签守护进程（v1.1.64~1.1.67 持续修复）
 //
 //  ★ v1.1.64 修了 6 个真实存在、且互相叠加导致「自动续签从来没成功过」的硬伤：
 //    1. 配置读不到（用户主诉：App 里设的间隔/阈值跟 daemon 用的对不上）
@@ -46,6 +46,7 @@
 #include <time.h>
 #include <signal.h>
 #include <dlfcn.h>
+#include <libproc.h>
 #import <Foundation/Foundation.h>
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
@@ -128,42 +129,94 @@ static void s_open_log(void) {
     if (!gLogFile) NSLog(@"[repro-signingd] 无法打开 %@", p);
 }
 
-/// 启动自诊断：读 daemon 自身签名里的 entitlement，确认
-/// com.apple.backboardd.launchapplications 等私有权限是否真的签上了。
-///
-/// 这是 v1.1.66 加的「铁证」诊断：RootHide 在 jbroot namespace 下会剥离私有
-/// entitlement。若这里打印 ❌缺失，说明 daemon 仍跑在 jbroot namespace
-/// （postinst 没用 jbroot 命令把 plist 转 rootfs 路径再 bootstrap），
-/// SBSLaunch 必然返回 7 —— 与日志里看到的完全一致。
-static void s_log_self_entitlements(void) {
-    // iOS 上没有 SecCode API，改用 codesign 命令行读取自身 entitlements。
-    NSString *me = [[[NSProcessInfo processInfo] arguments] firstObject];
-    if (!me.length) { s_log(@"⚠️ 自身 entitlement 自检失败：取不到自身路径"); return; }
-
-    NSString *cmd = [NSString stringWithFormat:@"/usr/bin/codesign -d --entitlements :- '%@' 2>/dev/null", me];
+/// 运行 shell 命令并取 stdout（用于读取自身 entitlement）
+static NSString *s_run_cmd(NSString *cmd) {
     FILE *pipe = popen(cmd.UTF8String, "r");
-    if (!pipe) { s_log(@"⚠️ 自身 entitlement 自检失败：无法执行 codesign"); return; }
+    if (!pipe) return nil;
     NSMutableData *data = [NSMutableData data];
     char buf[1024];
     while (fgets(buf, sizeof(buf), pipe)) [data appendBytes:buf length:strlen(buf)];
     pclose(pipe);
-
     NSString *out = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (out.length == 0) {
-        s_log(@"⚠️ codesign 未返回 entitlement（可能裸签了，CI 必须用 do_sign 带 entitlements）");
+    return (out.length ? out : nil);
+}
+
+/// 读取 daemon 自身签名里的 entitlement XML。
+/// iOS 上 codesign 可能没装，用 ldid -e 兜底（越狱设备通常都有 ldid）。
+static NSString *s_read_self_entitlements_xml(void) {
+    NSString *me = [[[NSProcessInfo processInfo] arguments] firstObject];
+    if (!me.length) return nil;
+    NSString *out = s_run_cmd([NSString stringWithFormat:
+        @"/usr/bin/codesign -d --entitlements :- '%@' 2>/dev/null", me]);
+    if (out.length) return out;
+    out = s_run_cmd([NSString stringWithFormat:@"ldid -e '%@' 2>/dev/null", me]);
+    return out;
+}
+
+/// 判断 daemon 实际跑在哪个 namespace（这是 RootHide 下 result=7 的决定性证据）：
+///   proc_pidpath 返回 /var/jb/usr/libexec/...     → jbroot namespace ❌（私有 entitlement 被剥离）
+///   proc_pidpath 返回 /usr/libexec/...            → rootfs 真实 namespace ✅（entitlement 保留）
+static NSString *s_namespace_report(void) {
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(getpid(), path, sizeof(path)) > 0) {
+        NSString *p = [NSString stringWithUTF8String:path];
+        if ([p hasPrefix:@"/var/jb/"])
+            return [NSString stringWithFormat:@"jbroot namespace (路径=%@) ❌ 私有权限会被 RootHide 剥离", p];
+        return [NSString stringWithFormat:@"rootfs 真实 namespace (路径=%@) ✅ entitlement 应保留", p];
+    }
+    return @"无法取得自身路径（proc_pidpath 失败）";
+}
+
+/// 缓存的自检报告（进程内只算一次，每次触发都打印，避免重复 popen 刷屏）
+static NSString *gSelfEntitlementReport = nil;
+
+/// 计算自身 entitlement 自检报告（进程启动时调用一次）
+static void s_compute_self_entitlements(void) {
+    NSString *xml = s_read_self_entitlements_xml();
+    if (xml.length == 0) {
+        gSelfEntitlementReport = [NSString stringWithFormat:
+            @"⚠️ 无法读取自身 entitlement（codesign/ldid 都没返回 → 很可能 CI 裸签了，"
+             "必须 do_sign 带 entitlements）\n  namespace: %@", s_namespace_report()];
         return;
     }
-    BOOL hasLaunch = [out containsString:@"com.apple.backboardd.launchapplications"];
-    BOOL hasUnlim  = [out containsString:@"com.apple.multitasking.unlimitedassertions"];
-    BOOL hasSys    = [out containsString:@"com.apple.multitasking.systemappassertions"];
-    s_log(@"自身 entitlement 自检: backboardd.launchapplications=%@  unlimitedassertions=%@  systemappassertions=%@",
-          hasLaunch ? @"✅有" : @"❌缺失(被 RootHide 剥离)",
-          hasUnlim  ? @"✅有" : @"❌缺失",
-          hasSys    ? @"✅有" : @"❌缺失");
+    BOOL hasLaunch = [xml containsString:@"com.apple.backboardd.launchapplications"];
+    BOOL hasUnlim  = [xml containsString:@"com.apple.multitasking.unlimitedassertions"];
+    BOOL hasSys    = [xml containsString:@"com.apple.multitasking.systemappassertions"];
+    NSMutableString *r = [NSMutableString stringWithFormat:
+        @"自身 entitlement 自检: backboardd.launchapplications=%@  unlimitedassertions=%@  systemappassertions=%@\n"
+        @"  namespace: %@",
+        hasLaunch ? @"✅有" : @"❌缺失(被 RootHide 剥离)",
+        hasUnlim  ? @"✅有" : @"❌缺失",
+        hasSys    ? @"✅有" : @"❌缺失",
+        s_namespace_report()];
     if (!hasLaunch) {
-        s_log(@"   ❌ 致命: backboardd.launchapplications 缺失 → daemon 跑在 jbroot namespace，"
-              @"SBSLaunch 必返回 7。修复: roothide postinst 必须用 jbroot 命令把 plist 转 rootfs 路径再 launchctl bootstrap。");
+        [r appendString:@"\n  ❌ 致命: backboardd.launchapplications 缺失 → daemon 跑在 jbroot namespace，"
+                        "SBSLaunch 必返回 7。修复: roothide postinst 必须用 jbroot 命令把 plist 转 rootfs 路径再 launchctl bootstrap。"];
     }
+    gSelfEntitlementReport = r;
+}
+
+/// 每次触发都打印的自检（进程内只算一次，之后复用缓存）
+static void s_report_self_entitlements(void) {
+    if (!gSelfEntitlementReport) s_compute_self_entitlements();
+    s_log(@"%@", gSelfEntitlementReport ?: @"⚠️ 未检测到自身 entitlement 信息");
+}
+
+/// App 是否已注册到 SpringBoard（即便没在运行，注册了 SBSProcessID 也返回 YES）。
+/// 用于区分「App 未注册(uicache 问题)」与「App 已注册但后台启动被拒(权限问题)」。
+static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
+    void *sbs = s_sbsHandle();
+    if (!sbs) { if (outPid) *outPid = 0; return NO; }
+    static BOOL (*fn)(CFStringRef, pid_t *) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (BOOL (*)(CFStringRef, pid_t *))dlsym(sbs, "SBSProcessIDForDisplayIdentifier");
+    });
+    if (!fn) { if (outPid) *outPid = 0; return NO; }
+    pid_t pid = 0;
+    BOOL ok = fn((__bridge CFStringRef)bundleID, &pid);
+    if (outPid) *outPid = pid;
+    return ok;
 }
 
 // ─── 配置 ────────────────────────────────────────────────────────
@@ -535,6 +588,11 @@ static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
     void *handle = s_sbsHandle();
     if (!handle) return NO;
 
+    // v1.1.67：每次触发都打印自身 entitlement + namespace 自检，
+    // 这样无论 daemon 是否重启，下一次测试（SIGHUP / 定时器）都能拿到铁证，
+    // 不再靠猜。定位 result=7 到底是「私有权限被剥离」还是「App 未注册」。
+    s_report_self_entitlements();
+
     // ⚠️ v1.1.64 修复：真实原型是
     //     int SBSLaunchApplicationWithIdentifierAndLaunchOptions(
     //             CFStringRef identifier, CFDictionaryRef launchOptions, BOOL suspended);
@@ -579,8 +637,18 @@ static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
         s_log(@"[Step 1/3] 后台唤醒请求已被 backboardd 接受 (result=0) — %@", kAppBundleID);
     } else {
         s_log(@"[Step 1/3] ⚠️ 后台唤醒被拒绝 (result=%d)", launchResult);
-        s_log(@"   常见原因: daemon 缺 com.apple.backboardd.launchapplications 权限，"
-              @"或 App 尚未被 uicache 注册到 SpringBoard");
+        // v1.1.67：失败时立刻区分根因 —— App 是否已注册到 SpringBoard？
+        pid_t regPid = 0;
+        BOOL registered = s_isAppRegistered(kAppBundleID, &regPid);
+        if (registered) {
+            s_log(@"   App 已注册到 SpringBoard（pid=%d，未运行）。"
+                  @"→ 根因是 daemon 的后台启动权限被拒：检查上方『自身 entitlement 自检』的 namespace 行；"
+                  @"若显示 jbroot namespace，说明 daemon 仍跑在 jbroot 路径下（postinst 未用 jbroot 命令转 rootfs）。",
+                  regPid);
+        } else {
+            s_log(@"   ⚠️ App 未注册到 SpringBoard（SBSProcessID 返回 NO）。"
+                  @"→ 根因是 uicache 注册问题，不是权限。请在 App 内或终端执行 uicache -p /Applications/RePro.app 后重试。");
+        }
     }
 
     // Step 2 的公共逻辑：拿 PID → 申请保活断言
@@ -914,6 +982,10 @@ static void s_onSigningComplete(void) {
 static int s_printStatus(void) {
     printf("═══════════ RePro 续签守护进程状态 ═══════════\n");
 
+    // 0. 自身 entitlement + namespace 自检（最关键的权限证据）
+    s_report_self_entitlements();
+    printf("\n");
+
     // 1. daemon 是否在跑
     NSString *pidStr = [NSString stringWithContentsOfFile:kPidPath
                                                  encoding:NSUTF8StringEncoding error:nil];
@@ -1022,8 +1094,8 @@ int main(int argc, char *argv[]) {
     s_log(@"========================================");
     s_setup_signal_handlers();
 
-    // v1.1.66：启动时自检自身 entitlement（RootHide 下若被剥离会直接暴露根因）
-    s_log_self_entitlements();
+    // v1.1.67：启动时自检自身 entitlement + namespace（每次触发也会再打印）
+    s_report_self_entitlements();
 
     [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
     chown(kIpcDir.UTF8String, 501, 501);

@@ -133,7 +133,14 @@ load_daemon() {
 	echo "  jbroot plist = $plist"
 	echo "  rootfs plist  = $real_plist"
 
-	"$LAUNCHCTL" bootout system "$real_plist" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$real_plist" >/dev/null 2>&1 || true
+	# v1.1.67 关键加固：从旧版本（v1.1.65 及更早，daemon 以 jbroot 路径加载）
+	# 升级时，旧 daemon 仍注册在 jbroot 路径下。若只 bootout rootfs 路径，
+	# 旧 daemon 会残留并继续应答 SIGHUP → 用户看到的永远是旧二进制（无新诊断行）。
+	# 因此两条路径都 bootout，确保旧进程被彻底干掉，新 daemon 以 rootfs 真实路径加载。
+	"$LAUNCHCTL" bootout system "$plist"     >/dev/null 2>&1 || true   # jbroot 路径（vroot shell 下即此值）
+	"$LAUNCHCTL" bootout system "$real_plist" >/dev/null 2>&1 || true   # rootfs 路径
+	"$LAUNCHCTL" bootout "system/$label"     >/dev/null 2>&1 || true    # 按 label 兜底
+
 	"$LAUNCHCTL" bootstrap system "$real_plist" >/dev/null 2>&1 || "$LAUNCHCTL" load "$real_plist" >/dev/null 2>&1 || true
 	"$LAUNCHCTL" kickstart -k "system/$label" >/dev/null 2>&1 || true
 	echo "$desc launched"
