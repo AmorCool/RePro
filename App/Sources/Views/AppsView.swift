@@ -220,20 +220,30 @@ struct AppsView: View {
         }
     }
 
-    // MARK: 应用列表
+    // MARK: 应用列表（ReSign 签名应用）
     private var appList: some View {
         List {
-            ForEach(viewModel.installedApps) { app in
-                AppRowView(app: app) {
-                    viewModel.resign(app: app)
-                }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        pendingUninstall = app
-                    } label: {
-                        Label("卸载", systemImage: "trash")
+            Section {
+                ForEach(viewModel.installedApps) { app in
+                    AppRowView(app: app) {
+                        viewModel.resign(app: app)
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            pendingUninstall = app
+                        } label: {
+                            Label("卸载", systemImage: "trash")
+                        }
                     }
                 }
+            } header: {
+                HStack {
+                    Text("ReSign 签应用")
+                        .font(.headline)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+                .textCase(nil) // 保留原始大小写
             }
         }
         .refreshable {
