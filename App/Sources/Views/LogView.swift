@@ -151,23 +151,25 @@ struct LogView: View {
 
     // MARK: 空状态
     private var emptyLogContent: some View {
-        Spacer()
+        VStack(spacing: 0) {
+            Spacer()
 
-        VStack(spacing: 14) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 44))
-                .foregroundColor(.secondary.opacity(0.6))
+            VStack(spacing: 14) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 44))
+                    .foregroundColor(.secondary.opacity(0.6))
 
-            Text("暂无日志")
-                .font(.headline)
-                .foregroundColor(.secondary)
+                Text("暂无日志")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
 
-            Text("应用运行记录将显示在此处")
-                .font(.subheadline)
-                .foregroundColor(.secondary.opacity(0.7))
+                Text("应用运行记录将显示在此处")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
+
+            Spacer()
         }
-
-        Spacer()
     }
 
     // MARK: 筛选后的日志
