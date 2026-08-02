@@ -26,7 +26,7 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "RePro"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.55"
+MARKETING_VERSION = "1.1.57"
 CURRENT_PROJECT_VERSION = "48"
 DEPLOYMENT_TARGET = "15.0"
 BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
@@ -61,6 +61,9 @@ VENDOR_HEADER_DIRS = [
     # 本来就不在这个列表里，且两边都用引号包含（同目录优先），不会互相串。
     "Vendor/ChOma",
     "App/Sources/Bridge",
+    # 本地通知模块（移植自 test2 源码）：桥接头 #import "RPVNotificationManager.h"
+    # 需要能在这里找到它，HookUtil.h 也由 RPVNotificationManager.m 同目录引用。
+    "App/Sources/Notifications",
 ]
 
 # SDK 里的系统库。libMobileGestalt 提供 MGCopyAnswer（RPVAccountChecker），
@@ -68,6 +71,9 @@ VENDOR_HEADER_DIRS = [
 SDK_FRAMEWORKS = [
     ("Security.framework", "System/Library/Frameworks/Security.framework", "wrapper.framework"),
     ("MobileCoreServices.framework", "System/Library/Frameworks/MobileCoreServices.framework", "wrapper.framework"),
+    # 本地通知（RPVNotificationManager）。clang modules 一般会自动链接，
+    # 这里显式列出，避免某些 SDK 组合下 autolink 失效导致符号缺失。
+    ("UserNotifications.framework", "System/Library/Frameworks/UserNotifications.framework", "wrapper.framework"),
     ("libMobileGestalt.tbd", "usr/lib/libMobileGestalt.tbd", "sourcecode.text-based-dylib-definition"),
     ("libz.tbd", "usr/lib/libz.tbd", "sourcecode.text-based-dylib-definition"),
 ]
@@ -143,8 +149,14 @@ def walk(rel_root, exts=None, skip_dirs=()):
 def collect():
     swift = walk("App/Sources", exts={".swift"})
     bridge_src = ["App/Sources/Bridge/RPVBridge.m",
-                  "App/Sources/Bridge/RPVSigningdNotify.m"]
-    bridge_hdr = ["App/Sources/Bridge/RPVBridge.h", BRIDGING_HEADER]
+                  "App/Sources/Bridge/RPVSigningdNotify.m",
+                  # 本地通知：HookUtil.c 自带 fishhook 重写，零外部依赖；
+                  # RPVNotificationManager.m 里的 constructor Hook 依赖它。
+                  "App/Sources/Notifications/HookUtil.c",
+                  "App/Sources/Notifications/RPVNotificationManager.m"]
+    bridge_hdr = ["App/Sources/Bridge/RPVBridge.h", BRIDGING_HEADER,
+                  "App/Sources/Notifications/HookUtil.h",
+                  "App/Sources/Notifications/RPVNotificationManager.h"]
 
     vendor_all = walk("Vendor/ReProvision", exts={".m", ".mm", ".c", ".cpp", ".h", ".hpp"})
     # ChOma 全量参与编译。官方 Makefile 就支持 TARGET=ios 全量构建，
@@ -583,12 +595,6 @@ def build():
             ("GENERATE_INFOPLIST_FILE", "YES"),
             ("HEADER_SEARCH_PATHS", "(\n%s\n\t\t\t\t)" % "\n".join("\t\t\t\t\t%s," % p for p in header_paths)),
             ("INFOPLIST_KEY_CFBundleDisplayName", '"RePro"'),
-            ("INFOPLIST_KEY_CFBundleURLTypes",
-             '(\n\t\t\t\t\t{\n'
-             '\t\t\t\t\t\tCFBundleURLSchemes = (\n'
-             '\t\t\t\t\t\t\treprovision,\n'
-             '\t\t\t\t\t\t);\n'
-             '\t\t\t\t\t},\n\t\t\t\t)'),
             ("INFOPLIST_KEY_UIApplicationSceneManifest_Generation", "YES"),
             ("INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents", "YES"),
             ("INFOPLIST_KEY_UIFileSharingEnabled", "YES"),

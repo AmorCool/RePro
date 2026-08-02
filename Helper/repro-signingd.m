@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
     if (argc >= 2 && strcmp(argv[1], "--resign-now") == 0) {
         s_log(@"收到 --resign-now");
         s_fire();
-        s_log(@"触发完成 — 打开 App 时自动续签，或用快捷指令 reprovision://refresh");
+        s_log(@"触发完成 — 打开 App 时自动续签");
         return 0;
     }
 

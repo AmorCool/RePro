@@ -13,5 +13,6 @@
 
 #import "RPVBridge.h"
 #import "RPVSigningdNotify.h"
+#import "RPVNotificationManager.h"
 
 #endif /* RePro_Bridging_Header_h */

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Darwin
 
 // MARK: - 设置页面
@@ -8,6 +9,13 @@ struct SettingsView: View {
     @AppStorage("resignThreshold") private var resignThreshold: Int = 2
     // checkIntervalMin: 检查间隔，单位分钟，默认 360（6小时），最少 1 分钟
     @AppStorage("checkIntervalMin") private var checkIntervalMin: Int = 360
+
+    // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
+    @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
+    @AppStorage("notificationsDebug") private var notificationsDebug: Bool = false
+    /// 系统授权状态描述，onAppear 时刷新
+    @State private var notifyStatusText: String = "检查中…"
+    @State private var notifyNeedsSystemSettings = false
 
     /// 从分钟数拆出的小时和分钟（纯展示用，不绑定 @AppStorage）
     @State private var intervalHours: Int = 6
@@ -40,6 +48,7 @@ struct SettingsView: View {
             Form {
                 accountSection
                 autoResignSection
+                notificationSection
                 signingBackendSection
                 systemSection
                 aboutSection
@@ -50,6 +59,7 @@ struct SettingsView: View {
                 intervalHours = checkIntervalMin / 60
                 intervalMins  = checkIntervalMin % 60
                 refreshLogFileSize()
+                refreshNotificationStatus()
                 needsConfigSync = false
             }
             .onChange(of: autoResign) { _ in needsConfigSync = true }
@@ -219,6 +229,64 @@ struct SettingsView: View {
                 .padding(.top, 4)
             }
         }
+    }
+
+    // MARK: - 通知
+
+    private var notificationSection: some View {
+        Section {
+            Toggle("重签通知", isOn: $notificationsEnabled)
+            Toggle("详细通知", isOn: $notificationsDebug)
+                .disabled(!notificationsEnabled)
+
+            HStack {
+                Text("系统权限")
+                Spacer()
+                Text(notifyStatusText)
+                    .foregroundColor(notifyNeedsSystemSettings ? .red : .secondary)
+            }
+
+            if notifyNeedsSystemSettings {
+                Button("前往系统设置开启") {
+                    openSystemNotificationSettings()
+                }
+            }
+        } header: {
+            Text("通知")
+        } footer: {
+            Text("「重签通知」在每个应用签名完成或失败时推送横幅；「详细通知」会额外播报开始签名、写入签名、重建 IPA、安装等中间步骤，仅排障时建议开启。")
+        }
+    }
+
+    private func refreshNotificationStatus() {
+        RPVNotificationManager.sharedInstance().fetchAuthorizationStatus { status in
+            // 取值同 UNAuthorizationStatus
+            switch status {
+            case 0:
+                notifyStatusText = "未申请"
+                notifyNeedsSystemSettings = false
+            case 1:
+                notifyStatusText = "已拒绝"
+                notifyNeedsSystemSettings = true
+            case 2:
+                notifyStatusText = "已授权"
+                notifyNeedsSystemSettings = false
+            case 3:
+                notifyStatusText = "临时授权"
+                notifyNeedsSystemSettings = false
+            case 4:
+                notifyStatusText = "仅定时摘要"
+                notifyNeedsSystemSettings = true
+            default:
+                notifyStatusText = "未知"
+                notifyNeedsSystemSettings = false
+            }
+        }
+    }
+
+    private func openSystemNotificationSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private func formatInterval(hours: Int, mins: Int) -> String {

@@ -18,6 +18,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         LogManager.shared.info("RePro 启动", source: "AppDelegate")
         RPVBridge.installRootHelperHandlers()
+
+        // 申请通知权限。只在有界面的正常启动里申请：
+        // 静默续签分支没有 UI，不该在那里把系统授权弹窗推给用户。
+        // RootHide 下授权能否持久，取决于 RPVNotificationManager.m 里
+        // -[UNUserNotificationCenter initWithBundleIdentifier:] 的 Hook。
+        RPVNotificationManager.sharedInstance().registerToSendNotifications()
+
         BridgeClient.shared.fetchEnvironment { _ in }
 
         syncSigningdConfig()
@@ -64,37 +71,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         sema.wait()
+        // addNotificationRequest 是异步 XPC，立刻 exit(0) 有可能让最后一条
+        // 续签结果通知还没提交到 usernoted 就被丢掉，这里留出提交窗口。
+        Thread.sleep(forTimeInterval: 0.8)
         exit(0)
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         if checkDaemonTrigger() { doAutoResign() }
         else { tryAutoResign() }
-    }
-
-    // MARK: - 快捷指令入口（从 ReProApp.onOpenURL 调用）
-
-    /// URL scheme / 快捷指令触发静默续签，完成后 exit(0)
-    static func sharedSilentResign() -> Bool {
-        RPVBridge.installRootHelperHandlers()
-        DaemonLogStart(DaemonLogDefaultPath())
-        LogManager.shared.info("══════ 快捷指令静默续签 ══════", source: "AppDelegate")
-
-        let d = UserDefaults.standard
-        let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
-        let sema = DispatchSemaphore(value: 0)
-
-        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { result in
-            switch result {
-            case .success: LogManager.shared.info("静默续签完成", source: "AppDelegate")
-            case .failure(let e): LogManager.shared.warning("静默续签失败: \(e.localizedDescription)", source: "AppDelegate")
-            }
-            DaemonLogStop()
-            sema.signal()
-        }
-
-        sema.wait()
-        exit(0)
     }
 
     // MARK: - 触发检测

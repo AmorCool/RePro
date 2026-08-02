@@ -18,8 +18,21 @@ final class BridgeClient: ObservableObject {
     @Published private(set) var username: String?
     @Published private(set) var teamID: String?
 
+    /// bundleID → 显示名。发通知时把「com.xxx.yyy」换成用户看得懂的名字，
+    /// 由 fetchInstalledApps 顺带刷新。
+    private var appNameCache: [String: String] = [:]
+
+    /// 界面层（SigningViewModel）注册的进度 / 错误订阅者。
+    /// 桥接层的 handler 全局只有一份，统一由本类持有后再转发，
+    /// 否则界面一旦订阅就会把通知逻辑覆盖掉。
+    private var externalProgressHandler: ((String, Int) -> Void)?
+    private var externalErrorHandler: ((String, Error) -> Void)?
+
+    private let notifier = RPVNotificationManager.sharedInstance()
+
     private init() {
         refreshAccountState()
+        installSigningNotificationHooks()
     }
 
     // MARK: - 账号状态
@@ -106,12 +119,17 @@ final class BridgeClient: ObservableObject {
     // MARK: - 应用列表
 
     func fetchInstalledApps(completion: @escaping (Result<[InstalledApp], Error>) -> Void) {
-        bridge.fetchInstalledApps { infos, error in
+        bridge.fetchInstalledApps { [weak self] infos, error in
             if let error = error {
                 completion(.failure(error))
                 return
             }
-            completion(.success(infos.map(InstalledApp.init(info:))))
+            let apps = infos.map(InstalledApp.init(info:))
+            // 顺带刷新通知用的名字表
+            for app in apps {
+                self?.appNameCache[app.bundleIdentifier] = app.displayName
+            }
+            completion(.success(apps))
         }
     }
 
@@ -120,23 +138,76 @@ final class BridgeClient: ObservableObject {
     /// 单个应用的签名进度回调（0-100），由桥接层在主队列触发。
     /// 设为 nil 即取消订阅。
     func observeSigningProgress(_ handler: ((String, Int) -> Void)?) {
-        guard let handler = handler else {
-            bridge.signingProgressHandler = nil
-            return
-        }
-        bridge.signingProgressHandler = { bundleID, progress in
-            handler(bundleID, Int(progress))
-        }
+        externalProgressHandler = handler
     }
 
     /// 单个应用签名出错时的回调，在主队列触发
     func observeSigningError(_ handler: ((String, Error) -> Void)?) {
-        guard let handler = handler else {
-            bridge.signingErrorHandler = nil
-            return
+        externalErrorHandler = handler
+    }
+
+    // MARK: - 本地通知（语义对齐 test2 源码）
+
+    private func installSigningNotificationHooks() {
+        bridge.signingProgressHandler = { [weak self] bundleID, progress in
+            self?.handleSigningProgress(bundleID: bundleID, progress: Int(progress))
         }
-        bridge.signingErrorHandler = { bundleID, error in
-            handler(bundleID, error)
+        bridge.signingErrorHandler = { [weak self] bundleID, error in
+            self?.handleSigningError(bundleID: bundleID, error: error)
+        }
+    }
+
+    private func displayName(for bundleID: String) -> String {
+        appNameCache[bundleID] ?? bundleID
+    }
+
+    /// 进度节点与原版一一对应：10/50/60/90 为调试播报，100 为成功提示
+    private func handleSigningProgress(bundleID: String, progress: Int) {
+        let name = displayName(for: bundleID)
+        switch progress {
+        case 100:
+            notifier.sendNotification(title: "重签完成",
+                                      body: "已重新签名「\(name)」",
+                                      isDebug: false, identifier: nil)
+        case 10:
+            notifier.sendNotification(title: "调试", body: "开始签名「\(name)」",
+                                      isDebug: true, identifier: nil)
+        case 50:
+            notifier.sendNotification(title: "调试", body: "已写入签名：「\(name)」",
+                                      isDebug: true, identifier: nil)
+        case 60:
+            notifier.sendNotification(title: "调试", body: "已重建 IPA：「\(name)」",
+                                      isDebug: true, identifier: nil)
+        case 90:
+            notifier.sendNotification(title: "调试", body: "正在安装「\(name)」",
+                                      isDebug: true, identifier: nil)
+        default:
+            break
+        }
+        externalProgressHandler?(bundleID, progress)
+    }
+
+    private func handleSigningError(bundleID: String, error: Error) {
+        notifier.sendNotification(title: "签名失败",
+                                  body: "「\(displayName(for: bundleID))」：\(error.localizedDescription)",
+                                  isDebug: false, identifier: nil)
+        externalErrorHandler?(bundleID, error)
+    }
+
+    /// 整条流水线结束时的提示。
+    /// 成功时不再打扰用户（逐个应用已经提示过），只在出错或「无需重签」时发一条。
+    private func notifyPipelineResult(_ error: Error?) {
+        guard let error = error else { return }
+        let nsError = error as NSError
+        // RPVErrorNoSigningRequired == 101（Vendor/ReProvision/Application Database/RPVErrors.h）
+        if nsError.code == 101 {
+            notifier.sendNotification(title: "无需重签",
+                                      body: "当前没有接近过期的应用",
+                                      isDebug: false, identifier: nil)
+        } else {
+            notifier.sendNotification(title: "重签失败",
+                                      body: error.localizedDescription,
+                                      isDebug: false, identifier: nil)
         }
     }
 
@@ -151,7 +222,8 @@ final class BridgeClient: ObservableObject {
     }
 
     func resignAllExpiring(thresholdDays: Int, completion: @escaping (Result<Void, Error>) -> Void) {
-        bridge.resignAllExpiringApplications(thresholdDays: Int32(thresholdDays)) { error in
+        bridge.resignAllExpiringApplications(thresholdDays: Int32(thresholdDays)) { [weak self] error in
+            self?.notifyPipelineResult(error)
             if let error = error {
                 completion(.failure(error))
             } else {
@@ -162,7 +234,8 @@ final class BridgeClient: ObservableObject {
 
     /// 重签所有已安装应用（不按阈值过滤，手动刷新专用）
     func resignAllApplications(completion: @escaping (Result<Void, Error>) -> Void) {
-        bridge.resignAllApplications { error in
+        bridge.resignAllApplications { [weak self] error in
+            self?.notifyPipelineResult(error)
             if let error = error {
                 completion(.failure(error))
             } else {

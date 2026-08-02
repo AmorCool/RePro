@@ -36,10 +36,5 @@ struct MainView: View {
                 .tag(3)
         }
         .accentColor(.blue)
-        .onOpenURL { url in
-            if url.scheme == "reprovision", url.host == "refresh" {
-                _ = AppDelegate.sharedSilentResign()
-            }
-        }
     }
 }
