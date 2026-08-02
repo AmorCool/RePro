@@ -59,13 +59,38 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 左侧大标题（跟原版 ReSign 位置一致）
-                HStack {
+                // 顶栏：刷新图标 + ReSign 标题（同行对齐） + 导入按钮
+                HStack(alignment: .center, spacing: 0) {
+                    // 刷新按钮（与 ReSign 文字 Y 轴对齐）
+                    Button {
+                        viewModel.resignAllApplications()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundColor(.blue)
+                    }
+                    .disabled(viewModel.isBusy || !account.isSignedIn)
+
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
                         .frame(height: 36)
+
                     Spacer()
+
+                    // 导入按钮（从 toolbar 移到内容区，与标题同行）
+                    Button {
+                        openFilePicker()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .medium))
+                            Text("导入")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .foregroundColor(.blue)
+                    }
+                    .disabled(viewModel.isBusy)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
@@ -77,26 +102,8 @@ struct AppsView: View {
                     appList
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        viewModel.resignAllApplications()
-                    } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                    }
-                    .disabled(viewModel.isBusy || !account.isSignedIn)
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        openFilePicker()
-                    } label: {
-                        Image(systemName: "plus")
-                        Text("导入")
-                    }
-                    .disabled(viewModel.isBusy)
-                }
-            }
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarHidden(true)
             .safeAreaInset(edge: .bottom) { statusBar }
             .confirmationDialog("卸载应用",
                                 isPresented: Binding(get: { pendingUninstall != nil },
