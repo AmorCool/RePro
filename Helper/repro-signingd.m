@@ -54,7 +54,14 @@ static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-tr
 static NSString *const kStatePath   = @"/var/mobile/Library/RePro/signingd-state.plist";
 static NSString *const kResultPath  = @"/var/mobile/Library/RePro/last-resign-result.plist";
 static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
-static NSString *const kAppBundleID = @"jp.soh.reprovision";
+// ⚠️ v1.1.69 关键修复：此前此处写成 @"jp.soh.reprovision"，但 App 真实的
+// CFBundleIdentifier（SpringBoard 注册 ID）= "com.reprovision.repro"（见 pbxproj
+// PRODUCT_BUNDLE_IDENTIFIER 与 deb 内 Info.plist）。SBS 用 BundleID 查 App，
+// 传错 ID → SBSProcessIDForDisplayIdentifier 返回 NO、SBSLaunch 返回 7（"App 未注册"），
+// App 永远拉不起来 → 自动续签从未真正发生。现已改为正确的 BundleID。
+// （kAppBundleID 也用于读 App 配置：App 把设置同步到共享 plist
+//  /var/mobile/Library/RePro/signingd-config.plist，与 BundleID 无关，不受影响。）
+static NSString *const kAppBundleID = @"com.reprovision.repro";
 
 static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
 static const NSInteger  kFallbackDays    = 2;
@@ -141,6 +148,13 @@ static NSString *s_run_cmd(NSString *cmd) {
     return (out.length ? out : nil);
 }
 
+/// 判断某个命令行工具是否在当前 PATH 可达（popen 用 /bin/sh，PATH 来自 launchd 环境）
+static BOOL s_tool_exists(NSString *name) {
+    NSString *out = s_run_cmd([NSString stringWithFormat:
+        @"command -v '%@' 2>/dev/null || which '%@' 2>/dev/null", name, name]);
+    return out.length > 0;
+}
+
 /// 读取 daemon 自身签名里的 entitlement XML。
 /// iOS 上 codesign 可能没装，用 ldid -e 兜底（越狱设备通常都有 ldid）。
 static NSString *s_read_self_entitlements_xml(void) {
@@ -172,11 +186,23 @@ static NSString *gSelfEntitlementReport = nil;
 
 /// 计算自身 entitlement 自检报告（进程启动时调用一次）
 static void s_compute_self_entitlements(void) {
+    // RootHide 下 daemon 跑在 rootfs 真实 namespace，而 ldid/codesign 装在 jbroot，
+    // 不在 daemon 的 PATH 里 → popen 调不到。此时读不到 ≠ 二进制没签名
+    // （已用 Mach-O 解析证明 CI 确实签上了 entitlements）。避免误报「CI 裸签」。
+    BOOL toolsAvailable = s_tool_exists(@"/usr/bin/codesign") || s_tool_exists(@"codesign")
+                       || s_tool_exists(@"ldid");
+    if (!toolsAvailable) {
+        gSelfEntitlementReport = [NSString stringWithFormat:
+            @"ℹ️ 无法自检 entitlement（ldid/codesign 不在 daemon 的 rootfs PATH，属 RootHide 正常现象，不代表未签名）\n"
+            @"  namespace: %@\n"
+            @"  （若怀疑裸签，请用 ssh 进设备执行 `ldid -e /usr/libexec/repro-signingd` 手动确认）",
+            s_namespace_report()];
+        return;
+    }
     NSString *xml = s_read_self_entitlements_xml();
     if (xml.length == 0) {
         gSelfEntitlementReport = [NSString stringWithFormat:
-            @"⚠️ 无法读取自身 entitlement（codesign/ldid 都没返回 → 很可能 CI 裸签了，"
-             "必须 do_sign 带 entitlements）\n  namespace: %@", s_namespace_report()];
+            @"⚠️ 无法读取自身 entitlement（codesign/ldid 可用但都没返回 → 确属 CI 裸签，必须 do_sign 带 entitlements）\n  namespace: %@", s_namespace_report()];
         return;
     }
     BOOL hasLaunch = [xml containsString:@"com.apple.backboardd.launchapplications"];

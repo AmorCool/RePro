@@ -1,5 +1,25 @@
 import UIKit
 import Darwin
+import Combine
+
+/// 全局续签进度提示。
+/// daemon 后台静默续签进行中时，用户从主屏打开 App 会看到一条横幅，
+/// 明确告知「这是正常行为、无需操作」，避免被误以为是 BUG（白屏/卡死）。
+final class ResignProgress: ObservableObject {
+    static let shared = ResignProgress()
+    @Published var isResigning = false
+    @Published var title: String = ""
+    @Published var message: String = ""
+
+    func show(title: String, message: String) {
+        self.title = title
+        self.message = message
+        self.isResigning = true
+    }
+    func hide() {
+        self.isResigning = false
+    }
+}
 
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
@@ -99,6 +119,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ///    若用户中途打开（已转到前台），则保留进程、正常显示 UI。
     private func startDaemonResign() {
         daemonResignInProgress = true
+        // 提示横幅：用户中途打开 App 时，明确告知这是 daemon 后台续签、无需操作
+        ResignProgress.shared.show(
+            title: "RePro 后台自动续签",
+            message: "Daemon 后台自动续签流程已开始，无需任何操作！请勿杀掉后台，但您可以退出此程序。"
+        )
         DaemonLogStart(DaemonLogDefaultPath())
 
         let started = Date()
@@ -172,6 +197,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         LogManager.shared.info("══════ 续签结束，已回报 daemon ══════", source: "AppDelegate")
         DaemonLogStop()
         daemonResignInProgress = false
+        ResignProgress.shared.hide()
 
         // daemon 后台拉起且用户全程未打开 → 干净退出，释放 daemon 侧的 BKS 断言
         if isDaemon && UIApplication.shared.applicationState == .background {
@@ -230,6 +256,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         let started = Date()
         DaemonLogStart(DaemonLogDefaultPath())
+        // 前台手动续签也给出进度提示，避免界面看似无响应
+        ResignProgress.shared.show(title: "RePro 正在重签", message: "正在检查并重签即将到期的应用…")
         LogManager.shared.info("══════ 自动续签（阈值 \(threshold) 天）══════", source: "AppDelegate")
 
         BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
