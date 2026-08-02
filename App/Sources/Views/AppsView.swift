@@ -59,9 +59,10 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶栏：参考图三（JIT）风格 — 圆角胶囊按钮横排，紧凑居中
-                HStack(spacing: 10) {
-                    // 左侧：刷新（圆角胶囊按钮）
+                // 顶栏：刷新(胶囊) + ReSign(居中) + 导入(胶囊) 三元素成组居中，
+                // 刷新/导入靠近 ReSign 但并非贴边（spacing 控制间距，不挨着也不推到屏幕两端）
+                HStack(spacing: 16) {
+                    // 左侧：刷新（圆角胶囊按钮，保留 v1.1.81 样式）
                     Button {
                         viewModel.resignAllApplications()
                     } label: {
@@ -102,6 +103,7 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy)
                 }
+                .frame(maxWidth: .infinity, alignment: .center) // 整组居中，两按钮靠近 ReSign
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 .padding(.bottom, 8)

@@ -1,12 +1,13 @@
 import SwiftUI
 
-// MARK: - 主界面：自定义四标签容器 + 液态玻璃浮动底栏
+// MARK: - 主界面：系统 TabView（原生接管点击）+ 隐藏系统栏 + 自定义液态玻璃浮动底栏
 //
-// 架构决策（v1.1.80 最终方案）：
-// - 彻底不用 TabView、不用 overlay——底栏作为 VStack 的真实子视图放在最底部。
-//   这是 iOS SwiftUI 中保证自定义底栏可点击的最可靠方式：
-//   TabView 无 tabItem → 空系统 bar 拦截（v1.1.78）；overlay+zIndex → NavigationView 手势穿透拦截（v1.1.79）。
-//   只有 VStack 真实子视图能保证触摸事件不被上层视图劫持。
+// 底栏点击可靠性演进（教训）：
+//   v1.1.78  TabView 无 tabItem + safeAreaInset  → 空系统 bar 拦截触摸 ✗
+//   v1.1.79  ZStack + overlay(.bottom) + zIndex   → NavigationView 手势层拦截 ✗
+//   v1.1.80  VStack 真实子视图 switch 容器         → 仍点不动（自定义容器手势问题）✗
+//   v1.1.82  ✅ 系统 TabView(selection:) 原生接管点击 + 隐藏系统栏 + 玻璃栏做真实子视图
+//            系统 TabView 自己管理标签切换与触摸事件，100% 可靠；我们只在上面盖一层玻璃视觉。
 
 struct MainView: View {
     @ObservedObject private var resign = ResignProgress.shared
@@ -14,29 +15,28 @@ struct MainView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 续签横幅（顶部固定）
+            // 续签横幅（顶部固定，仅进行中显示）
             if resign.isResigning {
                 resignBanner
             }
 
-            // 内容区：按 selectedTab 切换，占满剩余空间
-            ZStack {
-                switch selectedTab {
-                case 0: AppsView()
-                case 1: SettingsView()
-                case 2: LogView()
-                case 3: HealthView()
-                default: AppsView()
-                }
+            // 内容区：系统 TabView，原生切换 + 原生触摸
+            TabView(selection: $selectedTab) {
+                AppsView().tag(0)
+                SettingsView().tag(1)
+                LogView().tag(2)
+                HealthView().tag(3)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // iOS 16+：隐藏系统自带 tab bar（我们只用自定义玻璃栏）
+            .toolbar(.hidden, for: .tabBar)
 
-            // 液态玻璃浮动底栏（VStack 真实子视图，保证可点击）
+            // 自定义液态玻璃浮动底栏（VStack 真实子视图，不抢占内容触摸）
             LiquidGlassTabBar(selectedTab: $selectedTab)
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
-                .padding(.bottom, 8)
+                .padding(.bottom, 10)
         }
+        .ignoresSafeArea(.keyboard)
         .accentColor(.blue)
         .background(Color(.systemGroupedBackground)) // 整体背景与列表一致，避免断层
     }
