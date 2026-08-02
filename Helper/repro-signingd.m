@@ -47,7 +47,6 @@
 #include <signal.h>
 #include <dlfcn.h>
 #import <Foundation/Foundation.h>
-#import <Security/Security.h>
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
@@ -137,35 +136,34 @@ static void s_open_log(void) {
 /// （postinst 没用 jbroot 命令把 plist 转 rootfs 路径再 bootstrap），
 /// SBSLaunch 必然返回 7 —— 与日志里看到的完全一致。
 static void s_log_self_entitlements(void) {
-    SecCodeRef code = NULL;
-    if (SecCodeCopySelf(kSecCSDefaultFlags, &code) != errSecSuccess || !code) {
-        s_log(@"⚠️ 自身 entitlement 自检失败：SecCodeCopySelf 返回错误");
+    // iOS 上没有 SecCode API，改用 codesign 命令行读取自身 entitlements。
+    NSString *me = [[[NSProcessInfo processInfo] arguments] firstObject];
+    if (!me.length) { s_log(@"⚠️ 自身 entitlement 自检失败：取不到自身路径"); return; }
+
+    NSString *cmd = [NSString stringWithFormat:@"/usr/bin/codesign -d --entitlements :- '%@' 2>/dev/null", me];
+    FILE *pipe = popen(cmd.UTF8String, "r");
+    if (!pipe) { s_log(@"⚠️ 自身 entitlement 自检失败：无法执行 codesign"); return; }
+    NSMutableData *data = [NSMutableData data];
+    char buf[1024];
+    while (fgets(buf, sizeof(buf), pipe)) [data appendBytes:buf length:strlen(buf)];
+    pclose(pipe);
+
+    NSString *out = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (out.length == 0) {
+        s_log(@"⚠️ codesign 未返回 entitlement（可能裸签了，CI 必须用 do_sign 带 entitlements）");
         return;
     }
-    CFDictionaryRef sigInfo = NULL;
-    if (SecCodeCopySigningInformation(code, kSecCSSigningInformation, &sigInfo) != errSecSuccess || !sigInfo) {
-        if (code) CFRelease(code);
-        s_log(@"⚠️ 自身 entitlement 自检失败：SecCodeCopySigningInformation 返回错误");
-        return;
+    BOOL hasLaunch = [out containsString:@"com.apple.backboardd.launchapplications"];
+    BOOL hasUnlim  = [out containsString:@"com.apple.multitasking.unlimitedassertions"];
+    BOOL hasSys    = [out containsString:@"com.apple.multitasking.systemappassertions"];
+    s_log(@"自身 entitlement 自检: backboardd.launchapplications=%@  unlimitedassertions=%@  systemappassertions=%@",
+          hasLaunch ? @"✅有" : @"❌缺失(被 RootHide 剥离)",
+          hasUnlim  ? @"✅有" : @"❌缺失",
+          hasSys    ? @"✅有" : @"❌缺失");
+    if (!hasLaunch) {
+        s_log(@"   ❌ 致命: backboardd.launchapplications 缺失 → daemon 跑在 jbroot namespace，"
+              @"SBSLaunch 必返回 7。修复: roothide postinst 必须用 jbroot 命令把 plist 转 rootfs 路径再 launchctl bootstrap。");
     }
-    CFDictionaryRef ents = CFDictionaryGetValue(sigInfo, kSecCodeInfoEntitlements);
-    if (ents) {
-        BOOL hasLaunch = CFDictionaryGetValue(ents, CFSTR("com.apple.backboardd.launchapplications")) != NULL;
-        BOOL hasUnlim  = CFDictionaryGetValue(ents, CFSTR("com.apple.multitasking.unlimitedassertions")) != NULL;
-        BOOL hasSys    = CFDictionaryGetValue(ents, CFSTR("com.apple.multitasking.systemappassertions")) != NULL;
-        s_log(@"自身 entitlement 自检: backboardd.launchapplications=%@  unlimitedassertions=%@  systemappassertions=%@",
-              hasLaunch ? @"✅有" : @"❌缺失(被 RootHide 剥离)",
-              hasUnlim  ? @"✅有" : @"❌缺失",
-              hasSys    ? @"✅有" : @"❌缺失");
-        if (!hasLaunch) {
-            s_log(@"   ❌ 致命: backboardd.launchapplications 缺失 → daemon 跑在 jbroot namespace，"
-                  @"SBSLaunch 必返回 7。修复: roothide postinst 必须用 jbroot 命令把 plist 转 rootfs 路径再 launchctl bootstrap。");
-        }
-    } else {
-        s_log(@"⚠️ 自身签名信息中找不到 entitlements 字典（可能裸签了）");
-    }
-    if (sigInfo) CFRelease(sigInfo);
-    if (code) CFRelease(code);
 }
 
 // ─── 配置 ────────────────────────────────────────────────────────
