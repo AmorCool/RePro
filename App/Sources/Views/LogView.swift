@@ -103,7 +103,7 @@ struct LogView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.tertiary)
+                .foregroundColor(.secondary.opacity(0.6))
             TextField("搜索日志...", text: $searchText)
                 .font(.subheadline)
         }
@@ -265,7 +265,7 @@ struct LogEntryRow: View {
                 // 来源
                 Text(entry.source)
                     .font(.caption2)
-                    .foregroundColor(.tertiary)
+                    .foregroundColor(.secondary.opacity(0.6))
                     .lineLimit(1)
             }
 
