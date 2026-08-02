@@ -51,6 +51,10 @@ static int gBacklightToken = 0;
 // 修复：日志文件被外部删除后，通过 fstat(st_nlink == 0) 检测，
 //       自动 fclose + 重新 fopen，避免 fd 泄漏和静默丢日志。
 
+// 前向声明（s_ensure_log_valid 在 s_log 之前使用它们）
+static void s_open_log(void);
+static void s_log(NSString *fmt, ...);
+
 static void s_ensure_log_valid(void) {
     if (!gLogFile) { s_open_log(); return; }
     struct stat st;
@@ -180,15 +184,6 @@ static void *s_acquireBKSAssertion(pid_t targetPid) {
         return NULL;
     }
 
-    // BKSProcessAssertioninitWithPID:flags:reason:name:withHandler:
-    typedef void *(*BKSInitFn)(id, SEL, pid_t, uint32_t, NSString *, NSString *, id);
-    BKSInitFn initFn = (BKSInitFn)dlsym(bksHandle, "BKSProcessAssertioninitWithPID:flags:reason:name:withHandler:");
-    if (!initFn) {
-        s_log(@"无法找到 BKSProcessAssertion 初始化方法");
-        dlclose(bksHandle);
-        return NULL;
-    }
-
     // 获取 BKSProcessAssertion 类
     Class bksClass = NSClassFromString(@"BKSProcessAssertion");
     if (!bksClass) {
@@ -202,20 +197,40 @@ static void *s_acquireBKSAssertion(pid_t targetPid) {
 
     id assertion = [[bksClass alloc] init];
     SEL sel = NSSelectorFromString(@"_initWithPID:flags:reason:name:withHandler:");
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    id result = [assertion performSelector:sel withObject:(id)(intptr_t)targetPid
-                  withObject:(id)(intptr_t)flags
-                  withObject:@"jp.soh.reprovision background signing"
-                  withObject:@"ReProvision"
-                  withObject:^(BOOL success) {
+
+    // 用 NSInvocation 调用 5 参数方法（ARC 不允许 performSelector 带 >2 个参数）
+    NSMethodSignature *sig = [assertion methodSignatureForSelector:sel];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setSelector:sel];
+    [inv setTarget:assertion];
+
+    // 参数索引：0=target, 1=selector, 2=第一个参数...
+    pid_t pidVal = targetPid;
+    uint32_t flagsVal = flags;
+    NSString *reasonStr = @"jp.soh.reprovision background signing";
+    NSString *nameStr = @"ReProvision";
+
+    // 使用 __unsafe_unretained 避免 ARC 对 block 参数的强引用问题
+    typedef void (^BKSHandler)(BOOL);
+    __unsafe_unretained BKSHandler handler = ^(BOOL success) {
         s_log(@"BKSProcessAssertion %@ (pid=%d)", success ? @"生效" : @"失败", targetPid);
-    }];
-#pragma clang diagnostic pop
+    };
+
+    [inv setArgument:&pidVal atIndex:2];
+    [inv setArgument:&flagsVal atIndex:3];
+    [inv setArgument:&reasonStr atIndex:4];
+    [inv setArgument:&nameStr atIndex:5];
+    [inv setArgument:&handler atIndex:6];
+    [inv invoke];
+
+    id result = nil;
+    [inv getReturnValue:&result];
 
     // 不 dlclose——BKS 对象运行时可能还需要该框架
     s_log(@"已获取 BKSProcessAssertion (pid=%d)", targetPid);
-    return (__bridge void *)(result ?: assertion);
+    // 如果返回值非空使用它，否则使用初始化的 assertion 对象
+    id finalResult = result ?: assertion;
+    return (__bridge_retained void *)finalResult;
 }
 
 /// 设置系统级电源唤醒（与 test2 IOPMSchedulePowerEvent 一致）
