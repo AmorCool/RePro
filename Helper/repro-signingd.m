@@ -79,6 +79,7 @@ static NSString *gLastResignStatus  = @"";    // 上次续签状态
 // 前向声明（C99 要求调用点之前声明）
 static void s_open_log(void);
 static void s_log(NSString *fmt, ...);
+static void *s_sbsHandle(void);
 
 /// 检查日志文件是否仍然有效（被 rm 后 nlink 归零，写入会落到孤儿 inode）
 ///
