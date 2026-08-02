@@ -220,9 +220,14 @@ struct LogEntryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(entry.level.displayName)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(entry.level.color)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(entry.level.color)
+                        .frame(width: 7, height: 7)
+                    Text(entry.level.displayName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(entry.level.color)
+                }
 
                 Spacer()
 
