@@ -1,5 +1,21 @@
 //
-//  repro-signingd.m — 后台静默重签守护进程（v1.1.62 全面修复）
+//  repro-signingd.m — 后台静默重签守护进程（v1.1.64 全面修复）
+//
+//  ★ v1.1.64 修了 6 个真实存在、且互相叠加导致「自动续签从来没成功过」的硬伤：
+//    1. 配置读不到（用户主诉：App 里设的间隔/阈值跟 daemon 用的对不上）
+//       → 改为优先直读 App 的 UserDefaults(CFPreferences)，三级回退
+//    2. SBSProcessIDForDisplayIdentifier 把「出参 pid」当返回值用
+//       → 永远拿不到 App PID，日志刷屏「BKS 保活跳过」
+//    3. SBSLaunchApplicationWithIdentifierAndLaunchOptions 的字典 key 是编的、
+//       第三个参数 suspended 传成了 NULL、返回值被丢弃
+//       → App 从头到尾根本没被拉起来
+//    4. BKSProcessAssertion 的 flags/reason/selector/block 生命周期四处错
+//    5. IOPMSchedulePowerEvent 的 type 传了不存在的 "AutoWakeOrPowerOn"
+//       → 恒定 kIOReturnBadArgument(0xE00002C2)，正确值是 "wakepoweron"
+//    6. 熄屏就 invalidate 定时器 → 锁屏期间彻底没有触发源
+//    另外：CI 对本 daemon 只做裸签（零 entitlements），缺
+//    com.apple.backboardd.launchapplications 等三项权限，2/3/4 注定失败。
+//    已新增 Resources/entitlements-signingd{,-roothide}.plist 并接入 CI。
 //
 //  核心能力：
 //    1. 定时器自动续签（可配置间隔，默认 2 小时）
@@ -113,25 +129,110 @@ static void s_open_log(void) {
 }
 
 // ─── 配置 ────────────────────────────────────────────────────────
+//
+// ⚠️ v1.1.64 关键修复 —— 用户主诉「App 里设的检查间隔 / 提前重签天数，跟 daemon 实际用的不一样」
+//
+//   旧版 daemon 只认 /var/mobile/Library/RePro/signingd-config.plist 这一个来源，
+//   而这个文件只有 App 在前台改设置时才会被写出来。只要 App 没被打开过
+//   （而 daemon 的整个存在意义恰恰就是「不用打开 App」），文件就不存在，
+//   daemon 于是一路打「配置文件不存在」并用死值 120 分 / 2 天 跑，
+//   跟界面上的设置完全脱节。这就是日志里刷屏的那行的真正含义。
+//
+//   现在按 ReProvision 原版 reprovisiond 的做法：优先直接读 App 自己的
+//   UserDefaults（CFPreferences，appID=jp.soh.reprovision，user=mobile）。
+//   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
+//   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
 typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; } sd_config;
 
-static sd_config s_cfg(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (!d) {
-        s_log(@"配置文件不存在 (%@)，使用默认值: 间隔=%ld分 阈值=%ld天 启用=YES",
-              kConfigPath, (long)kFallbackMinutes, (long)kFallbackDays);
-        return (sd_config){YES, kFallbackMinutes, kFallbackDays};
-    }
+/// 本次实际生效的配置来源（--status 会打印，方便一眼确认有没有读到 App 的设置）
+static NSString *gCfgSource = @"未读取";
+
+/// 从字典解析配置（key 与 App 端 @AppStorage 完全一致）
+static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
+    if (![d isKindOfClass:[NSDictionary class]]) return NO;
     id rawMin = d[@"checkIntervalMin"];
-    id rawEn  = d[@"autoResign"];
     id rawDy  = d[@"resignThreshold"];
+    id rawEn  = d[@"autoResign"];
+    if (!rawMin && !rawDy && !rawEn) return NO;   // 三个键一个都没有 = 不是我们的配置
 
-    NSInteger m = [rawMin integerValue]; if (m < 1) m = kFallbackMinutes;
-    NSInteger dy = [rawDy integerValue]; if (dy < 1) dy = kFallbackDays;
-    BOOL en = rawEn ? [rawEn boolValue] : YES;
+    NSInteger m  = rawMin ? [rawMin integerValue] : kFallbackMinutes;
+    NSInteger dy = rawDy  ? [rawDy  integerValue] : kFallbackDays;
+    if (m  < 1) m  = kFallbackMinutes;
+    if (dy < 1) dy = kFallbackDays;
 
-    return (sd_config){en, m, dy};
+    out->minutes = m;
+    out->days    = dy;
+    out->enabled = rawEn ? [rawEn boolValue] : YES;
+    return YES;
+}
+
+/// 直接读 App（mobile 用户）的 UserDefaults —— 与原版 reprovisiond 同款做法
+static NSDictionary *s_readAppPreferences(void) {
+    CFStringRef appID = (__bridge CFStringRef)kAppBundleID;
+    CFPreferencesAppSynchronize(appID);
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (!keys) return nil;
+    CFDictionaryRef dict = CFPreferencesCopyMultiple(keys, appID, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFRelease(keys);
+    if (!dict) return nil;
+    NSDictionary *result = (__bridge_transfer NSDictionary *)dict;
+    return result.count ? result : nil;
+}
+
+/// 兜底：直接翻 App 的偏好 plist（RootHide 下 cfprefsd 有时跨 namespace 读不到）
+static NSDictionary *s_readContainerPreferences(void) {
+    NSString *plistName = [kAppBundleID stringByAppendingPathExtension:@"plist"];
+
+    NSString *direct = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:plistName];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:direct];
+    if (d.count) return d;
+
+    NSString *root = @"/var/mobile/Containers/Data/Application";
+    NSArray *subs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:nil];
+    for (NSString *sub in subs) {
+        NSString *p = [NSString stringWithFormat:@"%@/%@/Library/Preferences/%@", root, sub, plistName];
+        NSDictionary *c = [NSDictionary dictionaryWithContentsOfFile:p];
+        if (c.count) return c;
+    }
+    return nil;
+}
+
+static sd_config s_cfg(void) {
+    sd_config cfg = (sd_config){YES, kFallbackMinutes, kFallbackDays};
+    NSString *source = nil;
+
+    if (s_parseCfg(s_readAppPreferences(), &cfg)) {
+        source = @"App 设置(CFPreferences)";
+    } else if (s_parseCfg([NSDictionary dictionaryWithContentsOfFile:kConfigPath], &cfg)) {
+        source = @"共享 plist";
+    } else if (s_parseCfg(s_readContainerPreferences(), &cfg)) {
+        source = @"App 容器偏好文件";
+    }
+
+    // 只在配置值或来源发生变化时才写日志，避免像旧版那样每秒刷屏
+    static NSInteger lastMin = -1, lastDays = -1;
+    static int lastEn = -1;
+    static NSString *lastSource = nil;
+    NSString *srcName = source ?: @"内置默认值";
+    gCfgSource = srcName;   // 供 --status 显示，让用户一眼看出读的是不是 App 里的设置
+
+    if (lastMin != cfg.minutes || lastDays != cfg.days ||
+        lastEn != (int)cfg.enabled || ![lastSource isEqualToString:srcName]) {
+        lastMin = cfg.minutes; lastDays = cfg.days;
+        lastEn = (int)cfg.enabled; lastSource = srcName;
+
+        if (source) {
+            s_log(@"读取配置[来源: %@]: 检查间隔=%ld分 提前重签=%ld天 自动续签=%@",
+                  srcName, (long)cfg.minutes, (long)cfg.days, cfg.enabled ? @"开" : @"关");
+        } else {
+            s_log(@"⚠️ 三个来源都没读到配置，退回默认值: 检查间隔=%ld分 提前重签=%ld天",
+                  (long)kFallbackMinutes, (long)kFallbackDays);
+            s_log(@"   来源1 CFPreferences(%@, user=mobile) / 来源2 %@ / 来源3 App 容器偏好",
+                  kAppBundleID, kConfigPath);
+        }
+    }
+    return cfg;
 }
 
 // ─── 状态持久化（nextFireDate） ──────────────────────────────────
@@ -159,6 +260,8 @@ static void s_start_timer(NSTimeInterval sec);
 
 static int32_t gAppPID = 0;
 static void    *gBKSAssertion = NULL;
+/// BKS 回调 block 的全局强引用（block 是异步回调，必须活到回调发生）
+static void (^gBKSHandler)(BOOL) = nil;
 
 /// 前向声明：s_getAppPID 在 s_getAppPIDWithRetry 之前需要声明
 static pid_t s_getAppPID(NSString *bundleID);
@@ -180,83 +283,145 @@ static pid_t s_getAppPIDWithRetry(NSString *bundleID, int maxRetries) {
     return 0;
 }
 
+/// SpringBoardServices 句柄（只 dlopen 一次，绝不 dlclose：
+/// 私有框架里注册了 ObjC 类，反复 open/close 既慢又危险）
+static void *s_sbsHandle(void) {
+    static void *h = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+        if (!h) s_log(@"无法加载 SpringBoardServices: %s", dlerror());
+    });
+    return h;
+}
+
+/// BackBoardServices 句柄（同上）
+static void *s_bksHandle(void) {
+    static void *h = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        static const char *paths[] = {
+            "/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
+            "/System/Library/PrivateFrameworks/BoardServices.framework/BoardServices",
+            NULL
+        };
+        for (int i = 0; paths[i]; i++) {
+            h = dlopen(paths[i], RTLD_NOW);
+            if (h) break;
+        }
+        if (!h) s_log(@"无法加载 BackBoardServices/BoardServices: %s", dlerror());
+    });
+    return h;
+}
+
+/// 取 BackBoardServices 导出的 NSString 常量（dlsym 拿到的是「指针的地址」，要再解一层）
+static NSString *s_bksString(const char *symbol, NSString *fallback) {
+    void *h = s_bksHandle();
+    if (h) {
+        NSString * __unsafe_unretained *p = (NSString * __unsafe_unretained *)dlsym(h, symbol);
+        if (p && *p) return *p;
+    }
+    return fallback;
+}
+
 /// 获取 App 的 PID（单次查询）
+///
+/// ⚠️ v1.1.64 关键修复：SBSProcessIDForDisplayIdentifier 的真实原型是
+///       BOOL SBSProcessIDForDisplayIdentifier(CFStringRef identifier, pid_t *pid);
+///    pid 是**出参**，函数的返回值只是个 BOOL。旧版把返回值当 PID 用，
+///    拿到的永远是 0 或 1 这种垃圾值 → 永远判定「无法获取 App PID」→ BKS 保活永远跳过。
+///    这正是日志里每次触发都出现那行的直接原因。
 static pid_t s_getAppPID(NSString *bundleID) {
-    void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+    void *sbs = s_sbsHandle();
     if (!sbs) return 0;
-    typedef pid_t (*Fn)(CFStringRef);
-    Fn fn = (Fn)dlsym(sbs, "SBSProcessIDForDisplayIdentifier");
-    if (!fn) { dlclose(sbs); return 0; }
-    pid_t pid = fn((__bridge CFStringRef)bundleID);
-    dlclose(sbs);
+
+    static BOOL (*fn)(CFStringRef, pid_t *) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (BOOL (*)(CFStringRef, pid_t *))dlsym(sbs, "SBSProcessIDForDisplayIdentifier");
+        if (!fn) s_log(@"无法找到 SBSProcessIDForDisplayIdentifier: %s", dlerror());
+    });
+    if (!fn) return 0;
+
+    pid_t pid = 0;
+    fn((__bridge CFStringRef)bundleID, &pid);
     return pid;
 }
 
-/// 获取 BKSProcessAssertion 防止 App 被挂起
+/// 获取 BKSProcessAssertion 防止 App 被系统挂起
+///
+/// ⚠️ v1.1.64 修复了 5 处误用（全部对照 ReProvision 原版 reprovisiond）：
+///   1. flags 旧版写死 0x3，实为 PreventSuspend|PreventThrottleDownCPU（语义错误，
+///      普通进程申请「禁止降频」会被 assertiond 判为滥用）。
+///      正确值 = PreventSuspend(1<<0) | AllowIdleSleep(1<<2) = 5
+///   2. reason 旧版传了个 NSString，真实类型是枚举 BKSProcessAssertionReason，
+///      后台收尾任务应为 BKSProcessAssertionReasonFinishTask = 4
+///   3. selector 旧版用带下划线的 _initWithPID:...，公开实例方法没有下划线
+///   4. 旧版先 [[cls alloc] init] 再 invoke 一次 init → 双重初始化
+///   5. handler 旧版标 __unsafe_unretained，是栈上 block，异步回调时早已失效（野指针）
 static void *s_acquireBKSAssertion(pid_t targetPid) {
-    static const char *frameworkPaths[] = {
-        "/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
-        "/System/Library/PrivateFrameworks/BoardServices.framework/BoardServices",
-        NULL
-    };
-
-    void *bksHandle = NULL;
-    for (int i = 0; frameworkPaths[i]; i++) {
-        bksHandle = dlopen(frameworkPaths[i], RTLD_NOW);
-        if (bksHandle) break;
-    }
-    if (!bksHandle) {
-        s_log(@"无法加载 BackBoardServices/BoardServices: %s", dlerror());
-        return NULL;
-    }
+    if (!s_bksHandle()) return NULL;
 
     Class bksClass = NSClassFromString(@"BKSProcessAssertion");
     if (!bksClass) {
         s_log(@"无法获取 BKSProcessAssertion 类");
-        dlclose(bksHandle);
         return NULL;
     }
 
-    uint32_t flags = 0x3;  // PreventSuspend | AllowIdleSleep
+    SEL sel = NSSelectorFromString(@"initWithPID:flags:reason:name:withHandler:");
+    if (![bksClass instancesRespondToSelector:sel]) {
+        sel = NSSelectorFromString(@"_initWithPID:flags:reason:name:withHandler:");  // 老系统兜底
+        if (![bksClass instancesRespondToSelector:sel]) {
+            s_log(@"BKSProcessAssertion 不响应 initWithPID:flags:reason:name:withHandler:");
+            return NULL;
+        }
+    }
 
-    id assertion = [[bksClass alloc] init];
-    SEL sel = NSSelectorFromString(@"_initWithPID:flags:reason:name:withHandler:");
+    NSMethodSignature *sig = [bksClass instanceMethodSignatureForSelector:sel];
+    if (!sig) { s_log(@"无法取得 BKSProcessAssertion 方法签名"); return NULL; }
 
-    NSMethodSignature *sig = [assertion methodSignatureForSelector:sel];
+    // 用 64 位变量承载，NSInvocation 会按方法签名声明的实际宽度截取低位，
+    // 无论真实类型是 unsigned int 还是 NSUInteger 都不会读到未初始化内存。
+    int64_t  pidVal    = targetPid;
+    uint64_t flagsVal  = (1 << 0) | (1 << 2);   // PreventSuspend | AllowIdleSleep = 5
+    uint64_t reasonVal = 4;                     // BKSProcessAssertionReasonFinishTask
+    NSString *nameStr  = kAppBundleID;
+
+    // 用全局强引用持有回调，避免 block 在异步回调到来之前被 ARC 回收
+    gBKSHandler = [^(BOOL success) {
+        s_log(@"BKSProcessAssertion 回调: %@ (pid=%d)",
+              success ? @"已生效" : @"被系统拒绝（检查 multitasking.unlimitedassertions 权限）",
+              targetPid);
+    } copy];
+    void (^handler)(BOOL) = gBKSHandler;
+
+    id assertion = [bksClass alloc];
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     [inv setSelector:sel];
     [inv setTarget:assertion];
-
-    pid_t pidVal = targetPid;
-    uint32_t flagsVal = flags;
-    NSString *reasonStr = @"jp.soh.reprovision background signing";
-    NSString *nameStr = @"ReProvision";
-
-    typedef void (^BKSHandler)(BOOL);
-    __unsafe_unretained BKSHandler handler = ^(BOOL success) {
-        s_log(@"BKSProcessAssertion %@ (pid=%d)", success ? @"生效" : @"失败", targetPid);
-    };
-
-    [inv setArgument:&pidVal atIndex:2];
-    [inv setArgument:&flagsVal atIndex:3];
-    [inv setArgument:&reasonStr atIndex:4];
-    [inv setArgument:&nameStr atIndex:5];
-    [inv setArgument:&handler atIndex:6];
+    [inv setArgument:&pidVal    atIndex:2];
+    [inv setArgument:&flagsVal  atIndex:3];
+    [inv setArgument:&reasonVal atIndex:4];
+    [inv setArgument:&nameStr   atIndex:5];
+    [inv setArgument:&handler   atIndex:6];
     [inv invoke];
 
-    id result = nil;
-    [inv getReturnValue:&result];
+    __unsafe_unretained id raw = nil;
+    [inv getReturnValue:&raw];
 
-    id finalResult = result ?: assertion;
-    return (__bridge_retained void *)finalResult;
+    id result = raw ?: assertion;
+    if (!result) {
+        s_log(@"BKSProcessAssertion 初始化返回 nil");
+        return NULL;
+    }
+    return (__bridge_retained void *)result;
 }
 
 /// 设置系统级电源唤醒
 ///
-/// ⚠️ RootHide 限制：IOPMSchedulePowerEvent 需要 IOKit 特权，
-///    namespace 隔离环境下通常返回 kIOReturnNotPrivileged (0xE00002C6)。
-///    此功能是「增强体验」非「核心链路」，失败时不阻塞续签。
-///    屏幕解锁/背光监听仍能覆盖大部分场景。
+/// v1.1.64 更正：之前一直以为日志里的失败码是「RootHide 权限限制」，
+/// 实际 0xE00002C2 = kIOReturnBadArgument，是我们自己把 type 参数写错了
+/// （见下方注释）。此功能仍属「增强体验」而非核心链路，失败不阻塞续签。
 static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
     void *ioKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
     if (!ioKit) {
@@ -273,121 +438,151 @@ static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
     }
 
     NSDate *wakeDate = [NSDate dateWithTimeIntervalSinceNow:secondsFromNow];
+
+    // ⚠️ v1.1.64 修复：type 参数必须是 IOPMLib.h 里定义的字面量常量，
+    //    kIOPMAutoWakeOrPowerOn == "wakepoweron"。
+    //    旧版自己编了个 "AutoWakeOrPowerOn"，IOKit 认不出来 →
+    //    直接返回 kIOReturnBadArgument(0xE00002C2)，也就是日志里那个
+    //    ret=-536870206（同一个数的十进制写法）。跟权限一点关系都没有。
     int ret = schedFn((__bridge CFDateRef)wakeDate,
                        CFSTR("jp.soh.reprovision.signingd"),
-                       CFSTR("AutoWakeOrPowerOn"));
+                       CFSTR("wakepoweron"));
     dlclose(ioKit);
 
     if (ret == 0) {
         s_log(@"[Step 3/3] 已设置系统级唤醒 — %.0f 秒后 (%@)", secondsFromNow, wakeDate);
         return YES;
-    } else {
-        // 用十六进制避免溢出警告
-        const char *reason = "未知";
-        unsigned int uret = (unsigned int)ret;
-        if (uret == 0xE00002C6) reason = "kIOReturnNotPrivileged (RootHide namespace 限制)";
-        else if (uret == 0xE00002C5) reason = "kIOReturnNotPermitted (权限不足)";
-        else if (uret == 0xE00002CA) reason = "kIOReturnBadArgument (参数错误)";
-        s_log(@"[Step 3/3] 系统级唤醒失败 (ret=0x%08X: %s) — 非致命，屏幕解锁触发仍可用",
-              uret, reason);
-        return NO;
     }
+
+    // 注意：全部用 %@ 拼 NSString，不要用 %s 传中文 C 字符串
+    //（NSString 的 %s 按系统编码解释，中文会变成 Êú™Áü• 这种乱码，v1.1.63 日志里就是这么来的）
+    unsigned int uret = (unsigned int)ret;
+    NSString *reason = @"未知错误";
+    if      (uret == 0xE00002C1) reason = @"kIOReturnNotPrivileged 权限不足";
+    else if (uret == 0xE00002C2) reason = @"kIOReturnBadArgument 参数错误";
+    else if (uret == 0xE00002C5) reason = @"kIOReturnExclusiveAccess 被独占";
+    else if (uret == 0xE00002C6) reason = @"kIOReturnBadMessageID 消息 ID 错误";
+    else if (uret == 0xE00002C7) reason = @"kIOReturnUnsupported 系统不支持";
+    s_log(@"[Step 3/3] 系统级唤醒失败 (ret=0x%08X %@) — 非致命，定时器/解锁/亮屏触发仍可用",
+          uret, reason);
+    return NO;
 }
 
 /// 释放 BKSProcessAssertion
+///
+/// ⚠️ v1.1.64 修复：旧版 performSelector:@selector(release) —— ARC 下这既不合法
+///    也不会真正撤销断言。BKSProcessAssertion 的正确撤销方式是 -invalidate，
+///    对象本身交回 ARC 释放。旧版等于断言永远挂着不放，assertiond 侧会累积泄漏。
 static void s_releaseBKSAssertion(void) {
-    if (gBKSAssertion) {
-        SEL relSel = NSSelectorFromString(@"release");
+    if (!gBKSAssertion) return;
+
+    id assertion = (__bridge_transfer id)gBKSAssertion;   // 转回 ARC 管理
+    gBKSAssertion = NULL;
+
+    SEL invalidateSel = NSSelectorFromString(@"invalidate");
+    if ([assertion respondsToSelector:invalidateSel]) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        [(__bridge id)gBKSAssertion performSelector:relSel];
+        [assertion performSelector:invalidateSel];
 #pragma clang diagnostic pop
-        gBKSAssertion = NULL;
-        s_log(@"已释放 BKSProcessAssertion");
     }
+    gBKSHandler = nil;
+    gAppPID = 0;
+    s_log(@"已释放 BKSProcessAssertion");
 }
 
 /// 同步版本：唤醒 App 并等待保活就绪（用于 --resign-now 和 SIGHUP 触发）
 /// 与异步版 s_launchAppInBackground 的区别：此函数同步等待 BKS 获取完成
 static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
-    // ── Step 1: SBSLaunchApplication 唤醒 App 到后台 ──
-    void *handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
-    if (!handle) {
-        s_log(@"无法加载 SpringBoardServices: %s", dlerror());
-        return NO;
+    void *handle = s_sbsHandle();
+    if (!handle) return NO;
+
+    // ⚠️ v1.1.64 修复：真实原型是
+    //     int SBSLaunchApplicationWithIdentifierAndLaunchOptions(
+    //             CFStringRef identifier, CFDictionaryRef launchOptions, BOOL suspended);
+    //   第三个参数是 BOOL suspended（原版传 1），旧版声明成 void** 并传 NULL(=0)，
+    //   而且返回值 int 被丢掉了，出错也看不见。
+    typedef int (*SBSLaunchFn)(CFStringRef, CFDictionaryRef, BOOL);
+    static SBSLaunchFn fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (SBSLaunchFn)dlsym(handle, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
+        if (!fn) s_log(@"无法找到 SBSLaunchApplicationWithIdentifierAndLaunchOptions: %s", dlerror());
+    });
+    if (!fn) return NO;
+
+    // App 已经在跑就先把断言拿到手（原版同样的顺序）
+    pid_t existingPid = s_getAppPID(kAppBundleID);
+    if (existingPid > 0 && !gBKSAssertion) {
+        gAppPID = existingPid;
+        gBKSAssertion = s_acquireBKSAssertion(existingPid);
+        s_log(@"[Step 0/3] App 已在运行 (pid=%d)，先申请保活断言", existingPid);
     }
 
-    typedef void (*SBSLaunchFn)(CFStringRef, CFDictionaryRef, void **);
-    SBSLaunchFn fn = (SBSLaunchFn)dlsym(handle, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
-    if (!fn) {
-        s_log(@"无法找到 SBSLaunchApplicationWithIdentifierAndLaunchOptions: %s", dlerror());
-        dlclose(handle);
-        return NO;
+    // ⚠️ v1.1.64 修复：launchOptions 的两个 key 旧版是自己编的
+    //   （@"SBSBackgroundOnly" / @"SBSUnlockDevice" 根本不存在），
+    //   backboardd 收到无法识别的字典就按「普通前台启动」处理甚至直接拒绝。
+    //   正确写法是 BKSOpenApplicationOptionKeyActivateForEvent →
+    //   { BKSActivateForEventOptionTypeBackgroundContentFetching : @"" }，
+    //   这才是「以后台内容刷新事件唤醒」的标准姿势。
+    NSString *keyActivateForEvent =
+        s_bksString("BKSOpenApplicationOptionKeyActivateForEvent", @"__ActivateForEvent");
+    NSString *typeBackgroundFetch =
+        s_bksString("BKSActivateForEventOptionTypeBackgroundContentFetching",
+                    @"__ActivateForEventOptionTypeBackgroundContentFetching");
+
+    NSDictionary *options = @{ keyActivateForEvent : @{ typeBackgroundFetch : @"" } };
+
+    int launchResult = fn((__bridge CFStringRef)kAppBundleID,
+                          (__bridge CFDictionaryRef)options,
+                          1 /* suspended */);
+
+    if (launchResult == 0) {
+        s_log(@"[Step 1/3] 后台唤醒请求已被 backboardd 接受 (result=0) — %@", kAppBundleID);
+    } else {
+        s_log(@"[Step 1/3] ⚠️ 后台唤醒被拒绝 (result=%d)", launchResult);
+        s_log(@"   常见原因: daemon 缺 com.apple.backboardd.launchapplications 权限，"
+              @"或 App 尚未被 uicache 注册到 SpringBoard");
     }
 
-    NSDictionary *options = @{
-        @"SBSBackgroundOnly": @YES,
-        @"SBSUnlockDevice": @NO,
+    // Step 2 的公共逻辑：拿 PID → 申请保活断言
+    void (^acquireAssertion)(void) = ^{
+        if (gBKSAssertion) { s_log(@"[Step 2/3] 已持有保活断言，跳过重复申请"); return; }
+        pid_t appPID = s_getAppPIDWithRetry(kAppBundleID, 3);
+        if (appPID > 0) {
+            gAppPID = appPID;
+            gBKSAssertion = s_acquireBKSAssertion(appPID);
+            s_log(@"[Step 2/3] App 已在后台运行 (pid=%d)，保活断言%@",
+                  appPID, gBKSAssertion ? @"已申请" : @"申请失败");
+        } else {
+            s_log(@"[Step 2/3] 重试3次仍拿不到 App PID — App 没被拉起来");
+            s_log(@"   排查: 1) daemon 是否带 backboardd.launchapplications 权限"
+                  @" 2) uicache -p 是否注册过 RePro 3) 上面 Step 1 的 result 是否为 0");
+        }
     };
 
-    fn((__bridge CFStringRef)kAppBundleID, (__bridge CFDictionaryRef)options, NULL);
-    dlclose(handle);
-    s_log(@"[Step 1/3] 已发送后台启动请求给 %@", kAppBundleID);
+    // Step 3 的公共逻辑：预约下一次系统级唤醒
+    void (^scheduleWake)(void) = ^{
+        sd_config c = s_cfg();
+        NSTimeInterval wakeInterval = ((NSTimeInterval)c.minutes * 60.0) - 30;
+        if (wakeInterval > 10) s_scheduleSystemWake(wakeInterval);
+    };
 
     if (!waitForCompletion) {
         // 异步模式：定时器触发的正常流程，用 dispatch_after 不阻塞主循环
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            pid_t appPID = s_getAppPIDWithRetry(kAppBundleID, 3);
-            if (appPID > 0) {
-                gAppPID = appPID;
-                gBKSAssertion = s_acquireBKSAssertion(appPID);
-                if (gBKSAssertion) {
-                    s_log(@"[Step 2/3] BKSProcessAssertion 已生效 (pid=%d)", appPID);
-                } else {
-                    s_log(@"[Step 2/3] BKSProcessAssertion 获取失败");
-                }
-            } else {
-                s_log(@"[Step 2/3] 重试3次仍无法获取 App PID — BKS 保活跳过");
-            }
-        });
-
-        // Step 3: IOPM
-        sd_config c = s_cfg();
-        NSTimeInterval wakeInterval = ((NSTimeInterval)c.minutes * 60.0) - 30;
-        if (wakeInterval > 10) {
-            s_scheduleSystemWake(wakeInterval);
-        }
-        return YES;
+                       dispatch_get_main_queue(), ^{ acquireAssertion(); });
+        scheduleWake();
+        return (launchResult == 0 || existingPid > 0);
     }
 
-    // ── 同步模式：--resign-now / SIGHUP 触发，阻塞等待完成 ──
-    // 等 2 秒让 App 启动
-    sleep(2);
+    // ── 同步模式：--resign-now / SIGHUP 触发，阻塞等待 ──
+    sleep(2);                 // 给 App 一点启动时间
+    acquireAssertion();
+    scheduleWake();
 
-    // Step 2: 获取 PID + BKS 保活（同步重试）
-    pid_t appPID = s_getAppPIDWithRetry(kAppBundleID, 3);
-    if (appPID > 0) {
-        gAppPID = appPID;
-        gBKSAssertion = s_acquireBKSAssertion(appPID);
-        if (gBKSAssertion) {
-            s_log(@"[Step 2/3] BKSProcessAssertion 已生效 (pid=%d)", appPID);
-        } else {
-            s_log(@"[Step 2/3] BKSProcessAssertion 获取失败");
-        }
-    } else {
-        s_log(@"[Step 2/3] 重试3次仍无法获取 App PID — BKS 保活跳过");
-    }
-
-    // Step 3: IOPM
-    sd_config c = s_cfg();
-    NSTimeInterval wakeInterval = ((NSTimeInterval)c.minutes * 60.0) - 30;
-    if (wakeInterval > 10) {
-        s_scheduleSystemWake(wakeInterval);
-    }
-
-    s_log(@"[完成] 已唤醒 App 并尝试保活 — App 将在后台静默执行续签");
-    return YES;
+    s_log(@"[完成] 唤醒流程结束 — App 将在后台静默执行续签");
+    return (launchResult == 0 || gAppPID > 0);
 }
 
 /// 异步版本：用于定时器/解锁/亮屏触发（不阻塞主循环）
@@ -465,8 +660,16 @@ static void s_startSigningTimer(void) {
             s_log(@"保存的触发时间已过期，5 秒后立即执行");
             interval = 5;
         } else {
-            s_log(@"从持久化恢复 — %.0f 秒后触发", interval);
+            s_log(@"从持久化恢复 — %.0f 秒后触发 (%@)", interval, savedNextFire);
         }
+    } else {
+        // v1.1.64：首次启动也要把 nextFireDate 落盘。
+        // 旧版这里不写，导致「亮屏」回调读不到 nextFireDate，
+        // 每次点亮屏幕都把定时器重置成完整的一个间隔 →
+        // 如果间隔设得比较长，用户频繁亮屏就永远等不到触发。
+        NSDate *next = [NSDate dateWithTimeIntervalSinceNow:interval];
+        s_setNextFireDate(next);
+        s_log(@"首次调度 — %.0f 分钟后触发 (%@)", interval / 60.0, next);
     }
 
     s_start_timer(interval);
@@ -505,12 +708,16 @@ static void bb_backlightChanged(int state) {
             s_log(@"未到期 — 重设剩余 %.0f 秒", remaining);
             s_start_timer(remaining);
         } else {
-            s_start_timer((NSTimeInterval)s_cfg().minutes * 60.0);
+            s_startSigningTimer();
         }
     } else {
-        s_log(@"屏幕熄灭 → 停止定时器省电");
-        [gTimer invalidate];
-        gTimer = nil;
+        // v1.1.64 修复：旧版在这里 invalidate 掉定时器「省电」，
+        // 但 IOPM 系统级唤醒在越狱环境下经常失败（见 s_scheduleSystemWake），
+        // 一旦唤醒没排上，锁屏期间就彻底没有任何触发源，
+        // 必须等用户主动点亮屏幕才会重新调度 —— 这跟「脱离 App 自动续签」的目标直接冲突。
+        // 现在熄屏保留定时器：设备浅睡时它照样能到点触发，深睡则在唤醒后立刻补触发。
+        NSDate *next = s_getNextFireDate();
+        s_log(@"屏幕熄灭 — 定时器继续保留 (下次触发 %@)", next ?: @"未记录");
     }
 }
 
@@ -683,9 +890,10 @@ static int s_printStatus(void) {
 
     // 2. 当前配置
     sd_config c = s_cfg();
+    printf("配置来源         : %s\n", gCfgSource.UTF8String);
     printf("自动续签开关     : %s\n", c.enabled ? "开" : "关");
-    printf("检查间隔         : %ld 分钟\n", (long)c.minutes);
-    printf("到期阈值         : %ld 天\n", (long)c.days);
+    printf("检查间隔         : %ld 分钟   ← 应与 App「设置」页一致\n", (long)c.minutes);
+    printf("提前重签阈值     : %ld 天     ← 应与 App「设置」页一致\n", (long)c.days);
 
     // 3. 下次计划触发
     NSDate *next = s_getNextFireDate();

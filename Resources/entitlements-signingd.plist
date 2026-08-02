@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- repro-signingd 后台续签守护进程（rootful / Dopamine rootless 通用）
+
+         v1.1.64 关键修复：
+         此前 CI 对 repro-signingd 只做 `ldid -S` 裸签（零 entitlements），
+         导致它调用 SBSLaunchApplicationWithIdentifierAndLaunchOptions 时被
+         backboardd 直接拒绝、调 BKSProcessAssertion 时被 assertiond 拒绝。
+         表现就是日志里永远的「无法获取 App PID — BKS 保活跳过」，
+         App 从头到尾没有被拉起过，自动续签自然从未真正发生。
+
+         下面三条才是 daemon 能「唤醒 App 到后台并保活」的真正凭证，
+         与 ReProvision 原版 reprovisiond 的 entitlements 完全一致。 -->
+
+    <!-- 平台二进制，绕过 AMFI 对非 App Store 签名的限制 -->
+    <key>platform-application</key>
+    <true/>
+
+    <!-- 不进沙箱容器，才能读 /var/mobile/Library/... 与真实文件系统 -->
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+
+    <!-- 允许加载/链接非同源库 -->
+    <key>com.apple.private.skip-library-validation</key>
+    <true/>
+
+    <!-- ★ 允许通过 SpringBoardServices 请求 backboardd 启动 App（后台唤醒的前提） -->
+    <key>com.apple.backboardd.launchapplications</key>
+    <true/>
+
+    <!-- ★ 允许申请不限量的进程断言（BKSProcessAssertion 保活） -->
+    <key>com.apple.multitasking.unlimitedassertions</key>
+    <true/>
+
+    <!-- ★ 允许为「系统 App」申请断言（RePro 装在 /Applications，属系统位置） -->
+    <key>com.apple.multitasking.systemappassertions</key>
+    <true/>
+</dict>
+</plist>

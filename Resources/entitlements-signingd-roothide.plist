@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- repro-signingd 后台续签守护进程（RootHide 专属）
+
+	     在通用版基础上多一组 no-sandbox / storage.*：
+	     RootHide 默认把所有越狱二进制关进沙箱，daemon 需要读真实
+	     /var/mobile/Library/Preferences 下 App 的偏好设置（检查间隔 / 阈值），
+	     还要写 /var/log 日志与 /var/mobile/Library/RePro 的 IPC 文件。
+
+	     ★ 三条 backboardd / multitasking 权限是唤醒 App 到后台并保活的前提，
+	       v1.1.63 及以前因为裸签（零 entitlements）而全部缺失。 -->
+	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppBundles</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+	<key>com.apple.private.skip-library-validation</key>
+	<true/>
+
+	<!-- ★ SBSLaunchApplicationWithIdentifierAndLaunchOptions 的通行证 -->
+	<key>com.apple.backboardd.launchapplications</key>
+	<true/>
+
+	<!-- ★ BKSProcessAssertion 保活 -->
+	<key>com.apple.multitasking.unlimitedassertions</key>
+	<true/>
+	<key>com.apple.multitasking.systemappassertions</key>
+	<true/>
+</dict>
+</plist>

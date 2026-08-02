@@ -179,7 +179,7 @@ jobs:
             -x objective-c -fobjc-arc \
             -arch arm64 -miphoneos-version-min=15.0 \
             -O2 \
-            -framework Foundation \
+            -framework Foundation -framework CoreFoundation \
             -o build/repro-signingd \
             Helper/repro-signingd.m 2>&1 | tee signingd_build.log
 
@@ -309,6 +309,10 @@ jobs:
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$RL/usr/libexec/"
           cp Resources/jp.soh.reprovision.signingd.plist "$RL/Library/LaunchDaemons/"
+          chmod 0755 "$RL/usr/libexec/repro-signingd"
+          # v1.1.64：signingd 必须带 backboardd.launchapplications / multitasking.*assertions
+          # 才能唤醒 App 到后台并保活。此前 rootless/rootful 甚至完全没签 → 唤醒永远失败。
+          do_sign "$RL/usr/libexec/repro-signingd" Resources/entitlements-signingd.plist
           do_sign_bare "$RL/usr/local/bin/zsign"
           # 4755 = setuid root。postinst 里还会再设一次（CI 非 root，dpkg-deb 存不住属主）
           chmod 4755 "$RL/usr/libexec/repro-helper"
@@ -328,6 +332,8 @@ jobs:
           do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$PKG2/usr/libexec/"
           cp Resources/jp.soh.reprovision.signingd.plist "$PKG2/Library/LaunchDaemons/"
+          chmod 0755 "$PKG2/usr/libexec/repro-signingd"
+          do_sign "$PKG2/usr/libexec/repro-signingd" Resources/entitlements-signingd.plist
           do_sign_bare "$PKG2/usr/local/bin/zsign"
           chmod 4755 "$PKG2/usr/libexec/repro-helper"
 
@@ -349,7 +355,8 @@ jobs:
           do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
-          do_sign_bare "$PKG3/usr/libexec/repro-signingd"
+          chmod 0755 "$PKG3/usr/libexec/repro-signingd"
+          do_sign "$PKG3/usr/libexec/repro-signingd" Resources/entitlements-signingd-roothide.plist
           do_sign_bare "$PKG3/usr/local/bin/zsign"
           chmod 4755 "$PKG3/usr/libexec/repro-helper"
 
