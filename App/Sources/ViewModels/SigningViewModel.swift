@@ -153,10 +153,10 @@ final class SigningViewModel: ObservableObject {
                     LogManager.shared.info("签名前自动撤销：将撤销以下 \(certs.count) 个证书：\n\(detail)",
                                            source: "SigningViewModel")
                 }
-                self?.client.revokeAllCertificates { err in
-                    if let err = err {
+                self?.client.revokeAllCertificates { result in
+                    if case .failure(let error) = result {
                         // 撤销失败不阻断签名——可能证书已不存在
-                        LogManager.shared.warning("签名前自动撤销失败（不阻断签名）: \(err.localizedDescription)",
+                        LogManager.shared.warning("签名前自动撤销失败（不阻断签名）: \(error.localizedDescription)",
                                                  source: "SigningViewModel")
                     } else {
                         LogManager.shared.info("签名前自动撤销完成，开始签名", source: "SigningViewModel")
