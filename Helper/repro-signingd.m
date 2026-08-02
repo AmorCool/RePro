@@ -269,7 +269,7 @@ static void s_releaseBKSAssertion(void) {
         SEL relSel = NSSelectorFromString(@"release");
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        [(id)gBKSAssertion performSelector:relSel];
+        [(__bridge id)gBKSAssertion performSelector:relSel];
 #pragma clang diagnostic pop
         gBKSAssertion = NULL;
         s_log(@"已释放 BKSProcessAssertion");
