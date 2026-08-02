@@ -90,37 +90,84 @@ final class SigningViewModel: ObservableObject {
         guard beginWork("正在导入 \(url.lastPathComponent)…") else { return }
         LogManager.shared.info("导入 IPA: \(url.lastPathComponent)", source: "SigningViewModel")
 
-        autoRevokeBeforeSigning { [weak self] in
+        // 导入 IPA 不在此处撤销证书：导入后本就会重新签名安装，
+        // 撤销证书反而可能打断其签名流程，属多余操作。
+        client.importIPA(url: url) { [weak self] result in
             guard let self = self else { return }
-            self.client.importIPA(url: url) { result in
-                switch result {
-                case .success(let app):
-                    LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                    self.endWork(message: "\(app.displayName) 安装完成")
-                case .failure(let error):
-                    LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
-                    self.endWork(message: "导入失败", error: error)
-                }
-                Task { await self.refreshApps() }
+            switch result {
+            case .success(let app):
+                LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                self.endWork(message: "\(app.displayName) 安装完成")
+            case .failure(let error):
+                LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
+                self.endWork(message: "导入失败", error: error)
             }
+            Task { await self.refreshApps() }
         }
     }
 
     // MARK: - 重签
 
+    // MARK: - 签名前自动撤销证书
+
+    // 去重窗口：续签/重签/手动刷新在短时间内多次触发时，只真正撤销一次，
+    // 避免对同一个账号重复撤销证书引发的异常。
+    private static let revokeDedupWindow: TimeInterval = 120
+    private static var lastRevokeTime: Date?
+    private let revokeCertKey = "revokeCertBeforeSigning" // 默认值 true（见 shouldRevokeBeforeSigning）
+
+    /// 设置开关：是否在签名前自动撤销旧证书（默认开启）。
+    private var shouldRevokeBeforeSigning: Bool {
+        UserDefaults.standard.object(forKey: revokeCertKey) as? Bool ?? true
+    }
+
     /// 签名前自动撤销所有旧证书，防止 "You already have a current Development certificate
     /// or a pending certificate request" 报错（Apple 同一账户同一时间只允许有限数量的开发证书）。
+    /// 受「证书管理 → 签名前自动撤销证书」开关控制；并带 120s 去重，避免重复撤销。
     private func autoRevokeBeforeSigning(completion: @escaping () -> Void) {
-        LogManager.shared.info("自动撤销旧证书（防 CSR 冲突）…", source: "SigningViewModel")
-        client.revokeAllCertificates { [weak self] result in
-            if case .failure(let error) = result {
-                // 撤销失败不阻断签名——可能本来就没有旧证书
-                LogManager.shared.warning("自动撤销证书跳过: \(error.localizedDescription)",
-                                          source: "SigningViewModel")
-            } else {
-                LogManager.shared.info("旧证书已撤销，开始签名", source: "SigningViewModel")
-            }
+        guard shouldRevokeBeforeSigning else {
+            LogManager.shared.info("跳过签名前自动撤销（设置已关闭）", source: "SigningViewModel")
             completion()
+            return
+        }
+
+        let now = Date()
+        if let last = SigningViewModel.lastRevokeTime,
+           now.timeIntervalSince(last) < SigningViewModel.revokeDedupWindow {
+            let secs = Int(now.timeIntervalSince(last))
+            LogManager.shared.info("跳过重复撤销证书（\(secs)s 内已撤销过，防重复）", source: "SigningViewModel")
+            completion()
+            return
+        }
+        SigningViewModel.lastRevokeTime = now
+
+        // 先拉取当前账号下的旧证书，逐条记录到日志，再统一撤销
+        LogManager.shared.info("签名前自动撤销：正在拉取账号下的旧证书…", source: "SigningViewModel")
+        client.fetchCertificates { [weak self] result in
+            switch result {
+            case .success(let certs):
+                if certs.isEmpty {
+                    LogManager.shared.info("签名前自动撤销：当前账号下无旧证书，无需撤销", source: "SigningViewModel")
+                } else {
+                    let detail = certs.map { "· \($0.machineName)（标识 \($0.id)）" }.joined(separator: "\n")
+                    LogManager.shared.info("签名前自动撤销：将撤销以下 \(certs.count) 个证书：\n\(detail)",
+                                           source: "SigningViewModel")
+                }
+                self?.client.revokeAllCertificates { err in
+                    if let err = err {
+                        // 撤销失败不阻断签名——可能证书已不存在
+                        LogManager.shared.warning("签名前自动撤销失败（不阻断签名）: \(err.localizedDescription)",
+                                                 source: "SigningViewModel")
+                    } else {
+                        LogManager.shared.info("签名前自动撤销完成，开始签名", source: "SigningViewModel")
+                    }
+                    completion()
+                }
+            case .failure(let error):
+                LogManager.shared.warning("拉取证书列表失败，跳过自动撤销（不阻断签名）: \(error.localizedDescription)",
+                                         source: "SigningViewModel")
+                completion()
+            }
         }
     }
 

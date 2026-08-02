@@ -17,9 +17,20 @@ struct CertificatesView: View {
     @State private var revokeError: String?
     /// 单个证书撤销确认弹窗
     @State private var pendingRevokeCert: DevCertificate?
+    /// 签名前是否自动撤销旧证书（默认开启）。与 SigningViewModel 共用同一 UserDefaults 键。
+    @AppStorage("revokeCertBeforeSigning") private var revokeBeforeSigning = true
 
     var body: some View {
         List {
+            // 签名设置（始终显示，与 SigningViewModel 共用同一开关）
+            Section {
+                Toggle("签名前自动撤销证书", isOn: $revokeBeforeSigning)
+            } header: {
+                Text("签名设置")
+            } footer: {
+                Text("开启后，每次重签 / 续签前会自动撤销账号下已有的开发证书，避免「已存在开发证书」报错。导入 IPA 不触发此逻辑。")
+            }
+
             if isLoading {
                 HStack {
                     ProgressView()
