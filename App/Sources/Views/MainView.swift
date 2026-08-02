@@ -1,6 +1,10 @@
 import SwiftUI
 
-// MARK: - 主界面：TabView 四个标签页 + 液态玻璃浮动底栏
+// MARK: - 主界面：自定义四标签容器 + 液态玻璃浮动底栏
+//
+// 注意：之前用 TabView（无 .tabItem）会在底部渲染一个空的系统 tab bar，
+// 盖在自定义底栏上方拦截触摸，导致底栏按钮点不动。这里改为自定义容器：
+// 用 selectedTab 直接切换内容，液态玻璃栏是普通 VStack 子视图，保证可点击。
 
 struct MainView: View {
     @ObservedObject private var resign = ResignProgress.shared
@@ -11,33 +15,27 @@ struct MainView: View {
             if resign.isResigning {
                 resignBanner
             }
+
+            // 内容区：按 selectedTab 切换视图（四个视图互斥挂载，避免隐藏 sheet 问题）
             ZStack {
-                // 隐藏原生 TabBar，用 safeAreaInset 自定义浮动底栏替代
-                TabView(selection: $selectedTab) {
-                    AppsView()
-                        .tag(0)
-
-                    SettingsView()
-                        .tag(1)
-
-                    LogView()
-                        .tag(2)
-
-                    HealthView()
-                        .tag(3)
+                switch selectedTab {
+                case 0: AppsView()
+                case 1: SettingsView()
+                case 2: LogView()
+                case 3: HealthView()
+                default: AppsView()
                 }
-                .animation(.easeInOut(duration: 0.25), value: selectedTab)
-                // 隐藏系统 TabBar（我们用自己的液态玻璃底栏）
-                // iOS 16+ API 不可用，改用 onAppear UIKit 方式隐藏
-                .onAppear { hideSystemTabBar() }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.2), value: selectedTab)
+
+            // 液态玻璃浮动底栏（普通 VStack 子视图，保证可点击，不依赖系统 TabView）
+            LiquidGlassTabBar(selectedTab: $selectedTab)
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
         }
         .accentColor(.blue)
-        // 液态玻璃浮动 TabBar：固定在底部安全区域上方
-        .safeAreaInset(edge: .bottom) {
-            LiquidGlassTabBar(selectedTab: $selectedTab)
-                .padding(.bottom, 6)
-        }
     }
 
     /// 续签进行中横幅：明确告知用户这是 daemon 后台自动续签、无需操作，
@@ -61,25 +59,5 @@ struct MainView: View {
         .padding(.vertical, 8)
         .background(Color(.systemOrange).opacity(0.12))
         .overlay(alignment: .bottom) { Divider() }
-    }
-
-    // MARK: 隐藏系统 TabBar（iOS 15 兼容）
-    private func hideSystemTabBar() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
-                findAndHideTabBar(in: rootVC)
-            }
-        }
-    }
-
-    private func findAndHideTabBar(in vc: UIViewController) {
-        if let tabBarController = vc as? UITabBarController {
-            tabBarController.tabBar.isHidden = true
-            return
-        }
-        for child in vc.children {
-            findAndHideTabBar(in: child)
-        }
     }
 }
