@@ -1,8 +1,8 @@
 Package: jp.soh.reprovision
 Name: ReSign
-Description: iOS 应用签名工具 - Dopamine/rootless 版
+Description: iOS 应用签名工具（需 iOS 16+）— Dopamine/rootless 精简版，液态玻璃 UI
 Depends: firmware (>= 15.0), zip, unzip
-Version: 1.1.80~release
+Version: 1.1.81~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm64

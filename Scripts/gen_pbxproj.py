@@ -26,9 +26,9 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "ReSign"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.80"
+MARKETING_VERSION = "1.1.81"
 CURRENT_PROJECT_VERSION = "57"
-DEPLOYMENT_TARGET = "15.0"
+DEPLOYMENT_TARGET = "16.0"
 BRIDGING_HEADER = "App/Sources/Bridge/ReSign-Bridging-Header.h"
 ENTITLEMENTS = "Resources/entitlements-base.plist"
 # 使用实际 Info.plist 文件（而非 Xcode 自动生成），以便包含

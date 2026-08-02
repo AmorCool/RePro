@@ -59,44 +59,52 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶栏：刷新(左) + ReSign(居中) + 导入(右)，统一高度对齐
-                HStack(alignment: .center, spacing: 0) {
-                    // 左侧：刷新按钮
+                // 顶栏：参考图三（JIT）风格 — 圆角胶囊按钮横排，紧凑居中
+                HStack(spacing: 10) {
+                    // 左侧：刷新（圆角胶囊按钮）
                     Button {
                         viewModel.resignAllApplications()
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 20, weight: .medium))
+                            .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(.blue)
+                            .frame(width: 36, height: 36)
+                            .background(
+                                Capsule()
+                                    .fill(Color.blue.opacity(0.08))
+                            )
                     }
                     .disabled(viewModel.isBusy || !account.isSignedIn)
 
-                    // 中间：ReSign 标题（Spacer 推到居中）
-                    Spacer(minLength: 0)
+                    // 中间：ReSign 标题（居中加大）
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
-                        .frame(height: 28)
-                    Spacer(minLength: 0)
+                        .frame(height: 34)
 
-                    // 右侧：导入按钮
+                    // 右侧：导入（圆角胶囊按钮，与刷新同尺寸）
                     Button {
                         openFilePicker()
                     } label: {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: "plus")
-                                .font(.system(size: 16, weight: .medium))
+                                .font(.system(size: 16, weight: .semibold))
                             Text("导入")
-                                .font(.subheadline.weight(.medium))
+                                .font(.system(size: 14, weight: .semibold))
                         }
                         .foregroundColor(.blue)
+                        .frame(height: 36)
+                        .padding(.horizontal, 12)
+                        .background(
+                            Capsule()
+                                .fill(Color.blue.opacity(0.08))
+                        )
                     }
                     .disabled(viewModel.isBusy)
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-                .padding(.bottom, 6)
-                // 背景与列表一致，不产生断层
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
                 .background(Color(.systemGroupedBackground))
 
                 if viewModel.installedApps.isEmpty {
@@ -106,13 +114,7 @@ struct AppsView: View {
                 }
             }
             .navigationBarHidden(true)
-            // iOS 15 兼容：去掉 NavigationView 默认白色背景（scrollContentBackground 需要 iOS 16+）
-            .onAppear {
-                let appearance = UINavigationBarAppearance()
-                appearance.configureWithTransparentBackground()
-                UINavigationBar.appearance().standardAppearance = appearance
-                UINavigationBar.appearance().scrollEdgeAppearance = appearance
-            }
+            .scrollContentBackground(.hidden) // iOS 16+ API，去掉 NavigationView 白色背景
             .safeAreaInset(edge: .bottom) { statusBar }
             .confirmationDialog("卸载应用",
                                 isPresented: Binding(get: { pendingUninstall != nil },
