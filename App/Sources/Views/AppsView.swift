@@ -76,12 +76,13 @@ struct AppsView: View {
                     }
                     .disabled(viewModel.isBusy || !account.isSignedIn)
 
-                    // 中间：ReSign 标题（真正居中）
+                    // 中间：ReSign 标题（X轴略偏右，对齐底栏设置/日志中间）
                     Spacer(minLength: 0)
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
                         .frame(height: 36)
+                        .padding(.leading, 8) // X轴右移约3格
                     Spacer(minLength: 0)
 
                     // 右侧：导入（圆角胶囊按钮）

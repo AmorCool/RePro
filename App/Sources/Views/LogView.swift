@@ -51,8 +51,9 @@ struct LogView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
-                    .font(.title3)
+                    .font(.title2) // 加大，更容易点击
                     .foregroundColor(.blue)
+                    .contentShape(Rectangle()) // 扩大热区
             }
         }
         .padding(.horizontal, 16)
@@ -77,14 +78,13 @@ struct LogView: View {
                             .listRowBackground(Color.clear)
                     }
                 } header: {
-                    // 搜索栏 + 筛选栏 → 作为 List Section header，
-                    // 与列表同属一个滚动容器，触摸不再被拦截
+                    // 搜索栏 + 筛选栏 → 作为 List Section header
                     VStack(spacing: 10) {
                         searchBar
                             .padding(.horizontal, 16)
                         filterChips
-                            .padding(.horizontal, 16)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 8)
                     .padding(.bottom, 4)
                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
@@ -96,7 +96,7 @@ struct LogView: View {
         }
     }
 
-    // MARK: 搜索栏（圆角卡片 + 淡边框）— 注意：不包含水平 padding，由调用方统一控制
+    // MARK: 搜索栏（圆角卡片 + 淡边框，全宽固定）
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -107,6 +107,7 @@ struct LogView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity) // 全宽，不随内容缩紧
         .background(Color(.systemBackground))
         .cornerRadius(10)
         .overlay(
@@ -165,7 +166,6 @@ struct LogView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
             filterChips
-                .padding(.horizontal, 16)
                 .padding(.vertical, 8)
 
             Spacer()
