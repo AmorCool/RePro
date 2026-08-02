@@ -134,7 +134,6 @@ final class SigningViewModel: ObservableObject {
         autoRevokeBeforeSigning { [weak self] in
             guard let self = self else { return }
             self.client.resign(bundleID: app.bundleIdentifier) { result in
-                guard let self = self else { return }
                 self.markSigning(false, for: app.bundleIdentifier)
                 switch result {
                 case .success:
