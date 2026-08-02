@@ -63,6 +63,16 @@ static BOOL (^_rpvDaemonFileCopyHandler)(NSString *srcPath, NSString *dstPath) =
 
     BOOL scoped = [url startAccessingSecurityScopedResource];
 
+    // iCloud Drive / 第三方 File Provider 上的文件在下载前只是 .icloud 占位符。
+    // 下面 coordinateReadingItemAtURL: 的访问器会触发下载，但提前显式 startDownloading
+    // 能让快路径的 copyItemAtURL: 直接拿到真实文件而非 stub，避免复制到一个空占位符。
+    if (scoped && [url isFileURL]) {
+        if ([[NSFileManager defaultManager] respondsToSelector:@selector(startDownloadingUbiquitousItemAtURL:error:)]) {
+            NSError *dlErr = nil;
+            [[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&dlErr];
+        }
+    }
+
     NSString *tmp = NSTemporaryDirectory();
     if (!tmp) tmp = @"/tmp";
 

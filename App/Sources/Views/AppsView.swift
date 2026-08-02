@@ -15,7 +15,16 @@ private final class IPAFilePicker: NSObject, UIDocumentPickerDelegate {
         var top = root
         while let p = top.presentedViewController { top = p }
 
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.archive, .data], asCopy: true)
+        // 用 open 模式 (asCopy: false) 而非 copy/import 模式。
+        // iCloud 云盘 / 第三方 File Provider 的文件在 copy 模式下常返回 .icloud 占位符或复制失败，
+        // 导致「无法读取这个 .ipa」。open 模式给的是带安全域的真实 URL，下方
+        // RPVIpaBundleApplication 的 NSFileCoordinator 协调读取会触发 iCloud 下载，从而正确导入。
+        // （test2/reborn 参考实现均使用 asCopy: NO，原因见 RPVInstalledViewController 注释。）
+        var types: [UTType] = []
+        if let ipa = UTType(filenameExtension: "ipa") { types.append(ipa) }
+        types.append(.archive)
+        types.append(.data)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         top.present(picker, animated: true)
