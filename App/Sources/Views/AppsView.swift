@@ -59,21 +59,23 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // 顶栏：刷新(左) + ReSign(居中，Y轴对齐底栏中间) + 导入(右)
-                HStack {
-                    // 左侧：刷新（圆角胶囊按钮）
+                // 顶栏：刷新(左) + ReSign(居中偏右) + 导入(右)
+                HStack(alignment: .center) {
+                    // 左侧：刷新（圆角胶囊按钮）— Y轴对齐下方应用图标
                     Button {
                         viewModel.resignAllApplications()
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(.blue)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 40, height: 40)
                             .background(
                                 Capsule()
                                     .fill(Color.blue.opacity(0.08))
                             )
+                            .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
                     .disabled(viewModel.isBusy || !account.isSignedIn)
 
                     // 中间：ReSign 标题（X轴右移，对齐底栏设置/日志中间）
@@ -81,7 +83,7 @@ struct AppsView: View {
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
-                        .frame(height: 36)
+                        .frame(height: 40)
                         .padding(.leading, 22) // X轴右移约12格（用户要求再右移7格）
                     Spacer(minLength: 0)
 
@@ -96,18 +98,20 @@ struct AppsView: View {
                                 .font(.system(size: 14, weight: .semibold))
                         }
                         .foregroundColor(.blue)
-                        .frame(height: 36)
+                        .frame(height: 40)
                         .padding(.horizontal, 12)
                         .background(
                             Capsule()
                                 .fill(Color.blue.opacity(0.08))
                         )
+                        .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
                     .disabled(viewModel.isBusy)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 10)
+                .padding(.top, 4)
+                .padding(.bottom, 6)
 
                 if viewModel.installedApps.isEmpty {
                     emptyState

@@ -58,14 +58,14 @@ struct LogView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 24)) // 大图标，易点击
+                    .font(.system(size: 26))
                     .foregroundColor(.blue)
-                    .frame(width: 36, height: 36) // 扩大热区
+                    .frame(width: 44, height: 44) // 更大热区
                     .contentShape(Rectangle())
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(
             Color(.systemGroupedBackground)
                 .ignoresSafeArea()
@@ -83,7 +83,7 @@ struct LogView: View {
                 .font(.subheadline)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(Color(.systemBackground))
         .cornerRadius(10)
@@ -91,22 +91,20 @@ struct LogView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color(.separator).opacity(0.6), lineWidth: 0.5)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 10)) // 整个搜索栏都是可点区域
         .padding(.horizontal, 16)
     }
 
-    // MARK: 筛选标签组（横向排列，在固定 VStack 中不受 List 影响）
+    // MARK: 筛选标签组（纯 HStack，不用 ScrollView，彻底消除手势冲突）
     private var filterChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                filterChip(title: "全部", icon: nil, level: nil)
-                filterChip(title: "错误", icon: "xmark.circle.fill", level: .error)
-                filterChip(title: "警告", icon: "exclamationmark.triangle.fill", level: .warning)
-                filterChip(title: "信息", icon: "info.circle.fill", level: .info)
-                filterChip(title: "调试", icon: "bug.fill", level: .debug)
-            }
-            .padding(.horizontal, 16)
-            .contentShape(Rectangle()) // 让整行成为命中区域，避免 ScrollView 吞掉点击
+        HStack(spacing: 7) {
+            filterChip(title: "全部", icon: nil, level: nil)
+            filterChip(title: "错误", icon: "xmark.circle.fill", level: .error)
+            filterChip(title: "警告", icon: "exclamationmark.triangle.fill", level: .warning)
+            filterChip(title: "信息", icon: "info.circle.fill", level: .info)
+            filterChip(title: "调试", icon: "bug.fill", level: .debug)
         }
+        .padding(.horizontal, 16)
     }
 
     @ViewBuilder
@@ -125,7 +123,7 @@ struct LogView: View {
             }
             .foregroundColor(isSelected ? .white : .primary)
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.vertical, 10)
             .background(
                 Capsule()
                     .fill(isSelected ? Color.blue : Color(.systemFill).opacity(0.6))
@@ -134,7 +132,6 @@ struct LogView: View {
                             .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
                     )
             )
-            .contentShape(Capsule()) // 整颗胶囊都是可点区域，消除"点不灵敏"
         }
         .buttonStyle(.plain)
         .contentShape(Capsule())
