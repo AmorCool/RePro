@@ -64,6 +64,27 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private func setupCommon() {
         RPVBridge.installRootHelperHandlers()
 
+        // 🔴 Keychain accessible 迁移（v1.1.91 起自动化，无需用户手动打开 App）。
+        //
+        // 迁移内容：把 Apple ID 密码 + 签名状态项（uuid / privateKey / privateKeyTeamID）
+        // 全部「删后重建」为 accessible=AfterFirstUnlock，并镜像到本地缓存文件。
+        //
+        // 放在 setupCommon 而不是 applicationDidBecomeActive：后者只有用户「手动前台
+        // 打开 App」才会触发；而 setupCommon 在 daemon 后台拉起时同样执行，
+        // 因此只要设备当时是解锁的，迁移就会自动完成。
+        RPVBridge.migrateKeychainAccessibility()
+
+        // 兜底：若 App 是在「锁屏状态」下被 daemon 拉起的，上面那次迁移读不到 Keychain
+        // 而无法完成。此时注册系统的「保护数据可用」通知 —— 用户下次解锁设备的瞬间
+        // 系统会发出它，那一刻 Keychain 可读，迁移即自动完成。全程无需用户打开 App。
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil, queue: .main) { _ in
+            RPVBridge.migrateKeychainAccessibility()
+            LogManager.shared.info("设备已解锁（保护数据可用）→ 自动执行 Keychain accessible 迁移",
+                                   source: "AppDelegate")
+        }
+
         // 确保前台时续签 / 安装的横幅能正常弹出（delegate 只影响「App 在前台时」的展示，
         // 不影响后台时系统照常弹横幅）。不在此处申请权限，避免 daemon 后台路径弹系统授权窗。
         UNUserNotificationCenter.current().delegate = RPVNotificationManager.sharedInstance()
@@ -242,9 +263,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // 已解锁前台：把 Apple ID 密码的 Keychain accessible 迁移为 AfterFirstUnlock，
-        // 这样即使设备再次锁屏（已解锁过一次），后台自动续签也能读到密码。
-        // 否则锁屏时 isSignedIn 为假，自动续签会被中止（手动续签因已解锁而正常）。
+        // 再迁移一次（幂等）。主路径已在 setupCommon + 「保护数据可用」通知里自动完成，
+        // 这里只是前台激活时的额外保险。
         RPVBridge.migrateKeychainAccessibility()
 
         // daemon 静默续签正在进行时，不要重复触发前台续签

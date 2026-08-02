@@ -231,12 +231,14 @@ struct DevCertificate: Identifiable, Hashable {
     let id: String                 // 证书 ID（用于撤销）
     let serialNumber: String       // 序列号
     let machineName: String        // 设备名
+    let machineId: String          // 机器标识（与本机 uuid 比对可判定是否本机证书）
     let applicationName: String    // 来源应用（ReProvision / AltStore / Xcode 等）
 
     init(from objC: RPVCertificateInfo) {
         self.id = objC.identifier ?? ""
         self.serialNumber = objC.serialNumber ?? ""
         self.machineName = objC.machineName ?? "Unknown"
+        self.machineId = objC.machineId ?? ""
         self.applicationName = objC.applicationName ?? "Xcode"
     }
 }

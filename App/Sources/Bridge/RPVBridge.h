@@ -93,6 +93,7 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 @property (nonatomic, copy) NSString *identifier;        // 证书 ID（用于撤销）
 @property (nonatomic, copy) NSString *serialNumber;      // 序列号
 @property (nonatomic, copy) NSString *machineName;       // 设备名
+@property (nonatomic, copy) NSString *machineId;         // 机器标识（与本机 uuid 比对可判定是否本机证书）
 @property (nonatomic, copy) NSString *applicationName;   // 来源应用（ReProvision / AltStore / Xcode 等）
 - (instancetype)initWithDictionary:(NSDictionary *)dict;
 @end
@@ -111,8 +112,11 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 @property (nonatomic, readonly, copy, nullable) NSString *teamID;
 /// 三要素（账号 / 密码 / TeamID）齐全才算已登录
 @property (nonatomic, readonly) BOOL isSignedIn;
-/// 把已登录 Apple ID 密码的 Keychain accessible 升级为 AfterFirstUnlock（见 RPVResources）
+/// 把已登录 Apple ID 密码 + 签名状态项的 Keychain accessible 升级为 AfterFirstUnlock（见 RPVResources）
 + (void)migrateKeychainAccessibility;
+/// 当前设备的机器标识（machineId）。与证书的 machineId 比对可判定该证书是否属于本机。
+/// 尚未生成过（从未签名）时返回 nil。
++ (nullable NSString *)currentMachineIdentifier;
 /// 当前设备 UDID（供界面展示 / 排障）
 @property (nonatomic, readonly, copy, nullable) NSString *deviceUDID;
 

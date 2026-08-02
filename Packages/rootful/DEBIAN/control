@@ -2,7 +2,7 @@ Package: jp.soh.reprovision
 Name: ReSign
 Description: iOS 应用签名工具（需 iOS 16+）— rootful 完整版，液态玻璃 UI
 Depends: firmware (>= 13.0), zip, unzip
-Version: 1.1.90~release
+Version: 1.1.91~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm

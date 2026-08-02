@@ -364,22 +364,67 @@ final class BridgeClient: ObservableObject {
 
         LogManager.shared.info("签名前自动撤销：正在拉取账号下的旧证书…", source: "BridgeClient")
         fetchCertificates { [weak self] result in
+            guard let self = self else { completion(); return }
+
             switch result {
             case .success(let certs):
-                if certs.isEmpty {
+                guard !certs.isEmpty else {
                     LogManager.shared.info("签名前自动撤销：当前账号下无旧证书，无需撤销", source: "BridgeClient")
-                } else {
-                    let detail = certs.map { "· \($0.machineName)（标识 \($0.id)）" }.joined(separator: "\n")
-                    LogManager.shared.info("签名前自动撤销：将撤销以下 \(certs.count) 个证书：\n\(detail)", source: "BridgeClient")
+                    completion()
+                    return
                 }
-                self?.revokeAllCertificates { result in
-                    if case .failure(let error) = result {
-                        LogManager.shared.warning("签名前自动撤销失败（不阻断签名）: \(error.localizedDescription)", source: "BridgeClient")
-                    } else {
-                        LogManager.shared.info("签名前自动撤销完成，开始签名", source: "BridgeClient")
+
+                // 🔴 只撤销「其他设备」的证书，保留本机自己的证书。
+                //
+                // 旧版无差别 revokeAllCertificates 会把本机证书也撤掉，导致本机私钥对应的
+                // 证书消失 → 下次签名被迫提交全新 CSR → 刚撤销完就立即申请，与 Apple
+                // 服务器状态赛跑 → "submitDevelopmentCSR: There were errors in the data
+                // supplied"。原版 ReProvision 的做法也是「只撤销本机相关的过期/无私钥证书」，
+                // 从不无差别清空整个账号。
+                let myMachineId = RPVBridge.currentMachineIdentifier() ?? ""
+                let targets: [DevCertificate]
+
+                if myMachineId.isEmpty {
+                    // 本机机器标识尚未生成（从未成功签名过）→ 无法区分归属。
+                    // 退回旧策略全部撤销，否则可能撞上 Apple 的证书数量上限而签不了。
+                    targets = certs
+                    LogManager.shared.info("签名前自动撤销：本机机器标识尚未生成，无法区分归属 → 撤销全部 \(certs.count) 个证书",
+                                           source: "BridgeClient")
+                } else {
+                    targets = certs.filter { $0.machineId != myMachineId }
+                    let keptCount = certs.count - targets.count
+                    if keptCount > 0 {
+                        LogManager.shared.info("签名前自动撤销：保留本机证书 \(keptCount) 个（机器标识 \(myMachineId)），避免被迫重新申请 CSR",
+                                               source: "BridgeClient")
                     }
+                }
+
+                guard !targets.isEmpty else {
+                    LogManager.shared.info("签名前自动撤销：账号下仅有本机证书，无需撤销，直接签名", source: "BridgeClient")
+                    completion()
+                    return
+                }
+
+                let detail = targets.map { "· \($0.machineName)（标识 \($0.id)）" }.joined(separator: "\n")
+                LogManager.shared.info("签名前自动撤销：将撤销以下 \(targets.count) 个其他设备的证书：\n\(detail)",
+                                       source: "BridgeClient")
+
+                let group = DispatchGroup()
+                for cert in targets {
+                    group.enter()
+                    self.revokeCertificate(id: cert.id) { revokeResult in
+                        if case .failure(let error) = revokeResult {
+                            LogManager.shared.warning("撤销证书 \(cert.id) 失败（不阻断签名）: \(error.localizedDescription)",
+                                                      source: "BridgeClient")
+                        }
+                        group.leave()
+                    }
+                }
+                group.notify(queue: .main) {
+                    LogManager.shared.info("签名前自动撤销完成，开始签名", source: "BridgeClient")
                     completion()
                 }
+
             case .failure(let error):
                 LogManager.shared.warning("拉取证书列表失败，跳过自动撤销（不阻断签名）: \(error.localizedDescription)", source: "BridgeClient")
                 completion()

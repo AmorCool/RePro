@@ -163,6 +163,13 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     [RPVResources migrateKeychainAccessibility];
 }
 
++ (NSString *)currentMachineIdentifier {
+    // 与 EEProvisioning 的 _identifierForCurrentMachine 同源（jp.soh.reprovision / uuid），
+    // 走 RPVResources 以便锁屏时回退本地缓存，避免读不到导致误判。
+    NSString *uuid = [RPVResources provisioningValueForAccount:@"uuid"];
+    return uuid.length > 0 ? uuid : nil;
+}
+
 - (NSString *)deviceUDID {
     NSString *udid = [[RPVAccountChecker sharedInstance] UDIDForCurrentDevice];
     return udid.length > 0 ? udid : nil;
@@ -1154,6 +1161,11 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
 
         NSDictionary *attrs = dict[@"attributes"];
         _machineName = [attrs[@"machineName"] copy] ?: @"Unknown";
+
+        // machineId：与本机 uuid 比对可判定这张证书是不是本机签发的。
+        // Apple 返回的字段可能是 NSNull，需要显式过滤。
+        id rawMachineId = attrs[@"machineId"];
+        _machineId = ([rawMachineId isKindOfClass:[NSString class]] ? [rawMachineId copy] : @"");
 
         // 根据机器名推断来源应用（与原版 RPVTroubleshootingCertificatesViewController 一致）
         NSString *mn = _machineName;

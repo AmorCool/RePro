@@ -305,8 +305,10 @@
           */
 
         NSString *privateKeyAccount = @"privateKey";
-        NSString *privateKey = [SAMKeychain passwordForService:@"jp.soh.reprovision" account:privateKeyAccount];
-        NSString *privateKeyAssociatedTeamID = [SAMKeychain passwordForService:@"jp.soh.reprovision" account:@"privateKeyTeamID"];
+        // 走 RPVResources（Keychain + 本地缓存 fallback）：锁屏时 Keychain 不可读，
+        // 直接读会误判「没有私钥」→ 触发不必要的重新 CSR。
+        NSString *privateKey = [RPVResources provisioningValueForAccount:privateKeyAccount];
+        NSString *privateKeyAssociatedTeamID = [RPVResources provisioningValueForAccount:@"privateKeyTeamID"];
 
         BOOL hasValidCertificate = NO;
         NSDate *now = [NSDate date];
@@ -380,9 +382,10 @@
                         }
 
                         // Store new private key into the keychain for future usage.
+                        // 走 RPVResources：accessible=AfterFirstUnlock + 镜像本地缓存，锁屏也能读到。
                         NSString *privateKeyAccount = @"privateKey";
-                        [SAMKeychain setPassword:privateKey forService:@"jp.soh.reprovision" account:privateKeyAccount];
-                        [SAMKeychain setPassword:[[EEAppleServices sharedInstance] currentTeamID] forService:@"jp.soh.reprovision" account:@"privateKeyTeamID"];
+                        [RPVResources setProvisioningValue:privateKey forAccount:privateKeyAccount];
+                        [RPVResources setProvisioningValue:[[EEAppleServices sharedInstance] currentTeamID] forAccount:@"privateKeyTeamID"];
 
                         // Read certificate from result, and pass back to caller with the private key too.
                         completionHandler(nil, privateKey, certificate);
@@ -407,9 +410,10 @@
                                                }
 
                                                // Store new private key into the keychain for future usage.
+                                               // 走 RPVResources：accessible=AfterFirstUnlock + 镜像本地缓存，锁屏也能读到。
                                                NSString *privateKeyAccount = @"privateKey";
-                                               [SAMKeychain setPassword:privateKey forService:@"jp.soh.reprovision" account:privateKeyAccount];
-                                               [SAMKeychain setPassword:[[EEAppleServices sharedInstance] currentTeamID] forService:@"jp.soh.reprovision" account:@"privateKeyTeamID"];
+                                               [RPVResources setProvisioningValue:privateKey forAccount:privateKeyAccount];
+                                               [RPVResources setProvisioningValue:[[EEAppleServices sharedInstance] currentTeamID] forAccount:@"privateKeyTeamID"];
 
                                                // Read certificate from result, and pass back to caller with the private key too.
                                                completionHandler(nil, privateKey, certificate);
@@ -434,10 +438,17 @@
 
 - (NSString *)_identifierForCurrentMachine {
     // We're using a persistent UUID here, not a UDID or anything.
-    NSString *uuid = [SAMKeychain passwordForService:@"jp.soh.reprovision" account:@"uuid"];
+    //
+    // 🔴 关键：必须走 RPVResources（Keychain + 本地缓存 fallback）。
+    // 此前直接读 SAMKeychain，设备锁屏时读不到就会「生成一个新 UUID 并覆盖写回」，
+    // 导致 machineId 永久漂移 —— 之后遍历 Apple 账号下的证书列表时，本机证书的
+    // machineId 再也匹配不上，系统误判「本机没有证书」，于是不撤销旧证书就直接
+    // 提交新的 CSR，最终被 Apple 拒绝（"You already have a current Development
+    // certificate" / "There were errors in the data supplied"）。
+    NSString *uuid = [RPVResources provisioningValueForAccount:@"uuid"];
     if (!uuid || [uuid isEqualToString:@""]) {
         uuid = [[NSUUID UUID] UUIDString];
-        [SAMKeychain setPassword:uuid forService:@"jp.soh.reprovision" account:@"uuid"];
+        [RPVResources setProvisioningValue:uuid forAccount:@"uuid"];
     }
     return uuid;
 }
