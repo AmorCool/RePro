@@ -81,7 +81,7 @@ struct AppsView: View {
                     Image("NavTitle")
                         .resizable()
                         .scaledToFit()
-                        .frame(height: 34)
+                        .frame(height: 36)
                     Spacer(minLength: 0)
 
                     // 右侧：导入（圆角胶囊按钮）— 右边缘对齐下面"重签"按钮右边缘
