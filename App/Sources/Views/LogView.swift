@@ -95,43 +95,37 @@ struct LogView: View {
         .padding(.horizontal, 16)
     }
 
-    // MARK: 筛选标签组（纯 HStack，不用 ScrollView，彻底消除手势冲突）
+    // MARK: 筛选标签组（纯文字胶囊，无图标）
     private var filterChips: some View {
         HStack(spacing: 7) {
-            filterChip(title: "全部", icon: nil, level: nil)
-            filterChip(title: "错误", icon: "xmark.circle.fill", level: .error)
-            filterChip(title: "警告", icon: "exclamationmark.triangle.fill", level: .warning)
-            filterChip(title: "信息", icon: "info.circle.fill", level: .info)
-            filterChip(title: "调试", icon: "bug.fill", level: .debug)
+            filterChip(title: "全部", level: nil)
+            filterChip(title: "错误", level: .error)
+            filterChip(title: "警告", level: .warning)
+            filterChip(title: "信息", level: .info)
+            filterChip(title: "调试", level: .debug)
         }
         .padding(.horizontal, 16)
     }
 
     @ViewBuilder
-    private func filterChip(title: String, icon: String?, level: LogLevel?) -> some View {
+    private func filterChip(title: String, level: LogLevel?) -> some View {
         let isSelected = selectedFilter == level
         Button {
             selectedFilter = isSelected ? nil : level
         } label: {
-            HStack(spacing: 4) {
-                if let icon = icon {
-                    Image(systemName: icon)
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                Text(title)
-                    .font(.subheadline.weight(isSelected ? .semibold : .medium))
-            }
-            .foregroundColor(isSelected ? .white : .primary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                Capsule()
-                    .fill(isSelected ? Color.blue : Color(.systemFill).opacity(0.6))
-                    .overlay(
-                        Capsule()
-                            .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
-                    )
-            )
+            Text(title)
+                .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                .foregroundColor(isSelected ? .white : .primary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule()
+                        .fill(isSelected ? Color.blue : Color(.systemFill).opacity(0.6))
+                        .overlay(
+                            Capsule()
+                                .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
+                        )
+                )
         }
         .buttonStyle(.plain)
         .contentShape(Capsule())
@@ -226,14 +220,9 @@ struct LogEntryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(entry.level.color)
-                        .frame(width: 7, height: 7)
-                    Text(entry.level.displayName)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(entry.level.color)
-                }
+                Text(entry.level.displayName)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(entry.level.color)
 
                 Spacer()
 
