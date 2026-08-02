@@ -326,6 +326,56 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    // MARK: - 签名前自动撤销证书
+
+    /// 去重窗口：短时间内多次触发只真正撤销一次，避免重复撤销引发异常。
+    private static var lastRevokeTime: Date?
+    private static let revokeDedupWindow: TimeInterval = 120
+
+    /// 签名前自动撤销所有旧证书，防止 CSR 冲突。
+    /// 共享方法：AppDelegate 后台续签 / SigningViewModel 前台操作 统一调用同一套逻辑，
+    /// 避免 v1.1.86 前台有撤销、后台漏撤销的不一致问题。
+    func autoRevokeBeforeSigning(completion: @escaping () -> Void) {
+        guard UserDefaults.standard.object(forKey: "revokeCertBeforeSigning") as? Bool ?? true else {
+            LogManager.shared.info("跳过签名前自动撤销（设置已关闭）", source: "BridgeClient")
+            completion()
+            return
+        }
+
+        let now = Date()
+        if let last = BridgeClient.lastRevokeTime,
+           now.timeIntervalSince(last) < BridgeClient.revokeDedupWindow {
+            LogManager.shared.info("跳过重复撤销证书（\(Int(now.timeIntervalSince(last)))s 内已撤销过）", source: "BridgeClient")
+            completion()
+            return
+        }
+        BridgeClient.lastRevokeTime = now
+
+        LogManager.shared.info("签名前自动撤销：正在拉取账号下的旧证书…", source: "BridgeClient")
+        fetchCertificates { [weak self] result in
+            switch result {
+            case .success(let certs):
+                if certs.isEmpty {
+                    LogManager.shared.info("签名前自动撤销：当前账号下无旧证书，无需撤销", source: "BridgeClient")
+                } else {
+                    let detail = certs.map { "· \($0.machineName)（标识 \($0.id)）" }.joined(separator: "\n")
+                    LogManager.shared.info("签名前自动撤销：将撤销以下 \(certs.count) 个证书：\n\(detail)", source: "BridgeClient")
+                }
+                self?.revokeAllCertificates { result in
+                    if case .failure(let error) = result {
+                        LogManager.shared.warning("签名前自动撤销失败（不阻断签名）: \(error.localizedDescription)", source: "BridgeClient")
+                    } else {
+                        LogManager.shared.info("签名前自动撤销完成，开始签名", source: "BridgeClient")
+                    }
+                    completion()
+                }
+            case .failure(let error):
+                LogManager.shared.warning("拉取证书列表失败，跳过自动撤销（不阻断签名）: \(error.localizedDescription)", source: "BridgeClient")
+                completion()
+            }
+        }
+    }
+
     // MARK: - 系统操作
 
     /// 通过 sysctl 枚举进程找到 SpringBoard 并发送 SIGTERM。

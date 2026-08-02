@@ -136,9 +136,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let d = UserDefaults.standard
         let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
 
-        // 未登录时直接回报失败，否则 daemon 会一直等不到完成信号
+        // 锁屏时 SAMKeychain 可能暂时读不到密码导致 isSignedIn 为假。
+        // 重试最多 3 次（每次间隔 5 秒），给系统/Keychain 解锁时间，
+        // 而不是像旧版那样直接放弃。v1.1.74 的 migrateKeychainAccessibility 已将
+        // accessible 升级为 AfterFirstUnlock，但首次迁移后仍需设备解锁过一次才生效。
+        let maxRetry = 3
+        for attempt in 1...maxRetry {
+            BridgeClient.shared.refreshAccountState()
+            if BridgeClient.shared.isSignedIn { break }
+            if attempt < maxRetry {
+                LogManager.shared.info("未登录 Apple ID（锁屏 Keychain 不可读？），\(5)s 后重试 \(attempt)/\(maxRetry - 1)…", source: "AppDelegate")
+                Thread.sleep(forTimeInterval: 5)
+            }
+        }
+
         guard BridgeClient.shared.isSignedIn else {
-            LogManager.shared.warning("未登录 Apple ID → 静默续签中止", source: "AppDelegate")
+            LogManager.shared.warning("未登录 Apple ID → 静默续签中止（重试 \(maxRetry) 次仍失败，请确认设备已解锁过一次）", source: "AppDelegate")
             writeResignReport(result: "failed", detail: "未登录 Apple ID，无法续签", elapsed: 0)
             RPVSigningdNotify.notifySigningComplete()
             daemonResignInProgress = false
@@ -154,11 +167,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         LogManager.shared.info("阈值 \(threshold) 天 → 开始扫描并重签到期应用", source: "AppDelegate")
 
-        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+        // 签名前自动撤销旧证书（与前台 SigningViewModel 共享同一套逻辑），
+        // 防止 "You already have a current Development certificate or a pending certificate request" 错误。
+        // v1.1.86 前此处直接调 resignAllExpiring 漏掉了撤销步骤 → 后台续签 CSR 冲突。
+        BridgeClient.shared.autoRevokeBeforeSigning { [weak self] in
             guard let self = self else { return }
-            let elapsed = Date().timeIntervalSince(started)
-            self.handleResignCompletion(result: result, elapsed: elapsed, isDaemon: true)
-            UIApplication.shared.endBackgroundTask(bgTask)
+            BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+                guard let self = self else { return }
+                let elapsed = Date().timeIntervalSince(started)
+                self.handleResignCompletion(result: result, elapsed: elapsed, isDaemon: true)
+                UIApplication.shared.endBackgroundTask(bgTask)
+            }
         }
     }
 
