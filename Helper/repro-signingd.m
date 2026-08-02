@@ -36,6 +36,8 @@ static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
 static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";
 static NSString *const kStatePath   = @"/var/mobile/Library/RePro/signingd-state.plist";
+static NSString *const kResultPath  = @"/var/mobile/Library/RePro/last-resign-result.plist";
+static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
 static NSString *const kAppBundleID = @"jp.soh.reprovision";
 
 static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
@@ -62,14 +64,25 @@ static NSString *gLastResignStatus  = @"";    // 上次续签状态
 static void s_open_log(void);
 static void s_log(NSString *fmt, ...);
 
+/// 检查日志文件是否仍然有效（被 rm 后 nlink 归零，写入会落到孤儿 inode）
+///
+/// ⚠️ v1.1.63 致命 BUG 修复：
+///   旧版这里调用了 s_log()，而 s_log() 开头又会调用本函数 →
+///   文件被删除时 gLogFile 尚未置空、nlink 仍为 0 → 无限递归 → 栈溢出 → daemon 崩溃退出。
+///   这正是「删掉 reprorefresh_at.log 后 daemon 再也不写日志 / killall 找不到进程」的真正原因。
+///   本函数内部一律只能用 NSLog，绝不能调用 s_log()。
 static void s_ensure_log_valid(void) {
     if (!gLogFile) { s_open_log(); return; }
     struct stat st;
     if (fstat(fileno(gLogFile), &st) != 0 || st.st_nlink == 0) {
-        s_log(@"检测到日志文件失效（nlink=0 或 fstat 错误），重新打开");
+        NSLog(@"[repro-signingd] 日志文件已失效(nlink=0)，自动重建");
         fclose(gLogFile);
         gLogFile = NULL;
         s_open_log();
+        if (gLogFile) {
+            fprintf(gLogFile, "=== 日志文件曾被删除，已由 daemon 自动重建 ===\n");
+            fflush(gLogFile);
+        }
     }
 }
 
@@ -526,53 +539,85 @@ static void s_setupNotifyPosts(void) {
 //   SIGHUP  → 触发续签（用户手动 killall -HUP 或 launchctl kickstart）
 //   SIGINT  → 优雅退出（调试用 Ctrl+C）
 
-static void s_signal_handler(int sig) {
-    if (sig == SIGHUP) {
-        // SIGHUP = 手动触发续签，不退出！
-        s_log(@"收到 SIGHUP → 触发手动续签（不退出）");
-        sd_config c = s_cfg();
-        if (!c.enabled) {
-            s_log(@"自动续签已关闭，忽略 SIGHUP");
-            return;
-        }
-        if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
-            s_log(@"低电量模式，忽略 SIGHUP");
-            return;
-        }
+static dispatch_source_t gSigHupSrc  = nil;
+static dispatch_source_t gSigTermSrc = nil;
+static dispatch_source_t gSigIntSrc  = nil;
+static dispatch_queue_t  gSignalQueue = nil;
 
-        // 写入 trigger 文件
-        time_t now = time(NULL);
-        gResignStartTime = now;
-        gResignInProgress = YES;
-        gResignTotalCount++;
-        s_log(@"═══ SIGHUP 手动续签 #%ld ═══", (long)gResignTotalCount);
-
-        [@{
-            @"timestamp": @(now),
-            @"threshold": @(c.days),
-            @"triggeredBy": "SIGHUP",
-        } writeToFile:kTriggerPath atomically:YES];
-        chown(kTriggerPath.UTF8String, 501, 501);
-
-        // 同步唤醒 App（SIGHUP 必须同步，因为调用者可能在等）
-        s_launchAppAndWait(YES);
-
-        s_log(@"SIGHUP 处理完成 — App 应已在后台执行续签");
+/// 手动触发一次续签（SIGHUP 与 --resign-now 共用同一条路径）
+static void s_manualResign(NSString *reason) {
+    sd_config c = s_cfg();
+    if (!c.enabled) { s_log(@"[%@] 自动续签已关闭，忽略本次触发", reason); return; }
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
+        s_log(@"[%@] 低电量模式，忽略本次触发", reason);
+        return;
+    }
+    if (gResignInProgress && (time(NULL) - gResignStartTime) < 120) {
+        s_log(@"[%@] 上一次续签仍在进行中（已 %ld 秒），忽略本次",
+              reason, (long)(time(NULL) - gResignStartTime));
         return;
     }
 
-    // SIGTERM / SIGINT → 优雅退出
+    time_t now = time(NULL);
+    gResignStartTime  = now;
+    gResignInProgress = YES;
+    gResignTotalCount++;
+    s_log(@"═══ %@ 触发续签 #%ld ═══", reason, (long)gResignTotalCount);
+
+    [@{
+        @"timestamp":   @(now),
+        @"threshold":   @(c.days),
+        @"triggeredBy": reason,
+    } writeToFile:kTriggerPath atomically:YES];
+    chown(kTriggerPath.UTF8String, 501, 501);
+
+    s_launchAppAndWait(YES);
+
+    s_log(@"[%@] 唤醒流程结束 — 接下来应出现 App 侧日志（[AppDelegate] / [BridgeClient]）", reason);
+    s_log(@"[%@] 若 30 秒内没有 App 侧日志，说明 App 没被拉起，请用 --status 查看诊断", reason);
+}
+
+static void s_gracefulExit(int sig) {
     s_log(@"收到信号 %d → 释放资源并退出", sig);
     s_releaseBKSAssertion();
     if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
     _exit(0);
 }
 
+/// v1.1.63 致命 BUG 修复：改用 dispatch_source 处理信号
+///
+/// 旧版用 signal(SIGHUP, handler) 注册 C 信号处理器，然后在处理器里调用
+/// NSDictionary/NSLog/dlopen/sleep —— 这些统统不是「异步信号安全」函数。
+/// 信号随时可能在主线程持有 malloc 锁 / NSLog 锁时到达，此时在处理器里再次
+/// 申请同一把锁 → 直接死锁，进程卡死不再有任何输出。
+/// 这就是 `sudo killall -HUP repro-signingd` 之后「没下文了」的根因。
+///
+/// dispatch_source 的 handler 在普通 dispatch 队列上执行（不在信号上下文中），
+/// 可以安全调用任意 ObjC / Foundation / sleep。
 static void s_setup_signal_handlers(void) {
-    signal(SIGTERM, s_signal_handler);  // launchd stop / 系统关机
-    signal(SIGHUP, s_signal_handler);   // 手动触发续签（不退出！）
-    signal(SIGINT, s_signal_handler);   // Ctrl+C 调试用
-    s_log(@"已注册信号处理: SIGTERM=退出, SIGHUP=触发续签, SIGINT=退出");
+    // dispatch source 只做「计数通知」，必须先把默认动作设为 SIG_IGN，
+    // 否则 SIGHUP/SIGTERM 的默认动作（终止进程）会抢先生效。
+    signal(SIGHUP,  SIG_IGN);
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGINT,  SIG_IGN);
+
+    // SIGHUP 处理里有同步 sleep（最长十几秒），放独立串行队列，
+    // 避免阻塞主 RunLoop 上的定时器与 notify 回调。
+    gSignalQueue = dispatch_queue_create("com.reprovision.signingd.signal", DISPATCH_QUEUE_SERIAL);
+
+    gSigHupSrc = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGHUP, 0, gSignalQueue);
+    dispatch_source_set_event_handler(gSigHupSrc, ^{ s_manualResign(@"SIGHUP"); });
+    dispatch_resume(gSigHupSrc);
+
+    gSigTermSrc = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(gSigTermSrc, ^{ s_gracefulExit(SIGTERM); });
+    dispatch_resume(gSigTermSrc);
+
+    gSigIntSrc = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGINT, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(gSigIntSrc, ^{ s_gracefulExit(SIGINT); });
+    dispatch_resume(gSigIntSrc);
+
+    s_log(@"已注册信号处理(dispatch_source): SIGHUP=触发续签(不退出), SIGTERM/SIGINT=优雅退出");
 }
 
 // ─── 续签完成回调 ───────────────────────────────────────────────
@@ -590,14 +635,109 @@ static void s_onSigningComplete(void) {
 
     s_releaseBKSAssertion();
 
-    // 将续签结果写入状态文件供 App/用户查看
-    [@{
-        @"lastResignTime": @(now),
+    // 读取 App 侧写入的详细报告（谁被续签了 / 成功失败原因）
+    NSDictionary *appReport = [NSDictionary dictionaryWithContentsOfFile:
+                               [kIpcDir stringByAppendingString:@"/app-resign-report.plist"]];
+    if (appReport) {
+        BOOL ok = [appReport[@"result"] isEqualToString:@"success"];
+        s_log(@"App 报告: 结果=%@ App侧耗时=%.1f秒 详情=%@",
+              ok ? @"成功" : @"失败",
+              [appReport[@"elapsed"] doubleValue],
+              appReport[@"detail"] ?: @"（无）");
+        gLastResignStatus = ok ? @"成功" : @"失败";
+        if (!ok && gResignSuccessCount > 0) gResignSuccessCount--;  // 回滚乐观计数
+    } else {
+        s_log(@"App 未写入详细报告（可能是旧版 App 或续签未真正执行）");
+    }
+
+    // 将续签结果写入状态文件供 --status / App 查看
+    NSMutableDictionary *result = [@{
+        @"lastResignTime":    @(now),
         @"lastResignElapsed": @(elapsed),
-        @"totalCount": @(gResignTotalCount),
-        @"successCount": @(gResignSuccessCount),
-        @"status": @"success",
-    } writeToFile:[kIpcDir stringByAppendingString:@"/last-resign-result.plist"] atomically:YES];
+        @"totalCount":        @(gResignTotalCount),
+        @"successCount":      @(gResignSuccessCount),
+        @"status":            gLastResignStatus ?: @"成功",
+    } mutableCopy];
+    if (appReport) result[@"appReport"] = appReport;
+    [result writeToFile:kResultPath atomically:YES];
+    chown(kResultPath.UTF8String, 501, 501);
+}
+
+// ─── --status 诊断输出 ──────────────────────────────────────────
+// 让用户能一眼判断「到底有没有真的续签」，不用去猜日志。
+
+static int s_printStatus(void) {
+    printf("═══════════ RePro 续签守护进程状态 ═══════════\n");
+
+    // 1. daemon 是否在跑
+    NSString *pidStr = [NSString stringWithContentsOfFile:kPidPath
+                                                 encoding:NSUTF8StringEncoding error:nil];
+    pid_t dpid = pidStr ? (pid_t)[pidStr integerValue] : 0;
+    if (dpid > 0 && kill(dpid, 0) == 0) {
+        printf("daemon 状态      : ✅ 运行中 (pid=%d)\n", dpid);
+    } else {
+        printf("daemon 状态      : ❌ 未运行%s\n",
+               dpid > 0 ? "（pid 文件存在但进程已死）" : "");
+        printf("                   修复: launchctl kickstart -k system/jp.soh.reprovision.signingd\n");
+    }
+
+    // 2. 当前配置
+    sd_config c = s_cfg();
+    printf("自动续签开关     : %s\n", c.enabled ? "开" : "关");
+    printf("检查间隔         : %ld 分钟\n", (long)c.minutes);
+    printf("到期阈值         : %ld 天\n", (long)c.days);
+
+    // 3. 下次计划触发
+    NSDate *next = s_getNextFireDate();
+    if (next) {
+        printf("下次计划触发     : %s (%.1f 分钟后)\n",
+               next.description.UTF8String, [next timeIntervalSinceNow] / 60.0);
+    } else {
+        printf("下次计划触发     : 未记录\n");
+    }
+
+    // 4. 最近一次「触发」（daemon 写 trigger 的时间）
+    NSDictionary *trg = [NSDictionary dictionaryWithContentsOfFile:kTriggerPath];
+    if (trg) {
+        NSTimeInterval ago = [[NSDate date] timeIntervalSince1970] - [trg[@"timestamp"] doubleValue];
+        printf("最近一次触发     : %.1f 分钟前，来源=%s\n",
+               ago / 60.0, [(trg[@"triggeredBy"] ?: @"?") UTF8String]);
+    } else {
+        printf("最近一次触发     : 无记录\n");
+    }
+
+    // 5. 最近一次「续签结果」—— 这才是判断有没有真的续签的依据
+    NSDictionary *res = [NSDictionary dictionaryWithContentsOfFile:kResultPath];
+    if (res) {
+        NSDate *rt = [NSDate dateWithTimeIntervalSince1970:[res[@"lastResignTime"] doubleValue]];
+        printf("──────────────────────────────────────────────\n");
+        printf("最近一次续签完成 : %s\n", rt.description.UTF8String);
+        printf("  距今           : %.1f 分钟前\n", -[rt timeIntervalSinceNow] / 60.0);
+        printf("  耗时           : %.0f 秒\n", [res[@"lastResignElapsed"] doubleValue]);
+        printf("  结果           : %s\n", [(res[@"status"] ?: @"?") UTF8String]);
+        printf("  累计/成功      : %ld / %ld\n",
+               (long)[res[@"totalCount"] integerValue],
+               (long)[res[@"successCount"] integerValue]);
+        NSDictionary *ar = res[@"appReport"];
+        if (ar) {
+            printf("  ── App 侧回报 ──\n");
+            printf("  结果           : %s\n", [(ar[@"result"] ?: @"?") UTF8String]);
+            printf("  App 侧耗时     : %.1f 秒\n", [ar[@"elapsed"] doubleValue]);
+            printf("  详情           : %s\n", [(ar[@"detail"] ?: @"（无）") UTF8String]);
+            printf("  触发方式       : %s\n", [(ar[@"trigger"] ?: @"?") UTF8String]);
+        } else {
+            printf("  App 详细报告   : 无（App 未回报，续签可能没真正执行）\n");
+        }
+    } else {
+        printf("──────────────────────────────────────────────\n");
+        printf("最近一次续签完成 : ❌ 从未收到过 App 的完成回报\n");
+        printf("  说明: daemon 只负责唤醒 App，真正签名在 App 内完成。\n");
+        printf("        这里为空说明 App 没被成功拉起或没执行到续签。\n");
+    }
+    printf("══════════════════════════════════════════════\n");
+    printf("日志: <jbroot>/var/log/reprorefresh_at.log\n");
+    printf("      daemon 行前缀 [repro-signingd]，App 行前缀 [AppDelegate]/[BridgeClient]\n");
+    return 0;
 }
 
 // ─── main ────────────────────────────────────────────────────────
@@ -605,36 +745,22 @@ static void s_onSigningComplete(void) {
 int main(int argc, char *argv[]) {
     s_open_log();
 
+    // ── --status: 打印诊断状态（不写日志噪音，直接输出到终端） ──
+    if (argc >= 2 && strcmp(argv[1], "--status") == 0) {
+        return s_printStatus();
+    }
+
     // ── --resign-now: 终端手动触发（同步执行） ──
     if (argc >= 2 && strcmp(argv[1], "--resign-now") == 0) {
         s_log(@"========================================");
         s_log(@"收到 --resign-now（同步模式）");
         s_log(@"========================================");
 
-        sd_config c = s_cfg();
-        if (!c.enabled) { s_log(@"自动续签已关闭"); goto resign_now_done; }
-        if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) { s_log(@"低电量模式，跳过"); goto resign_now_done; }
+        // 与 SIGHUP 完全同一条路径，避免两份逻辑走偏
+        s_manualResign(@"--resign-now");
 
-        gResignStartTime = time(NULL);
-        gResignInProgress = YES;
-        gResignTotalCount++;
-
-        // 写入 trigger 文件
-        [@{
-            @"timestamp": @(time(NULL)),
-            @"threshold": @(c.days),
-            @"triggeredBy": "--resign-now",
-        } writeToFile:kTriggerPath atomically:YES];
-        chown(kTriggerPath.UTF8String, 501, 501);
-
-        // 同步唤醒 App（关键修复：v1.1.61 这里是异步的，main 立即退出导致 Step 2/3 不执行）
-        s_launchAppAndWait(YES);
-
-        s_log(@"--resign-now 完成 — App 已被唤醒，将在后台静默续签");
-        s_log(@"提示: 查看 App 日志确认续签结果，或等待下次定时触发");
+        s_log(@"--resign-now 结束。用 --status 查看是否真的完成续签");
         s_log(@"========================================");
-
-    resign_now_done:
         if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
         return 0;
     }
@@ -643,14 +769,22 @@ int main(int argc, char *argv[]) {
     s_log(@"========================================");
     s_log(@"=== 启动 pid=%d uid=%d ===", getpid(), getuid());
     s_log(@"管理命令:");
-    s_log(@"  sudo killall -HUP repro-signingd     ← 手动触发续签（推荐）");
-    s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 同步手动触发");
-    s_log(@"  launchctl kickstart gui/501/jp.soh.reprovision.signingd  ← 重启 daemon");
+    s_log(@"  sudo /usr/libexec/repro-signingd --status      ← 查看是否真的续签了（推荐先看这个）");
+    s_log(@"  sudo killall -HUP repro-signingd              ← 手动触发续签（daemon 不会退出）");
+    s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 同步手动触发（前台看完整输出）");
+    s_log(@"  sudo launchctl kickstart -k system/jp.soh.reprovision.signingd  ← 重启 daemon");
     s_log(@"========================================");
     s_setup_signal_handlers();
 
     [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
     chown(kIpcDir.UTF8String, 501, 501);
+
+    // 写 pid 文件，供 --status 判断 daemon 是否存活
+    [[NSString stringWithFormat:@"%d", getpid()] writeToFile:kPidPath
+                                                  atomically:YES
+                                                    encoding:NSUTF8StringEncoding
+                                                       error:nil];
+    chown(kPidPath.UTF8String, 501, 501);
 
     sd_config c = s_cfg();
     s_log(@"配置: 自动=%@ 间隔=%ld分 阈值=%ld天",
