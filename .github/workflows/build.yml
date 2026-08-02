@@ -1,4 +1,4 @@
-name: Build RePro
+name: Build ReSign
 
 on:
   push:
@@ -77,14 +77,14 @@ jobs:
           make install_sw > /dev/null 2>&1
           ls -la /tmp/openssl3-ios/lib/
 
-      - name: Build iOS App (RePro)
+      - name: Build iOS App (ReSign)
         run: |
           set -uo pipefail
 
           # 本项目无第三方依赖，直接用 xcodeproj 构建（无 CocoaPods / SwiftPM）
           echo "=== 开始 xcodebuild ==="
           xcodebuild -project RePro.xcodeproj \
-            -scheme RePro \
+            -scheme ReSign \
             -configuration Release \
             -sdk iphoneos \
             -arch arm64 \
@@ -102,9 +102,9 @@ jobs:
           tail -30 build.log
 
           # 检查构建产物
-          APP_PATH=$(find build -name "RePro.app" -type d | head -1)
+          APP_PATH=$(find build -name "ReSign.app" -type d | head -1)
           if [ ! -d "$APP_PATH" ]; then
-            echo "error: RePro.app not found"
+            echo "error: ReSign.app not found"
             echo "=== 构建日志最后 120 行 ==="
             tail -120 build.log
             exit 1
@@ -312,7 +312,7 @@ jobs:
           mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" \
                    "$RL/usr/share/reprovision/certificates" \
                    "$RL/Library/LaunchDaemons"
-          APP_DIR=$(find build -name "RePro.app" -type d | head -1)
+          APP_DIR=$(find build -name "ReSign.app" -type d | head -1)
           cp -R "$APP_DIR" "$RL/Applications/"
           cp build/repro-helper "$RL/usr/libexec/"
           cp /tmp/zsign "$RL/usr/local/bin/zsign"
@@ -321,20 +321,20 @@ jobs:
 
           # 验证 Assets.car 存在（图标依赖于此文件）
           echo "=== 验证 .app 包结构 ==="
-          ls -lah "$RL/Applications/RePro.app/"
-          if [ -f "$RL/Applications/RePro.app/Assets.car" ]; then
-              echo "Assets.car 存在: $(ls -lh "$RL/Applications/RePro.app/Assets.car" | awk '{print $5}')"
+          ls -lah "$RL/Applications/ReSign.app/"
+          if [ -f "$RL/Applications/ReSign.app/Assets.car" ]; then
+              echo "Assets.car 存在: $(ls -lh "$RL/Applications/ReSign.app/Assets.car" | awk '{print $5}')"
           else
               echo "警告: Assets.car 不存在！图标可能无法显示"
           fi
 
           # 复制图标（供 Sileo/Cydia 显示，不影响 iOS 图标加载）
-          cp Resources/Icon.png "$RL/Applications/RePro.app/Icon.png"
+          cp Resources/Icon.png "$RL/Applications/ReSign.app/Icon.png"
 
           # 签名：先签二进制，不破坏 Assets.car
           # 设置正确的权限：root 可执行
-          chmod 0755 "$RL/Applications/RePro.app/RePro"
-          do_sign "$RL/Applications/RePro.app/RePro" Resources/entitlements-base.plist
+          chmod 0755 "$RL/Applications/ReSign.app/ReSign"
+          do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$RL/usr/libexec/"
           cp Resources/jp.soh.reprovision.signingd.plist "$RL/Library/LaunchDaemons/"
@@ -356,8 +356,8 @@ jobs:
           cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
-          cp Resources/Icon.png "$PKG2/Applications/RePro.app/Icon.png"
-          do_sign "$PKG2/Applications/RePro.app/RePro" Resources/entitlements-base.plist
+          cp Resources/Icon.png "$PKG2/Applications/ReSign.app/Icon.png"
+          do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
           do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$PKG2/usr/libexec/"
           cp Resources/jp.soh.reprovision.signingd.plist "$PKG2/Library/LaunchDaemons/"
@@ -379,13 +379,13 @@ jobs:
           cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
-          cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
+          cp Resources/Icon.png "$PKG3/Applications/ReSign.app/Icon.png"
           cp Resources/jp.soh.reprovision.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
           cp Resources/jp.soh.reprovision.importdaemon.plist "$PKG3/Library/LaunchDaemons/"
           # v1.1.65：roothide 用专属 LaunchDaemon plist（带 _MSSafeMode=1/_SafeMode=1，
           # 否则 RootHide 运行时剥离 backboardd.launchapplications → SBSLaunch 返回 7）
           cp Resources/jp.soh.reprovision.signingd-roothide.plist "$PKG3/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
-          do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
+          do_sign "$PKG3/Applications/ReSign.app/ReSign" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
           do_sign "$PKG3/usr/libexec/repro-importdaemon" Resources/entitlements-importdaemon.plist
@@ -419,9 +419,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "RePro ${{ github.ref_name }}"
+          name: "ReSign ${{ github.ref_name }}"
           body: |
-            ## RePro ${{ github.ref_name }}
+            ## ReSign ${{ github.ref_name }}
             ### 安装包
             | 包 | 适用环境 |
             |---|---|
