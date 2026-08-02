@@ -12,7 +12,14 @@ struct LogView: View {
 
     var body: some View {
         NavigationView {
-            Group {
+            VStack(spacing: 0) {
+                // 固定区域：搜索栏 + 筛选标签（不在 List 内，宽度永远固定）
+                searchBar
+                    .padding(.top, 8)
+                filterChips
+                    .padding(.vertical, 8)
+
+                // 日志列表（或空状态）
                 if filteredLogs.isEmpty {
                     emptyLogContent
                 } else {
@@ -21,8 +28,8 @@ struct LogView: View {
             }
             .background(Color(.systemGroupedBackground))
             .scrollContentBackground(.hidden)
-            .navigationBarHidden(true) // 隐藏系统导航栏白底
-            .safeAreaInset(edge: .top) { statusBarHeader } // 固定顶部标题栏
+            .navigationBarHidden(true)
+            .safeAreaInset(edge: .top) { statusBarHeader }
             .alert("确认清空", isPresented: $showingClearAlert) {
                 Button("取消", role: .cancel) {}
                 Button("清空", role: .destructive) { LogManager.shared.clear() }
@@ -51,9 +58,10 @@ struct LogView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
-                    .font(.title2) // 加大，更容易点击
+                    .font(.system(size: 24)) // 大图标，易点击
                     .foregroundColor(.blue)
-                    .contentShape(Rectangle()) // 扩大热区
+                    .frame(width: 36, height: 36) // 扩大热区
+                    .contentShape(Rectangle())
             }
         }
         .padding(.horizontal, 16)
@@ -65,38 +73,7 @@ struct LogView: View {
         )
     }
 
-    // MARK: 日志列表（搜索栏+筛选栏在 Section header 内，解决点击问题）
-    private var logList: some View {
-        ScrollViewReader { proxy in
-            List {
-                Section {
-                    ForEach(filteredLogs.indices, id: \.self) { index in
-                        let entry = filteredLogs[index]
-                        LogEntryRow(entry: entry)
-                            .id(index)
-                            .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 16))
-                            .listRowBackground(Color.clear)
-                    }
-                } header: {
-                    // 搜索栏 + 筛选栏 → 作为 List Section header
-                    VStack(spacing: 10) {
-                        searchBar
-                            .padding(.horizontal, 16)
-                        filterChips
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 8)
-                    .padding(.bottom, 4)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                    .listRowBackground(Color(.systemGroupedBackground))
-                }
-            }
-            .scrollContentBackground(.hidden)
-            // 不再自动跳到底部，用户从顶部开始浏览
-        }
-    }
-
-    // MARK: 搜索栏（圆角卡片 + 淡边框，全宽固定）
+    // MARK: 搜索栏（全宽固定，绝不缩紧）
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -107,16 +84,17 @@ struct LogView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .frame(maxWidth: .infinity) // 全宽，不随内容缩紧
+        .frame(maxWidth: .infinity)
         .background(Color(.systemBackground))
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color(.separator).opacity(0.6), lineWidth: 0.5)
         )
+        .padding(.horizontal, 16)
     }
 
-    // MARK: 筛选标签组（横向排列，100% 可点击）
+    // MARK: 筛选标签组（横向排列，在固定 VStack 中不受 List 影响）
     private var filterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
@@ -159,34 +137,37 @@ struct LogView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: 日志列表（纯列表，不含搜索/筛选）
+    private var logList: some View {
+        List(filteredLogs.indices, id: \.self) { index in
+            let entry = filteredLogs[index]
+            LogEntryRow(entry: entry)
+                .id(index)
+                .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 16))
+                .listRowBackground(Color.clear)
+        }
+        .scrollContentBackground(.hidden)
+    }
+
     // MARK: 空状态
     private var emptyLogContent: some View {
-        VStack(spacing: 0) {
-            searchBar
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-            filterChips
-                .padding(.vertical, 8)
+        Spacer()
 
-            Spacer()
+        VStack(spacing: 14) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 44))
+                .foregroundColor(.secondary.opacity(0.6))
 
-            VStack(spacing: 14) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 44))
-                    .foregroundColor(.secondary.opacity(0.6))
+            Text("暂无日志")
+                .font(.headline)
+                .foregroundColor(.secondary)
 
-                Text("暂无日志")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
-
-                Text("应用运行记录将显示在此处")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary.opacity(0.7))
-            }
-
-            Spacer()
+            Text("应用运行记录将显示在此处")
+                .font(.subheadline)
+                .foregroundColor(.secondary.opacity(0.7))
         }
-        .background(Color(.systemGroupedBackground))
+
+        Spacer()
     }
 
     // MARK: 筛选后的日志
@@ -242,9 +223,7 @@ struct LogEntryRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            // 第一行：级别 + 时间 + 来源
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                // 级别圆点 + 名称
                 HStack(spacing: 4) {
                     Circle()
                         .fill(entry.level.color)
@@ -256,19 +235,16 @@ struct LogEntryRow: View {
 
                 Spacer()
 
-                // 时间
                 Text(formatTime(entry.timestamp))
                     .font(.caption2.monospacedDigit())
                     .foregroundColor(.secondary)
 
-                // 来源
                 Text(entry.source)
                     .font(.caption2)
                     .foregroundColor(.secondary.opacity(0.6))
                     .lineLimit(1)
             }
 
-            // 第二行：消息内容
             Text(entry.message)
                 .font(.subheadline)
                 .foregroundColor(.primary)
