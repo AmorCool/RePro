@@ -46,7 +46,6 @@
 #include <time.h>
 #include <signal.h>
 #include <dlfcn.h>
-#include <libproc.h>
 #import <Foundation/Foundation.h>
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
@@ -154,17 +153,17 @@ static NSString *s_read_self_entitlements_xml(void) {
 }
 
 /// 判断 daemon 实际跑在哪个 namespace（这是 RootHide 下 result=7 的决定性证据）：
-///   proc_pidpath 返回 /var/jb/usr/libexec/...     → jbroot namespace ❌（私有 entitlement 被剥离）
-///   proc_pidpath 返回 /usr/libexec/...            → rootfs 真实 namespace ✅（entitlement 保留）
+///   argv[0] = /var/jb/usr/libexec/...     → jbroot namespace ❌（私有 entitlement 被剥离）
+///   argv[0] = /usr/libexec/...            → rootfs 真实 namespace ✅（entitlement 保留）
+/// 注：libproc.h/proc_pidpath 是 macOS 专属，iOS SDK 没有，故用进程启动路径判断。
 static NSString *s_namespace_report(void) {
-    char path[PROC_PIDPATHINFO_MAXSIZE];
-    if (proc_pidpath(getpid(), path, sizeof(path)) > 0) {
-        NSString *p = [NSString stringWithUTF8String:path];
-        if ([p hasPrefix:@"/var/jb/"])
-            return [NSString stringWithFormat:@"jbroot namespace (路径=%@) ❌ 私有权限会被 RootHide 剥离", p];
-        return [NSString stringWithFormat:@"rootfs 真实 namespace (路径=%@) ✅ entitlement 应保留", p];
+    NSString *me = [[[NSProcessInfo processInfo] arguments] firstObject];
+    if (me.length) {
+        if ([me hasPrefix:@"/var/jb/"])
+            return [NSString stringWithFormat:@"jbroot namespace (启动路径=%@) ❌ 私有权限会被 RootHide 剥离", me];
+        return [NSString stringWithFormat:@"rootfs 真实 namespace (启动路径=%@) ✅ entitlement 应保留", me];
     }
-    return @"无法取得自身路径（proc_pidpath 失败）";
+    return @"无法取得自身启动路径";
 }
 
 /// 缓存的自检报告（进程内只算一次，每次触发都打印，避免重复 popen 刷屏）
