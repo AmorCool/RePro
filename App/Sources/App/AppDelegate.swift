@@ -46,7 +46,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             return true
         }
 
-        LogManager.shared.info("RePro 启动", source: "AppDelegate")
+        LogManager.shared.info("ReSign 启动", source: "AppDelegate")
 
         // 申请通知权限（仅正常启动路径；静默续签无 UI，不该弹系统授权窗）。
         // RootHide 下授权能否持久，取决于 RPVNotificationManager.m 里
@@ -121,7 +121,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         daemonResignInProgress = true
         // 提示横幅：用户中途打开 App 时，明确告知这是 daemon 后台续签、无需操作
         ResignProgress.shared.show(
-            title: "RePro 后台自动续签",
+            title: "ReSign 后台自动续签",
             message: "Daemon 后台自动续签流程已开始，无需任何操作！请勿杀掉后台，但您可以退出此程序。"
         )
         DaemonLogStart(DaemonLogDefaultPath())
@@ -212,10 +212,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let title: String
         let body: String
         if success {
-            title = isDaemon ? "RePro 后台续签完成" : "RePro 续签完成"
+            title = isDaemon ? "ReSign 后台续签完成" : "ReSign 续签完成"
             body  = isDaemon ? "后台自动续签已成功完成" : "应用续签已成功完成"
         } else {
-            title = isDaemon ? "RePro 后台续签失败" : "RePro 续签失败"
+            title = isDaemon ? "ReSign 后台续签失败" : "ReSign 续签失败"
             body  = errorText.isEmpty ? "未知错误" : errorText
         }
         RPVNotificationManager.sharedInstance().sendNotification(title: title, body: body, isDebug: false, identifier: nil)
@@ -262,7 +262,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let started = Date()
         DaemonLogStart(DaemonLogDefaultPath())
         // 前台手动续签也给出进度提示，避免界面看似无响应
-        ResignProgress.shared.show(title: "RePro 正在重签", message: "正在检查并重签即将到期的应用…")
+        ResignProgress.shared.show(title: "ReSign 正在重签", message: "正在检查并重签即将到期的应用…")
         LogManager.shared.info("══════ 自动续签（阈值 \(threshold) 天）══════", source: "AppDelegate")
 
         BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in

@@ -256,7 +256,7 @@ final class BridgeClient: ObservableObject {
             if let info = info {
                 completion(.success(InstalledApp(info: info)))
             } else {
-                completion(.failure(error ?? ReProError.invalidIPA))
+                completion(.failure(error ?? ReSignError.invalidIPA))
             }
         }
     }
@@ -289,7 +289,7 @@ final class BridgeClient: ObservableObject {
             if let appIds = appIds {
                 completion(.success(appIds.map { RegisteredAppID(from: $0) }))
             } else {
-                completion(.failure(error ?? ReProError.notSignedIn))
+                completion(.failure(error ?? ReSignError.notSignedIn))
             }
         }
     }
@@ -301,7 +301,7 @@ final class BridgeClient: ObservableObject {
             if let certs = certs {
                 completion(.success(certs.map { DevCertificate(from: $0) }))
             } else {
-                completion(.failure(error ?? ReProError.notSignedIn))
+                completion(.failure(error ?? ReSignError.notSignedIn))
             }
         }
     }

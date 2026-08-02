@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""重新生成 RePro.xcodeproj/project.pbxproj。
+"""重新生成 ReSign.xcodeproj/project.pbxproj。
 
 为什么要用脚本生成而不是手工维护：
   之前手工维护的 pbxproj 出现了四类致命损坏——
@@ -24,12 +24,12 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 # 工程基本信息
 # ---------------------------------------------------------------------------
-TARGET_NAME = "RePro"
+TARGET_NAME = "ReSign"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.67"
+MARKETING_VERSION = "1.1.75"
 CURRENT_PROJECT_VERSION = "57"
 DEPLOYMENT_TARGET = "15.0"
-BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
+BRIDGING_HEADER = "App/Sources/Bridge/ReSign-Bridging-Header.h"
 ENTITLEMENTS = "Resources/entitlements-base.plist"
 # 使用实际 Info.plist 文件（而非 Xcode 自动生成），以便包含
 # SBAppUsesLocalNotifications 等非标准键（test2/ReProvision-Reborn 已验证必需）。
@@ -292,8 +292,8 @@ def build():
 
     # ---------------- PBXFileReference ----------------
     out.append("/* Begin PBXFileReference section */")
-    out.append('\t\t%s /* RePro.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RePro.app; sourceTree = BUILT_PRODUCTS_DIR; };'
-               % uid("product", "RePro.app"))
+    out.append('\t\t%s /* ReSign.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReSign.app; sourceTree = BUILT_PRODUCTS_DIR; };'
+               % uid("product", "ReSign.app"))
     for path in sorted(set(compiled + plain_refs)):
         out.append("\t\t%s /* %s */ = {isa = PBXFileReference; lastKnownFileType = %s; path = %s; sourceTree = \"<group>\"; };"
                    % (uid("fileref", path), os.path.basename(path), file_type(path), q(os.path.basename(path))))
@@ -339,7 +339,7 @@ def build():
     out.append("")
 
     # ---------------- PBXGroup ----------------
-    root = Group("RePro")
+    root = Group("ReSign")
     for path in sorted(set(compiled + plain_refs)):
         add_to_tree(root, path, uid("fileref", path))
     # Localizable.strings 以 variant group 的形式挂在 App/Sources/Resources 下
@@ -410,7 +410,7 @@ def build():
     group_lines.append("\t\t%s /* Products */ = {" % products_uid)
     group_lines.append("\t\t\tisa = PBXGroup;")
     group_lines.append("\t\t\tchildren = (")
-    group_lines.append("\t\t\t\t%s /* RePro.app */," % uid("product", "RePro.app"))
+    group_lines.append("\t\t\t\t%s /* ReSign.app */," % uid("product", "ReSign.app"))
     group_lines.append("\t\t\t);")
     group_lines.append("\t\t\tname = Products;")
     group_lines.append('\t\t\tsourceTree = "<group>";')
@@ -452,7 +452,7 @@ def build():
     out.append("\t\t\t);")
     out.append("\t\t\tname = %s;" % TARGET_NAME)
     out.append("\t\t\tproductName = %s;" % TARGET_NAME)
-    out.append("\t\t\tproductReference = %s /* RePro.app */;" % uid("product", "RePro.app"))
+    out.append("\t\t\tproductReference = %s /* ReSign.app */;" % uid("product", "ReSign.app"))
     out.append('\t\t\tproductType = "com.apple.product-type.application";')
     out.append("\t\t};")
     out.append("/* End PBXNativeTarget section */")

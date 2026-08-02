@@ -4,7 +4,7 @@
 <dict>
 	<!-- 基本标识 -->
 	<key>CFBundleDisplayName</key>
-	<string>RePro</string>
+	<string>ReSign</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

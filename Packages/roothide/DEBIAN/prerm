@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# RePro RootHide 包 prerm
+# ReSign RootHide 包 prerm
 # 停止 profiledaemon（卸载前必须先 unload，否则二进制被删后 launchd 会报错）
 
-echo "[RePro] RootHide prerm 开始 $(date)"
+echo "[ReSign] RootHide prerm 开始 $(date)"
 
 # 停止 profiledaemon LaunchDaemon
 for c in /bin/launchctl /usr/bin/launchctl; do
@@ -18,7 +18,7 @@ for c in /bin/launchctl /usr/bin/launchctl; do
 done
 pkill -x repro-profiledaemon 2>/dev/null || true
 pkill -x repro-signingd 2>/dev/null || true
-echo "[RePro] profiledaemon / signingd 已停止"
+echo "[ReSign] profiledaemon / signingd 已停止"
 
 # 清理残留数据
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true
@@ -26,7 +26,7 @@ rm -rf /var/mobile/Library/ReProvision 2>/dev/null || true
 rm -f /var/mobile/Documents/ReProvisionDebug.txt 2>/dev/null || true
 rm -rf /tmp/reprovision_*.log 2>/dev/null || true
 rm -rf /var/mobile/Library/RePro 2>/dev/null || true
-echo "[RePro] 残留数据已清理"
+echo "[ReSign] 残留数据已清理"
 
-echo "[RePro] RootHide prerm 完成 $(date)"
+echo "[ReSign] RootHide prerm 完成 $(date)"
 exit 0

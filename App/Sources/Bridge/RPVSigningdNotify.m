@@ -33,19 +33,19 @@
         &_token,
         dispatch_get_main_queue(),
         ^(int unused) {
-            NSLog(@"[RePro] 收到 repro-signingd 续签信号");
+            NSLog(@"[ReSign] 收到 repro-signingd 续签信号");
 
             // 读共享配置确认自动续签仍开启
             NSString *configPath = @"/var/mobile/Library/RePro/signingd-config.plist";
             NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:configPath];
             if (cfg && ![cfg[@"autoResign"] boolValue]) {
-                NSLog(@"[RePro] 自动续签已关闭，跳过");
+                NSLog(@"[ReSign] 自动续签已关闭，跳过");
                 return;
             }
 
             // App 在前台时直接触发
             if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
-                NSLog(@"[RePro] App 在前台，直接触发自动续签");
+                NSLog(@"[ReSign] App 在前台，直接触发自动续签");
 
                 NSString *ts = [NSString stringWithFormat:@"%lld", (long long)time(NULL)];
                 NSString *triggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";

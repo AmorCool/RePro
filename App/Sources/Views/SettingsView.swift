@@ -317,7 +317,7 @@ struct SettingsView: View {
             Text("签名后端")
         } footer: {
             Text(zsignPath == nil
-                 ? "未检测到 zsign，重签会失败。请确认 RePro 是通过 Sileo/Zebra 安装的（deb 会一并安装 zsign）。"
+                 ? "未检测到 zsign，重签会失败。请确认 ReSign 是通过 Sileo/Zebra 安装的（deb 会一并安装 zsign）。"
                  : "zsign 以独立进程运行，签名结果与原版 ReProvision 一致。")
         }
     }

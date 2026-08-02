@@ -119,9 +119,9 @@ struct LogEntry: Identifiable, Codable, Equatable {
     let source: String
 }
 
-// MARK: - RePro 错误类型
+// MARK: - ReSign 错误类型
 
-enum ReProError: LocalizedError {
+enum ReSignError: LocalizedError {
     case notSignedIn
     case busy
     case appNotFound

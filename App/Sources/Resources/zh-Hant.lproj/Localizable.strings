@@ -1,8 +1,8 @@
 // Localizable.strings (zh-Hant) - placeholder for future i18n
-// RePro - 繁體中文語言資源
+// ReSign - 繁體中文語言資源
 // 此檔案為預留位置，待翻譯時填入內容。
 
-"app.name" = "RePro";
+"app.name" = "ReSign";
 "common.confirm" = "確定";
 "common.cancel" = "取消";
 "common.save" = "儲存";
@@ -23,7 +23,7 @@
 "common.refresh" = "重新整理";
 "common.none" = "無";
 
-"main.title" = "RePro";
+"main.title" = "ReSign";
 "main.tab.apps" = "應用程式";
 "main.tab.settings" = "設定";
 "main.tab.logs" = "日誌";

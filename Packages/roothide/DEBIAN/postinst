@@ -84,7 +84,7 @@ if [ -f "$ZSIGN" ]; then
 fi
 
 # App 二进制权限
-APP_BIN="/Applications/RePro.app/RePro"
+APP_BIN="/Applications/ReSign.app/ReSign"
 if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
 fi
@@ -177,7 +177,7 @@ for c in /usr/bin/uicache /bin/uicache; do
 	if [ -x "$c" ]; then UICACHE="$c"; break; fi
 done
 if [ -n "$UICACHE" ]; then
-	"$UICACHE" -p "/Applications/RePro.app" 2>/dev/null || "$UICACHE" -a 2>/dev/null || true
+	"$UICACHE" -p "/Applications/ReSign.app" 2>/dev/null || "$UICACHE" -a 2>/dev/null || true
 fi
 
 echo "Do, or do not. There is no try."

@@ -147,7 +147,7 @@ HOOK_MESSAGE(id, UNUserNotificationCenter, initWithBundleIdentifier_, NSString *
     }
 
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
-    content.title = title ?: @"RePro";
+    content.title = title ?: @"ReSign";
     content.body  = body ?: @"";
     content.sound = nil;
 

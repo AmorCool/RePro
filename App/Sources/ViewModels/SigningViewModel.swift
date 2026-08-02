@@ -189,7 +189,7 @@ final class SigningViewModel: ObservableObject {
     /// 桥接层同一时间只跑一条流水线，这里先在 UI 层挡一道，减少无谓的报错弹窗
     private func beginWork(_ message: String) -> Bool {
         guard !isBusy else {
-            lastError = ReProError.busy.errorDescription
+            lastError = ReSignError.busy.errorDescription
             return false
         }
         isBusy = true

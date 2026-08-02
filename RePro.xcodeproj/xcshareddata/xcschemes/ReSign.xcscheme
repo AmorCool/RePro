@@ -15,8 +15,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "AA00010024AABBCC0001"
-               BuildableName = "RePro.app"
-               BlueprintName = "RePro"
+               BuildableName = "ReSign.app"
+               BlueprintName = "ReSign"
                ReferencedContainer = "container:RePro.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -45,8 +45,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "AA00010024AABBCC0001"
-            BuildableName = "RePro.app"
-            BlueprintName = "RePro"
+            BuildableName = "ReSign.app"
+            BlueprintName = "ReSign"
             ReferencedContainer = "container:RePro.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -62,8 +62,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "AA00010024AABBCC0001"
-            BuildableName = "RePro.app"
-            BlueprintName = "RePro"
+            BuildableName = "ReSign.app"
+            BlueprintName = "ReSign"
             ReferencedContainer = "container:RePro.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

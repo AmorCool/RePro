@@ -55,7 +55,7 @@ if [ -f "$ZSIGN_BIN" ]; then
 fi
 
 # App 二进制权限
-APP_BIN="${JB_PREFIX}/Applications/RePro.app/RePro"
+APP_BIN="${JB_PREFIX}/Applications/ReSign.app/ReSign"
 if [ -f "$APP_BIN" ]; then
 	chmod 0755 "$APP_BIN" 2>/dev/null || true
 fi
@@ -67,7 +67,7 @@ for c in "/usr/bin/uicache" "/bin/uicache"; do
 	if [ -x "$c" ]; then UICACHE="$c"; break; fi
 done
 if [ -n "$UICACHE" ]; then
-	"$UICACHE" -p "/Applications/RePro.app" || "$UICACHE" -a || true
+	"$UICACHE" -p "/Applications/ReSign.app" || "$UICACHE" -a || true
 fi
 
 # 加载后台定时续签守护进程

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ReProApp: App {
+struct ReSignApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

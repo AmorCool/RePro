@@ -1,8 +1,8 @@
 // Localizable.strings (en) - placeholder for future i18n
-// RePro - English Language Resource
+// ReSign - English Language Resource
 // This file is a placeholder. Add translations when ready.
 
-"app.name" = "RePro";
+"app.name" = "ReSign";
 "common.confirm" = "Confirm";
 "common.cancel" = "Cancel";
 "common.save" = "Save";
@@ -23,7 +23,7 @@
 "common.refresh" = "Refresh";
 "common.none" = "None";
 
-"main.title" = "RePro";
+"main.title" = "ReSign";
 "main.tab.apps" = "Apps";
 "main.tab.settings" = "Settings";
 "main.tab.logs" = "Logs";

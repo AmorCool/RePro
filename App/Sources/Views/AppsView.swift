@@ -65,7 +65,7 @@ struct AppsView: View {
                     appList
                 }
             }
-            .navigationTitle("RePro")
+            .navigationTitle("ReSign")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {

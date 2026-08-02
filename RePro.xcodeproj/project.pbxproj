@@ -8,7 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		9A1AAA60B5E95B11F1482B50 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EF709B8D17039306D13F7A /* AppDelegate.swift */; };
-		4F071F785CD4A7ADBE8B10E0 /* ReProApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F293EE903A0670E4278C97D /* ReProApp.swift */; };
+		4F071F785CD4A7ADBE8B10E0 /* ReSignApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F293EE903A0670E4278C97D /* ReSignApp.swift */; };
 		67DEC794B195848F4B60F626 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F8AD34D8C3FF38703EB773 /* Models.swift */; };
 		63C3D437F87F801F94385A10 /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 167DCA5FD4A0E6F0FDF986F1 /* BridgeClient.swift */; };
 		22C0315B414EC18F3129292C /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3599E52AE1025AB1D1B6F3E9 /* LogManager.swift */; };
@@ -120,14 +120,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		89690C7DD5A5C3F656E0ECEC /* RePro.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RePro.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		89690C7DD5A5C3F656E0ECEC /* ReSign.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReSign.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1EF709B8D17039306D13F7A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		230D5E9A8ABB2372DA4F1B0C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		6F293EE903A0670E4278C97D /* ReProApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReProApp.swift; sourceTree = "<group>"; };
+		6F293EE903A0670E4278C97D /* ReSignApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReSignApp.swift; sourceTree = "<group>"; };
 		E41CBEADB49229C1F285A8B2 /* RPVBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RPVBridge.h; sourceTree = "<group>"; };
 		92147DABB7FDBBB5791C8C09 /* RPVBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RPVBridge.m; sourceTree = "<group>"; };
 		E4109D70C9989105A6BC2C20 /* RPVSigningdNotify.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RPVSigningdNotify.m; sourceTree = "<group>"; };
-		335D10E1A27817A262DCB7F4 /* RePro-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "RePro-Bridging-Header.h"; sourceTree = "<group>"; };
+		335D10E1A27817A262DCB7F4 /* ReSign-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ReSign-Bridging-Header.h"; sourceTree = "<group>"; };
 		50F8AD34D8C3FF38703EB773 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		1686B0CAB93F8A28AAD54BA2 /* HookUtil.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = HookUtil.c; sourceTree = "<group>"; };
 		C29D3C3C4B36DEE56CD50F05 /* HookUtil.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HookUtil.h; sourceTree = "<group>"; };
@@ -448,7 +448,7 @@
 			children = (
 				C1EF709B8D17039306D13F7A /* AppDelegate.swift */,
 				230D5E9A8ABB2372DA4F1B0C /* Assets.xcassets */,
-				6F293EE903A0670E4278C97D /* ReProApp.swift */,
+				6F293EE903A0670E4278C97D /* ReSignApp.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -459,7 +459,7 @@
 				E41CBEADB49229C1F285A8B2 /* RPVBridge.h */,
 				92147DABB7FDBBB5791C8C09 /* RPVBridge.m */,
 				E4109D70C9989105A6BC2C20 /* RPVSigningdNotify.m */,
-				335D10E1A27817A262DCB7F4 /* RePro-Bridging-Header.h */,
+				335D10E1A27817A262DCB7F4 /* ReSign-Bridging-Header.h */,
 			);
 			path = Bridge;
 			sourceTree = "<group>";
@@ -994,7 +994,7 @@
 		C863DA5204F95EC573510473 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				89690C7DD5A5C3F656E0ECEC /* RePro.app */,
+				89690C7DD5A5C3F656E0ECEC /* ReSign.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1013,7 +1013,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		D6709F85E95C6C82A39CBD4A /* RePro */ = {
+		D6709F85E95C6C82A39CBD4A /* ReSign */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 88A9556C78F4D881C352E222 /* Build configuration list for PBXNativeTarget "RePro" */;
 			buildPhases = (
@@ -1025,9 +1025,9 @@
 			);
 			dependencies = (
 			);
-			name = RePro;
-			productName = RePro;
-			productReference = 89690C7DD5A5C3F656E0ECEC /* RePro.app */;
+			name = ReSign;
+			productName = ReSign;
+			productReference = 89690C7DD5A5C3F656E0ECEC /* ReSign.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -1086,7 +1086,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9A1AAA60B5E95B11F1482B50 /* AppDelegate.swift in Sources */,
-				4F071F785CD4A7ADBE8B10E0 /* ReProApp.swift in Sources */,
+				4F071F785CD4A7ADBE8B10E0 /* ReSignApp.swift in Sources */,
 				67DEC794B195848F4B60F626 /* Models.swift in Sources */,
 				63C3D437F87F801F94385A10 /* BridgeClient.swift in Sources */,
 				22C0315B414EC18F3129292C /* LogManager.swift in Sources */,
@@ -1318,7 +1318,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.74;
+				MARKETING_VERSION = 1.1.75;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1330,7 +1330,7 @@
 				SUPPORTED_PLATFORMS = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "App/Sources/Bridge/ReSign-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1376,7 +1376,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.74;
+				MARKETING_VERSION = 1.1.75;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1388,7 +1388,7 @@
 				SUPPORTED_PLATFORMS = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "App/Sources/Bridge/ReSign-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1397,7 +1397,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		887D4B5F61EA6AAAF609F3AC /* Build configuration list for PBXProject "RePro" */ = {
+		887D4B5F61EA6AAAF609F3AC /* Build configuration list for PBXProject "ReSign" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BCB7915913CB7907D5023294 /* Debug */,
@@ -1406,7 +1406,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		88A9556C78F4D881C352E222 /* Build configuration list for PBXNativeTarget "RePro" */ = {
+		88A9556C78F4D881C352E222 /* Build configuration list for PBXNativeTarget "ReSign" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				C78DF93CD294D3F592B8C211 /* Debug */,

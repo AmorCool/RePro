@@ -680,7 +680,7 @@ static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
                   regPid);
         } else {
             s_log(@"   ⚠️ App 未注册到 SpringBoard（SBSProcessID 返回 NO）。"
-                  @"→ 根因是 uicache 注册问题，不是权限。请在 App 内或终端执行 uicache -p /Applications/RePro.app 后重试。");
+                  @"→ 根因是 uicache 注册问题，不是权限。请在 App 内或终端执行 uicache -p /Applications/ReSign.app 后重试。");
         }
     }
 
@@ -1016,7 +1016,7 @@ static void s_onSigningComplete(void) {
 // 让用户能一眼判断「到底有没有真的续签」，不用去猜日志。
 
 static int s_printStatus(void) {
-    printf("═══════════ RePro 续签守护进程状态 ═══════════\n");
+    printf("═══════════ ReSign 续签守护进程状态 ═══════════\n");
 
     // 0. 自身 entitlement + namespace 自检（最关键的权限证据）
     s_report_self_entitlements();

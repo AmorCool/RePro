@@ -297,7 +297,7 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 
 static void RPVHelperPrintUsage(void) {
     fprintf(stderr,
-            "repro-helper —— RePro 按需 root 助手\n"
+            "repro-helper —— ReSign 按需 root 助手\n"
             "用法:\n"
             "  repro-helper copy <源路径> <目标路径>\n"
             "  repro-helper install-profile <描述文件路径>\n");

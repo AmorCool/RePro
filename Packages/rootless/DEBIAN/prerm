@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# RePro Dopamine/rootless 包 prerm
+# ReSign Dopamine/rootless 包 prerm
 # 停止后台定时续签守护进程，清理残留数据。
 
-echo "[RePro] rootless prerm 开始 $(date)"
+echo "[ReSign] rootless prerm 开始 $(date)"
 
 JB_PREFIX="/var/jb"
 
@@ -23,7 +23,7 @@ rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true
 rm -rf /var/mobile/Library/ReProvision 2>/dev/null || true
 rm -f /var/mobile/Documents/ReProvisionDebug.txt 2>/dev/null || true
 rm -rf /tmp/reprovision_*.log 2>/dev/null || true
-echo "[RePro] 残留数据已清理"
+echo "[ReSign] 残留数据已清理"
 
-echo "[RePro] rootless prerm 完成 $(date)"
+echo "[ReSign] rootless prerm 完成 $(date)"
 exit 0
