@@ -26,11 +26,14 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "RePro"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.57"
-CURRENT_PROJECT_VERSION = "48"
+MARKETING_VERSION = "1.1.58"
+CURRENT_PROJECT_VERSION = "49"
 DEPLOYMENT_TARGET = "15.0"
 BRIDGING_HEADER = "App/Sources/Bridge/RePro-Bridging-Header.h"
 ENTITLEMENTS = "Resources/entitlements-base.plist"
+# 使用实际 Info.plist 文件（而非 Xcode 自动生成），以便包含
+# SBAppUsesLocalNotifications 等非标准键（test2/ReProvision-Reborn 已验证必需）。
+INFOPLIST_FILE = "App/Info.plist"
 
 # ldid.old.cpp 是 ldid 的旧版副本，原项目 iOS target 同样没有编译它。
 EXCLUDED_SOURCES = {"ldid.old.cpp"}
@@ -592,17 +595,9 @@ def build():
             ("CURRENT_PROJECT_VERSION", CURRENT_PROJECT_VERSION),
             ("DEVELOPMENT_TEAM", '""'),
             ("ENABLE_BITCODE", "NO"),
-            ("GENERATE_INFOPLIST_FILE", "YES"),
+            ("GENERATE_INFOPLIST_FILE", "NO"),
+            ("INFOPLIST_FILE", '"$(SRCROOT)/%s"' % INFOPLIST_FILE),
             ("HEADER_SEARCH_PATHS", "(\n%s\n\t\t\t\t)" % "\n".join("\t\t\t\t\t%s," % p for p in header_paths)),
-            ("INFOPLIST_KEY_CFBundleDisplayName", '"RePro"'),
-            ("INFOPLIST_KEY_UIApplicationSceneManifest_Generation", "YES"),
-            ("INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents", "YES"),
-            ("INFOPLIST_KEY_UIFileSharingEnabled", "YES"),
-            ("INFOPLIST_KEY_UILaunchScreen_Generation", "YES"),
-            ("INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad",
-             '"UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"'),
-            ("INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone",
-             '"UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"'),
             ("LD_RUNPATH_SEARCH_PATHS", '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/Frameworks",\n\t\t\t\t)'),
             ("LIBRARY_SEARCH_PATHS", '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"$(OPENSSL_ROOT)/lib",\n\t\t\t\t)'),
             ("MARKETING_VERSION", MARKETING_VERSION),

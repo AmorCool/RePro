@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 基本标识 -->
+	<key>CFBundleDisplayName</key>
+	<string>RePro</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+
+	<!-- 启动界面（Xcode 自动生成） -->
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+
+	<!-- 设备方向 -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<!-- 文件共享 -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+
+	<!-- 间接输入事件（键盘/手写笔等） -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!-- ⭐ 关键修复：声明使用本地通知（SpringBoard 专用键） -->
+	<!-- test2 (ReProvision-Reborn) 的 Info.plist 包含此键。
+	     缺失时 SpringBoard 可能无法正确管理 App 的通知授权状态，
+	     在 RootHide namespace 隔离环境下尤其容易导致授权不持久、反复弹窗。 -->
+	<key>SBAppUsesLocalNotifications</key>
+	<true/>
+
+	<!-- ⭐ 关键修复：后台模式（与 test2 一致） -->
+	<!-- continuous：允许持续后台运行（签名过程可能需要较长时间）
+	     unboundedTaskCompletion：允许无界后台任务完成
+	     这两个模式对 RootHide 下的通知持久化也有帮助，
+	     因为通知授权的确认/存储可能在后台完成。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>continuous</string>
+		<string>unboundedTaskCompletion</string>
+	</array>
+
+	<!-- 最小设备要求（arm64e 设备） -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+</dict>
+</plist>

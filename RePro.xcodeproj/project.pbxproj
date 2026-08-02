@@ -1286,10 +1286,11 @@
 				CODE_SIGN_ENTITLEMENTS = Resources/entitlements-base.plist;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 48;
+				CURRENT_PROJECT_VERSION = 49;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(SRCROOT)/App/Info.plist";
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/Vendor/ReProvision",
@@ -1309,13 +1310,6 @@
 					"$(SRCROOT)/App/Sources/Notifications",
 					"$(OPENSSL_ROOT)/include",
 				);
-				INFOPLIST_KEY_CFBundleDisplayName = "RePro";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UIFileSharingEnabled = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1324,7 +1318,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.57;
+				MARKETING_VERSION = 1.1.58;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1350,10 +1344,11 @@
 				CODE_SIGN_ENTITLEMENTS = Resources/entitlements-base.plist;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 48;
+				CURRENT_PROJECT_VERSION = 49;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_BITCODE = NO;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(SRCROOT)/App/Info.plist";
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/Vendor/ReProvision",
@@ -1373,13 +1368,6 @@
 					"$(SRCROOT)/App/Sources/Notifications",
 					"$(OPENSSL_ROOT)/include",
 				);
-				INFOPLIST_KEY_CFBundleDisplayName = "RePro";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UIFileSharingEnabled = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1388,7 +1376,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.57;
+				MARKETING_VERSION = 1.1.58;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",

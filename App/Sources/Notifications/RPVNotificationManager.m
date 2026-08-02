@@ -32,16 +32,31 @@ NSString *const RPVNotificationsDebugKey   = @"notificationsDebug";
 // HOOK_MESSAGE 由 HookUtil.h 提供，__attribute__((constructor)) 在 main() 之前
 // 自动安装，无需手工调用。方法名里的 '_' 代表 ':'。
 //
+// v1.1.58 修复：增加诊断日志（RPVDiagnostic），因为 Release 模式下 HookUtil.c
+// 内部的 _Log 宏被编译为空操作（仅 DEBUG 生效），无法确认 Hook 是否真正触发。
+//
 HOOK_MESSAGE(id, UNUserNotificationCenter, initWithBundleIdentifier_, NSString *bundleID) {
+    NSString *realBundleID = [[NSBundle mainBundle] bundleIdentifier];
+    RPVDiagnostic(RPVDiagInfo, @"通知Hook",
+                  @"[通知Hook] 触发! 入参 bundleID=%@, 真实 mainBundle.bundleID=%@",
+                  bundleID ?: @"(nil)", realBundleID ?: @"(nil)");
+
     if (!bundleID) {
-        bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        bundleID = realBundleID;
+        RPVDiagnostic(RPVDiagInfo, @"通知Hook",
+                      @"[通知Hook] 入参为 nil，回退到 mainBundle: %@", bundleID);
     }
 
     id result;
     @try {
         result = _UNUserNotificationCenter_initWithBundleIdentifier_(self, sel, bundleID);
+        RPVDiagnostic(RPVDiagInfo, @"通知Hook",
+                      @"[通知Hook] initWithBundleIdentifier 成功: %@", bundleID);
     } @catch (NSException *e) {
-        result = _UNUserNotificationCenter_initWithBundleIdentifier_(self, sel, [[NSBundle mainBundle] bundleIdentifier]);
+        RPVDiagnostic(RPVDiagWarning, @"通知Hook",
+                      @"[通知Hook] initWithBundleIdentifier(@@) 异常: %@，用真实 ID 重试",
+                      bundleID, e.reason);
+        result = _UNUserNotificationCenter_initWithBundleIdentifier_(self, sel, realBundleID);
     }
 
     return result;
@@ -75,16 +90,29 @@ HOOK_MESSAGE(id, UNUserNotificationCenter, initWithBundleIdentifier_, NSString *
     UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
     center.delegate = self;
 
-    // 与原版保持一致：只申请横幅，不要角标和声音。
-    [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
-                          completionHandler:^(BOOL granted, NSError *_Nullable error) {
-        if (error) {
-            RPVDiagnostic(RPVDiagWarning, @"通知", @"申请通知权限出错: %@", error.localizedDescription);
-        } else if (!granted) {
-            RPVDiagnostic(RPVDiagWarning, @"通知", @"用户未授予通知权限，续签结果将不会以横幅提示");
-        } else {
-            RPVDiagnostic(RPVDiagInfo, @"通知", @"通知权限已授予");
+    // 先查询当前状态再决定是否弹窗（避免 RootHide 下反复弹）
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        NSInteger status = (NSInteger)settings.authorizationStatus;
+        RPVDiagnostic(RPVDiagInfo, @"通知",
+                      @"[通知] 当前授权状态: %ld (0=未定 1=拒绝 2=已授权 3=临时 4=摘要)",
+                      (long)status);
+
+        if (status == UNAuthorizationStatusAuthorized) {
+            RPVDiagnostic(RPVDiagInfo, @"通知", @"[通知] 已授权，跳过重复申请");
+            return;
         }
+
+        // 与原版保持一致：只申请横幅，不要角标和声音。
+        [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+                              completionHandler:^(BOOL granted, NSError *_Nullable error) {
+            if (error) {
+                RPVDiagnostic(RPVDiagWarning, @"通知", @"申请通知权限出错: %@", error.localizedDescription);
+            } else if (!granted) {
+                RPVDiagnostic(RPVDiagWarning, @"通知", @"用户未授予通知权限，续签结果将不会以横幅提示");
+            } else {
+                RPVDiagnostic(RPVDiagInfo, @"通知", @"通知权限已授予");
+            }
+        }];
     }];
 }
 
