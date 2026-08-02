@@ -239,7 +239,8 @@ static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
     void *ioKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
     if (!ioKit) { s_log(@"无法加载 IOKit"); return NO; }
 
-    typedef IOReturn (*IOPMSchedFn)(CFDateRef, CFStringRef, CFStringRef);
+    // IOReturn 本质是 int32_t，不链接 IOKit 框架时需手动声明
+    typedef int (*IOPMSchedFn)(CFDateRef, CFStringRef, CFStringRef);
     IOPMSchedFn schedFn = (IOPMSchedFn)dlsym(ioKit, "IOPMSchedulePowerEvent");
     if (!schedFn) {
         s_log(@"无法找到 IOPMSchedulePowerEvent");
@@ -248,16 +249,16 @@ static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
     }
 
     NSDate *wakeDate = [NSDate dateWithTimeIntervalSinceNow:secondsFromNow];
-    IOReturn ret = schedFn((__bridge CFDateRef)wakeDate,
-                           CFSTR("jp.soh.reprovision.signingd"),
-                           CFSTR("AutoWakeOrPowerOn"));
+    int ret = schedFn((__bridge CFDateRef)wakeDate,
+                       CFSTR("jp.soh.reprovision.signingd"),
+                       CFSTR("AutoWakeOrPowerOn"));
     dlclose(ioKit);
 
     if (ret == 0) {
         s_log(@"已设置系统级唤醒 — %.0f 秒后 (%@)", secondsFromNow, wakeDate);
         return YES;
     } else {
-        s_log(@"系统级唤醒设置失败 (IOReturn=0x%x)", (unsigned int)ret);
+        s_log(@"系统级唤醒设置失败 (ret=%d)", ret);
         return NO;
     }
 }
