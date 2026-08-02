@@ -55,7 +55,8 @@ struct MainView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 16)   // 与顶栏a刷新图标同X轴对齐
+        .padding(.trailing, 12)
         .padding(.vertical, 8)
         .background(Color(.systemOrange).opacity(0.12))
         .overlay(alignment: .bottom) { Divider() }

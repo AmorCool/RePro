@@ -90,21 +90,39 @@ final class SigningViewModel: ObservableObject {
         guard beginWork("正在导入 \(url.lastPathComponent)…") else { return }
         LogManager.shared.info("导入 IPA: \(url.lastPathComponent)", source: "SigningViewModel")
 
-        client.importIPA(url: url) { [weak self] result in
+        autoRevokeBeforeSigning { [weak self] in
             guard let self = self else { return }
-            switch result {
-            case .success(let app):
-                LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                self.endWork(message: "\(app.displayName) 安装完成")
-            case .failure(let error):
-                LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
-                self.endWork(message: "导入失败", error: error)
+            self.client.importIPA(url: url) { result in
+                switch result {
+                case .success(let app):
+                    LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                    self.endWork(message: "\(app.displayName) 安装完成")
+                case .failure(let error):
+                    LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
+                    self.endWork(message: "导入失败", error: error)
+                }
+                Task { await self.refreshApps() }
             }
-            Task { await self.refreshApps() }
         }
     }
 
     // MARK: - 重签
+
+    /// 签名前自动撤销所有旧证书，防止 "You already have a current Development certificate
+    /// or a pending certificate request" 报错（Apple 同一账户同一时间只允许有限数量的开发证书）。
+    private func autoRevokeBeforeSigning(completion: @escaping () -> Void) {
+        LogManager.shared.info("自动撤销旧证书（防 CSR 冲突）…", source: "SigningViewModel")
+        client.revokeAllCertificates { [weak self] result in
+            if case .failure(let error) = result {
+                // 撤销失败不阻断签名——可能本来就没有旧证书
+                LogManager.shared.warning("自动撤销证书跳过: \(error.localizedDescription)",
+                                          source: "SigningViewModel")
+            } else {
+                LogManager.shared.info("旧证书已撤销，开始签名", source: "SigningViewModel")
+            }
+            completion()
+        }
+    }
 
     func resign(app: InstalledApp) {
         guard !app.isSigning else { return }
@@ -113,19 +131,22 @@ final class SigningViewModel: ObservableObject {
         markSigning(true, for: app.bundleIdentifier)
         LogManager.shared.info("开始重签: \(app.bundleIdentifier)", source: "SigningViewModel")
 
-        client.resign(bundleID: app.bundleIdentifier) { [weak self] result in
+        autoRevokeBeforeSigning { [weak self] in
             guard let self = self else { return }
-            self.markSigning(false, for: app.bundleIdentifier)
-            switch result {
-            case .success:
-                LogManager.shared.info("重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                self.endWork(message: "签名完成")
-            case .failure(let error):
-                LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
-                                        source: "SigningViewModel")
-                self.endWork(message: "签名失败", error: error)
+            self.client.resign(bundleID: app.bundleIdentifier) { result in
+                guard let self = self else { return }
+                self.markSigning(false, for: app.bundleIdentifier)
+                switch result {
+                case .success:
+                    LogManager.shared.info("重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                    self.endWork(message: "签名完成")
+                case .failure(let error):
+                    LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
+                                            source: "SigningViewModel")
+                    self.endWork(message: "签名失败", error: error)
+                }
+                Task { await self.refreshApps() }
             }
-            Task { await self.refreshApps() }
         }
     }
 
@@ -136,17 +157,19 @@ final class SigningViewModel: ObservableObject {
 
         LogManager.shared.info("开始批量重签（阈值 \(threshold) 天）", source: "SigningViewModel")
 
-        client.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+        autoRevokeBeforeSigning { [weak self] in
             guard let self = self else { return }
-            switch result {
-            case .success:
-                LogManager.shared.info("批量重签完成", source: "SigningViewModel")
-                self.endWork(message: "批量重签完成")
-            case .failure(let error):
-                LogManager.shared.error("批量重签失败: \(error.localizedDescription)", source: "SigningViewModel")
-                self.endWork(message: "批量重签失败", error: error)
+            self.client.resignAllExpiring(thresholdDays: threshold) { result in
+                switch result {
+                case .success:
+                    LogManager.shared.info("批量重签完成", source: "SigningViewModel")
+                    self.endWork(message: "批量重签完成")
+                case .failure(let error):
+                    LogManager.shared.error("批量重签失败: \(error.localizedDescription)", source: "SigningViewModel")
+                    self.endWork(message: "批量重签失败", error: error)
+                }
+                Task { await self.refreshApps() }
             }
-            Task { await self.refreshApps() }
         }
     }
 
@@ -156,17 +179,19 @@ final class SigningViewModel: ObservableObject {
 
         LogManager.shared.info("手动批量刷新签名（全部应用）", source: "SigningViewModel")
 
-        client.resignAllApplications { [weak self] result in
+        autoRevokeBeforeSigning { [weak self] in
             guard let self = self else { return }
-            switch result {
-            case .success:
-                LogManager.shared.info("手动批量刷新完成", source: "SigningViewModel")
-                self.endWork(message: "批量刷新完成")
-            case .failure(let error):
-                LogManager.shared.error("手动批量刷新失败: \(error.localizedDescription)", source: "SigningViewModel")
-                self.endWork(message: "批量刷新失败", error: error)
+            self.client.resignAllApplications { result in
+                switch result {
+                case .success:
+                    LogManager.shared.info("手动批量刷新完成", source: "SigningViewModel")
+                    self.endWork(message: "批量刷新完成")
+                case .failure(let error):
+                    LogManager.shared.error("手动批量刷新失败: \(error.localizedDescription)", source: "SigningViewModel")
+                    self.endWork(message: "批量刷新失败", error: error)
+                }
+                Task { await self.refreshApps() }
             }
-            Task { await self.refreshApps() }
         }
     }
 
