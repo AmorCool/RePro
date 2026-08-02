@@ -59,6 +59,18 @@ struct AppsView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
+                // 左侧大标题（跟原版 ReSign 位置一致）
+                HStack {
+                    Image("NavTitle")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 36)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
+
                 if viewModel.installedApps.isEmpty {
                     emptyState
                 } else {
@@ -66,12 +78,6 @@ struct AppsView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Image("NavTitle")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 28)
-                }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
                         viewModel.resignAllApplications()
@@ -90,6 +96,7 @@ struct AppsView: View {
                     .disabled(viewModel.isBusy)
                 }
             }
+            .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) { statusBar }
             .confirmationDialog("卸载应用",
                                 isPresented: Binding(get: { pendingUninstall != nil },
