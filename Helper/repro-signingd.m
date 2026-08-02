@@ -154,6 +154,23 @@ static int32_t gAppPID = 0;            // 被唤醒 App 的 PID（用于 BKS）
 static void    *gBKSAssertion = NULL;  // BKSProcessAssertion 对象
 
 /// 获取 App 的 PID（通过 SBSProcessIDForDisplayIdentifier）
+/// 带重试机制：RootHide 下 App 启动较慢，2秒可能不够
+static pid_t s_getAppPIDWithRetry(NSString *bundleID, int maxRetries) {
+    const int delays[] = {2, 5, 10};  // 重试延迟（秒）
+    const int retryCount = maxRetries < 3 ? maxRetries : 3;
+
+    for (int i = 0; i < retryCount; i++) {
+        if (i > 0) {
+            s_log(@"获取 PID 第 %d/%d 次重试（等待 %ds）...", i + 1, retryCount, delays[i]);
+            sleep(delays[i]);
+        }
+        pid_t pid = s_getAppPID(bundleID);
+        if (pid > 0) return pid;
+    }
+    return 0;
+}
+
+/// 获取 App 的 PID（单次查询）
 static pid_t s_getAppPID(NSString *bundleID) {
     void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
     if (!sbs) return 0;
@@ -235,15 +252,20 @@ static void *s_acquireBKSAssertion(pid_t targetPid) {
 
 /// 设置系统级电源唤醒（与 test2 IOPMSchedulePowerEvent 一致）
 /// 确保锁屏状态下设备也能在指定时间醒来执行续签。
+///
+/// ⚠️ RootHide 限制：IOPMSchedulePowerEvent 需要 IOKit 特权，
+///    在 namespace 隔离环境下可能返回 kIOReturnNotPrivileged (0xE00002C6)。
+///    此功能是「增强体验」非「核心链路」，失败时不阻塞续签。
+///    屏幕解锁/背光监听仍能覆盖大部分场景。
 static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
     void *ioKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
-    if (!ioKit) { s_log(@"无法加载 IOKit"); return NO; }
+    if (!ioKit) { s_log(@"无法加载 IOKit — 系统级唤醒不可用（非致命）"); return NO; }
 
     // IOReturn 本质是 int32_t，不链接 IOKit 框架时需手动声明
     typedef int (*IOPMSchedFn)(CFDateRef, CFStringRef, CFStringRef);
     IOPMSchedFn schedFn = (IOPMSchedFn)dlsym(ioKit, "IOPMSchedulePowerEvent");
     if (!schedFn) {
-        s_log(@"无法找到 IOPMSchedulePowerEvent");
+        s_log(@"无法找到 IOPMSchedulePowerEvent — 系统级唤醒不可用（非致命）");
         dlclose(ioKit);
         return NO;
     }
@@ -255,10 +277,16 @@ static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
     dlclose(ioKit);
 
     if (ret == 0) {
-        s_log(@"已设置系统级唤醒 — %.0f 秒后 (%@)", secondsFromNow, wakeDate);
+        s_log(@"[Step 3/3] 已设置系统级唤醒 — %.0f 秒后 (%@)", secondsFromNow, wakeDate);
         return YES;
     } else {
-        s_log(@"系统级唤醒设置失败 (ret=%d)", ret);
+        // 常见错误码说明
+        const char *reason = "未知";
+        if (ret == -536870206) reason = "kIOReturnNotPrivileged (RootHide namespace 限制)";
+        else if (ret == -536870211) reason = "kIOReturnNotPermitted (权限不足)";
+        else if (ret == -4294957038) reason = "kIOReturnBadArgument (参数错误)";
+        s_log(@"[Step 3/3] 系统级唤醒设置失败 (ret=0x%08X: %s) — 非致命，屏幕解锁触发仍可用",
+              (unsigned int)ret, reason);
         return NO;
     }
 }
@@ -302,10 +330,10 @@ static BOOL s_launchAppInBackground(void) {
     s_log(@"[Step 1/3] 已发送后台启动请求给 %@", kAppBundleID);
 
     // ── Step 2: 获取 App PID 并创建 BKSProcessAssertion 保活 ──
-    // 等 2 秒让 App 启动完成
+    // RootHide 下 App 启动较慢，使用重试机制（2s → 5s → 10s）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        pid_t appPID = s_getAppPID(kAppBundleID);
+        pid_t appPID = s_getAppPIDWithRetry(kAppBundleID, 3);
         if (appPID > 0) {
             gAppPID = appPID;
             gBKSAssertion = s_acquireBKSAssertion(appPID);
@@ -315,7 +343,7 @@ static BOOL s_launchAppInBackground(void) {
                 s_log(@"[Step 2/3] BKSProcessAssertion 获取失败 — App 可能被系统挂起");
             }
         } else {
-            s_log(@"[Step 2/3] 无法获取 App PID — BKS 保活跳过");
+            s_log(@"[Step 2/3] 重试3次仍无法获取 App PID — BKS 保活跳过（RootHide SBS 隔离？）");
         }
     });
 
@@ -517,6 +545,8 @@ int main(int argc, char *argv[]) {
 
     // 正常守护模式
     s_log(@"=== 启动 pid=%d uid=%d ===", getpid(), getuid());
+    s_log(@"管理命令: sudo killall -HUP repro-signingd  (手动触发)");
+    s_log(@"          launchctl kickstart gui/501/jp.soh.reprovision.signingd  (重启)");
     s_setup_signal_handlers();
 
     [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
