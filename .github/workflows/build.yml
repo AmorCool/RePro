@@ -351,7 +351,9 @@ jobs:
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/RePro.app/Icon.png"
           cp Resources/jp.soh.reprovision.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
-          cp Resources/jp.soh.reprovision.signingd.plist "$PKG3/Library/LaunchDaemons/"
+          # v1.1.65：roothide 用专属 LaunchDaemon plist（带 _MSSafeMode=1/_SafeMode=1，
+          # 否则 RootHide 运行时剥离 backboardd.launchapplications → SBSLaunch 返回 7）
+          cp Resources/jp.soh.reprovision.signingd-roothide.plist "$PKG3/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
           do_sign "$PKG3/Applications/RePro.app/RePro" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist

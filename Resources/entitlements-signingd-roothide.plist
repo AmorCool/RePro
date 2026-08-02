@@ -13,6 +13,24 @@
 	       v1.1.63 及以前因为裸签（零 entitlements）而全部缺失。 -->
 	<key>platform-application</key>
 	<true/>
+
+	<!-- ★ v1.1.65：对齐 ReProvision-Reborn roothide daemon 的身份声明。
+	     RootHide 在放行 backboardd.launchapplications 等私有 entitlement 前，
+	     要求二进制具备合法的 application-identifier / team-identifier / app-group，
+	     否则仍会在运行时剥离私有权限（SBSLaunch 返回 7）。AAAAAAAAAA 为通配 team id。 -->
+	<key>application-identifier</key>
+	<string>AAAAAAAAAA.jp.soh.reprovision.signingd</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>AAAAAAAAAA</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.jp.soh.reprovision.ios</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
+	</array>
+
 	<key>com.apple.private.security.no-container</key>
 	<true/>
 	<key>com.apple.private.security.no-sandbox</key>

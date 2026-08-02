@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>jp.soh.reprovision.signingd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<!-- ★ v1.1.65 关键修复：RootHide 下必须设这两个环境变量，否则 RootHide 会在运行时
+		     剥离 com.apple.backboardd.launchapplications 等私有 entitlement，
+		     backboardd 拒绝启动 App（SBSLaunch 返回 7），自动续签永远拉不起 App。
+		     这是参考 ReProvision-Reborn roothide 包 reprovisiond 的 LaunchDaemon 写法。 -->
+		<string>/usr/bin/env</string>
+		<string>_MSSafeMode=1</string>
+		<string>_SafeMode=1</string>
+		<string>/usr/libexec/repro-signingd</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>UserName</key>
+	<string>root</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
+</dict>
+</plist>
