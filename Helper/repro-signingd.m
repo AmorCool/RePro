@@ -47,6 +47,7 @@
 #include <signal.h>
 #include <dlfcn.h>
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
@@ -126,6 +127,45 @@ static void s_open_log(void) {
     gLogFile = fopen(p.UTF8String, "a");
     if (gLogFile) chmod(p.UTF8String, 0666);
     if (!gLogFile) NSLog(@"[repro-signingd] 无法打开 %@", p);
+}
+
+/// 启动自诊断：读 daemon 自身签名里的 entitlement，确认
+/// com.apple.backboardd.launchapplications 等私有权限是否真的签上了。
+///
+/// 这是 v1.1.66 加的「铁证」诊断：RootHide 在 jbroot namespace 下会剥离私有
+/// entitlement。若这里打印 ❌缺失，说明 daemon 仍跑在 jbroot namespace
+/// （postinst 没用 jbroot 命令把 plist 转 rootfs 路径再 bootstrap），
+/// SBSLaunch 必然返回 7 —— 与日志里看到的完全一致。
+static void s_log_self_entitlements(void) {
+    SecCodeRef code = NULL;
+    if (SecCodeCopySelf(kSecCSDefaultFlags, &code) != errSecSuccess || !code) {
+        s_log(@"⚠️ 自身 entitlement 自检失败：SecCodeCopySelf 返回错误");
+        return;
+    }
+    CFDictionaryRef sigInfo = NULL;
+    if (SecCodeCopySigningInformation(code, kSecCSSigningInformation, &sigInfo) != errSecSuccess || !sigInfo) {
+        if (code) CFRelease(code);
+        s_log(@"⚠️ 自身 entitlement 自检失败：SecCodeCopySigningInformation 返回错误");
+        return;
+    }
+    CFDictionaryRef ents = CFDictionaryGetValue(sigInfo, kSecCodeInfoEntitlements);
+    if (ents) {
+        BOOL hasLaunch = CFDictionaryGetValue(ents, CFSTR("com.apple.backboardd.launchapplications")) != NULL;
+        BOOL hasUnlim  = CFDictionaryGetValue(ents, CFSTR("com.apple.multitasking.unlimitedassertions")) != NULL;
+        BOOL hasSys    = CFDictionaryGetValue(ents, CFSTR("com.apple.multitasking.systemappassertions")) != NULL;
+        s_log(@"自身 entitlement 自检: backboardd.launchapplications=%@  unlimitedassertions=%@  systemappassertions=%@",
+              hasLaunch ? @"✅有" : @"❌缺失(被 RootHide 剥离)",
+              hasUnlim  ? @"✅有" : @"❌缺失",
+              hasSys    ? @"✅有" : @"❌缺失");
+        if (!hasLaunch) {
+            s_log(@"   ❌ 致命: backboardd.launchapplications 缺失 → daemon 跑在 jbroot namespace，"
+                  @"SBSLaunch 必返回 7。修复: roothide postinst 必须用 jbroot 命令把 plist 转 rootfs 路径再 launchctl bootstrap。");
+        }
+    } else {
+        s_log(@"⚠️ 自身签名信息中找不到 entitlements 字典（可能裸签了）");
+    }
+    if (sigInfo) CFRelease(sigInfo);
+    if (code) CFRelease(code);
 }
 
 // ─── 配置 ────────────────────────────────────────────────────────
@@ -984,6 +1024,9 @@ int main(int argc, char *argv[]) {
     s_log(@"========================================");
     s_setup_signal_handlers();
 
+    // v1.1.66：启动时自检自身 entitlement（RootHide 下若被剥离会直接暴露根因）
+    s_log_self_entitlements();
+
     [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
     chown(kIpcDir.UTF8String, 501, 501);
 
@@ -1005,13 +1048,12 @@ int main(int argc, char *argv[]) {
     s_setupNotifyPosts();
 
     // 启动定时器
+    // ⚠️ v1.1.66 修复：旧版在 s_startSigningTimer() 之外，又无条件在启动 5 秒后
+    //    调一次 s_fire()，完全无视持久化的 nextFireDate。结果每次 daemon 重启
+    //    （包括 deb 重装）都立刻尝试续签 → 在 RootHide 下必然 result=7 失败刷屏。
+    //    s_startSigningTimer() 已经处理了「过期即 5 秒后触发」「未过期则按间隔等待」，
+    //    这里绝不该再额外触发一次。删除该冗余 dispatch。
     s_startSigningTimer();
-
-    // 首次启动 5 秒后执行一次
-    if (c.enabled) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ s_fire(); });
-    }
 
     // 配置变更通知
     int t; notify_register_dispatch("com.reprovision.signingd-config-updated", &t,

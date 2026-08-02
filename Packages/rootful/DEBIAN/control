@@ -2,7 +2,7 @@ Package: jp.soh.reprovision
 Name: RePro17
 Description: iOS 应用签名工具 - rootful 版 (iOS 13/14)
 Depends: firmware (>= 13.0), zip, unzip
-Version: 1.1.65~release
+Version: 1.1.66~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm

@@ -94,32 +94,60 @@ for c in /bin/launchctl /usr/bin/launchctl; do
 	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi
 done
 
+# v1.1.66 关键修复：RootHide 下必须用 jbroot 命令把 plist 的 jbroot 路径
+# 转成 rootfs 真实路径再交给 launchctl bootstrap，否则守护进程会被 RootHide
+# 当作 jbroot(namespace) 进程加载 → 私有 entitlement（如
+# com.apple.backboardd.launchapplications）在运行时被剥离 →
+# signingd 调 SBSLaunch 返回 7（后台拉不起 App）。参考 ReProvision-Reborn
+# roothide 包 reprovisiond 的 postinst 正是这么做的。
+#
+# 另：daemon 的 LaunchDaemon plist 已通过 /usr/bin/env 注入
+# _MSSafeMode=1/_SafeMode=1，进一步确保进程跑真实 namespace、不被 fakeroot 重定向。
+JBROOT_CMD=""
+for c in /usr/bin/jbroot /bin/jbroot; do
+	if [ -x "$c" ]; then JBROOT_CMD="$c"; break; fi
+done
+
+# 把 jbroot 路径转成 rootfs 真实路径（无 jbroot 命令则退回原路径）
+jbroot_to_rootfs() {
+	local p="$1"
+	if [ -n "$JBROOT_CMD" ] && [ -x "$JBROOT_CMD" ]; then
+		local real=$("$JBROOT_CMD" "$p" 2>/dev/null)
+		if [ -n "$real" ] && [ -f "$real" ]; then echo "$real"; return; fi
+	fi
+	echo "$p"
+}
+
+# 加载一个 LaunchDaemon（统一处理 jbroot→rootfs 路径转换 + bootout/bootstrap/kickstart）
+load_daemon() {
+	local plist="$1" label="$2" desc="$3"
+	[ -n "$LAUNCHCTL" ] || { echo "WARNING: launchctl 不存在，无法加载 $desc"; return; }
+	[ -f "$plist" ] || { echo "WARNING: $desc plist 不存在: $plist"; return; }
+
+	chown root:wheel "$plist" 2>/dev/null || true
+	chmod 644 "$plist" 2>/dev/null || true
+
+	local real_plist
+	real_plist=$(jbroot_to_rootfs "$plist")
+	echo "Loading $desc..."
+	echo "  jbroot plist = $plist"
+	echo "  rootfs plist  = $real_plist"
+
+	"$LAUNCHCTL" bootout system "$real_plist" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$real_plist" >/dev/null 2>&1 || true
+	"$LAUNCHCTL" bootstrap system "$real_plist" >/dev/null 2>&1 || "$LAUNCHCTL" load "$real_plist" >/dev/null 2>&1 || true
+	"$LAUNCHCTL" kickstart -k "system/$label" >/dev/null 2>&1 || true
+	echo "$desc launched"
+}
+
 # 加载 signingd LaunchDaemon（定时检查是否需要续签，通知 App）
-SIGNINGD_PLIST="/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
-if [ -n "$LAUNCHCTL" ] && [ -f "$SIGNINGD_PLIST" ]; then
-	chown root:wheel "$SIGNINGD_PLIST" 2>/dev/null || true
-	chmod 644 "$SIGNINGD_PLIST" 2>/dev/null || true
-	echo "Loading signingd..."
-	"$LAUNCHCTL" bootout system "$SIGNINGD_PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$SIGNINGD_PLIST" >/dev/null 2>&1 || true
-	"$LAUNCHCTL" bootstrap system "$SIGNINGD_PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" load "$SIGNINGD_PLIST" >/dev/null 2>&1 || true
-	echo "signingd launched (定时续签守护进程)"
-else
-	echo "WARNING: 无法加载 signingd（launchctl 或 plist 不存在）"
-fi
+load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist" \
+            "jp.soh.reprovision.signingd" \
+            "signingd (定时续签守护进程)"
 
 # 加载 profiledaemon LaunchDaemon（系统级上下文，不受 App namespace 影响）
-PLIST="/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist"
-
-if [ -n "$LAUNCHCTL" ] && [ -f "$PLIST" ]; then
-	chown root:wheel "$PLIST" 2>/dev/null || true
-	chmod 644 "$PLIST" 2>/dev/null || true
-	echo "Loading profiledaemon..."
-	"$LAUNCHCTL" bootout system "$PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" unload "$PLIST" >/dev/null 2>&1 || true
-	"$LAUNCHCTL" bootstrap system "$PLIST" >/dev/null 2>&1 || "$LAUNCHCTL" load "$PLIST" >/dev/null 2>&1 || true
-	echo "profiledaemon launched (system context, outside App namespace)"
-else
-	echo "WARNING: 无法加载 profiledaemon（launchctl 或 plist 不存在）"
-fi
+load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist" \
+            "jp.soh.reprovision.profiledaemon" \
+            "profiledaemon (system context, outside App namespace)"
 
 # Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）
 echo "Reloading application cache"
