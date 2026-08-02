@@ -133,6 +133,17 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    /// 拉取「其他应用」——非当前 Apple ID 签名的已安装应用（含过期应用）
+    func fetchOtherApps(completion: @escaping (Result<[InstalledApp], Error>) -> Void) {
+        bridge.fetchOtherApps { infos, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            completion(.success(infos.map(InstalledApp.init(info:))))
+        }
+    }
+
     // MARK: - 重签名
 
     /// 单个应用的签名进度回调（0-100），由桥接层在主队列触发。
@@ -395,6 +406,7 @@ fileprivate extension InstalledApp {
                   version: info.version,
                   iconData: info.iconPNGData,
                   certificateExpiryDate: info.expiryDate,
-                  hasEmbeddedProvision: info.hasEmbeddedProvision)
+                  hasEmbeddedProvision: info.hasEmbeddedProvision,
+                  originalTeamID: info.originalTeamID)
     }
 }

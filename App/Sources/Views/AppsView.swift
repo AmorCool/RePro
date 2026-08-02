@@ -55,6 +55,8 @@ struct AppsView: View {
     @StateObject private var viewModel = SigningViewModel()
     @ObservedObject private var account = BridgeClient.shared
     @State private var pendingUninstall: InstalledApp?
+    /// 待重签的「其他应用」（用于弹出警告确认）
+    @State private var pendingOtherAppResign: InstalledApp?
 
     var body: some View {
         NavigationView {
@@ -118,6 +120,11 @@ struct AppsView: View {
                 } else {
                     appList
                 }
+
+                // 「其他应用」Section（非当前 Apple ID 签名的应用）
+                if !viewModel.otherApps.isEmpty {
+                    otherAppsSection
+                }
             }
             .background(Color(.systemGroupedBackground)) // 浅灰底，不刺眼
             .navigationBarHidden(true)
@@ -134,6 +141,20 @@ struct AppsView: View {
                 Button("取消", role: .cancel) { pendingUninstall = nil }
             } message: {
                 Text("该应用及其数据会从设备上移除。")
+            }
+            .confirmationDialog("警告",
+                                isPresented: Binding(get: { pendingOtherAppResign != nil },
+                                                     set: { if !$0 { pendingOtherAppResign = nil } }),
+                                titleVisibility: .visible) {
+                Button("继续") {
+                    if let app = pendingOtherAppResign { viewModel.resignOtherApp(app) }
+                    pendingOtherAppResign = nil
+                }
+                Button("取消", role: .cancel) { pendingOtherAppResign = nil }
+            } message: {
+                if let app = pendingOtherAppResign {
+                    Text("这将移除「\(app.displayName)」的当前证书，并使用你的 Apple ID 重新签发新证书。\n\n此操作可能导致该应用的保存设置和文件丢失。")
+                }
             }
         }
         .navigationViewStyle(.stack)
@@ -217,8 +238,52 @@ struct AppsView: View {
         }
         .refreshable {
             await viewModel.refreshApps()
+            await viewModel.refreshOtherApps()
         }
         .scrollContentBackground(.hidden) // 让 List 透出外层浅灰底
+    }
+
+    // MARK: 其他应用（非当前 Apple ID 签名）
+    private var otherAppsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Section 标题 + 签名按钮
+            HStack {
+                Text("其他应用")
+                    .font(.headline)
+                Spacer()
+                Button("签名") {
+                    // 批量重签所有其他应用（带警告）
+                    if let first = viewModel.otherApps.first {
+                        pendingOtherAppResign = first
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.isBusy || !account.isSignedIn)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            // 其他应用列表
+            ForEach(viewModel.otherApps) { app in
+                OtherAppRowView(app: app) {
+                    pendingOtherAppResign = app
+                }
+            }
+
+            // 底部统计
+            Text("已找到 \(viewModel.otherApps.count) 个 App ID")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 }
 
@@ -304,5 +369,73 @@ struct AppRowView: View {
             .background(color.opacity(0.15))
             .foregroundColor(color)
             .cornerRadius(4)
+    }
+}
+
+// MARK: - 其他应用行视图
+
+struct OtherAppRowView: View {
+    let app: InstalledApp
+    let onResign: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            icon
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(app.displayName)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+
+                // 原始签名者 Team ID
+                HStack(spacing: 4) {
+                    Text(app.originalTeamID ?? "未知")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+
+                    if let daysLeft = app.daysUntilExpiry {
+                        Text("· \(formatExpiry(daysLeft))")
+                            .font(.caption)
+                            .foregroundColor(daysLeft < 0 ? .red : .secondary)
+                    }
+                }
+            }
+
+            Spacer()
+
+            if app.isSigning {
+                ProgressView()
+                    .scaleEffect(0.7)
+            } else {
+                Button("导入", action: onResign)  // 原版用"导入"按钮
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(false)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if let icon = app.icon {
+            Image(uiImage: icon)
+                .resizable()
+                .frame(width: 48, height: 48)
+                .cornerRadius(10)
+        } else {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 48, height: 48)
+                .overlay(Image(systemName: "app").foregroundColor(.secondary))
+        }
+    }
+
+    private func formatExpiry(_ days: Int) -> String {
+        if days < 0 { return "已过期" }
+        return "\(days) 天后过期"
     }
 }

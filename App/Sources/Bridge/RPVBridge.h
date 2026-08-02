@@ -28,6 +28,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 图标的 PNG 数据（在后台队列取好，避免 Swift 侧再触碰 UIImage 渲染）
 @property (nonatomic, strong, nullable) NSData *iconPNGData;
 @property (nonatomic, assign) BOOL hasEmbeddedProvision;
+/// 原始签名者的 Team ID（「其他应用」中显示，用于区分非当前账户签名的应用）
+@property (nonatomic, copy, nullable) NSString *originalTeamID;
 @end
 
 /// 登录结果分类
@@ -150,6 +152,13 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 - (void)fetchInstalledAppsWithCompletion:(void (^)(NSArray<RPVAppInfo *> *apps,
                                                    NSError *_Nullable error))completion
     NS_SWIFT_NAME(fetchInstalledApps(completion:));
+
+/// 拉取「其他应用」——设备上已安装但**不是**当前 Apple ID（Team ID）签名的应用。
+/// 这些应用可能由其他开发者工具（Xcode / AltStore / 旧版 ReProvision 等）签名，
+/// 包括已过期的应用。用户可以选择用当前账户重新签名。
+- (void)fetchOtherAppsWithCompletion:(void (^)(NSArray<RPVAppInfo *> *apps,
+                                                NSError *_Nullable error))completion
+    NS_SWIFT_NAME(fetchOtherApps(completion:));
 
 #pragma mark 重签名
 

@@ -29,6 +29,10 @@ static dispatch_once_t nanoRegistryOnceToken;
 
 #define SERVICENAME @"com.matchstic.ReProvision"
 
+// 本地凭证缓存路径（锁屏 Keychain 不可读时的 fallback）
+// 权限 600（仅 owner 可读），存储在 RePro 私有目录。
+static NSString *kCredentialsCachePath = @"/var/mobile/Library/RePro/credentials.cache";
+
 @implementation RPVResources
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -119,7 +123,21 @@ static dispatch_once_t nanoRegistryOnceToken;
 }
 
 + (NSString *)getPassword {
-    return [SAMKeychain passwordForService:SERVICENAME account:[self getUsername]];
+    // 优先从 Keychain 读取
+    NSString *password = [SAMKeychain passwordForService:SERVICENAME account:[self getUsername]];
+    if (password && password.length > 0) {
+        return password;
+    }
+
+    // Keychain 读不到（锁屏/后台等场景）→ 回退读本地缓存文件
+    NSDictionary *cache = [NSDictionary dictionaryWithContentsOfFile:kCredentialsCachePath];
+    if (cache) {
+        NSString *cachedPwd = cache[@"password"];
+        if (cachedPwd && cachedPwd.length > 0) {
+            return cachedPwd;
+        }
+    }
+    return nil;
 }
 
 + (NSString *)getTeamID {
@@ -143,6 +161,19 @@ static dispatch_once_t nanoRegistryOnceToken;
 
     [[NSUserDefaults standardUserDefaults] setObject:teamId forKey:@"cachedTeamID"];
     [[NSUserDefaults standardUserDefaults] setObject:CURRENT_CREDENTIALS_VERSION forKey:@"credentialsVersion"];
+
+    // 同步写入本地凭证缓存文件（锁屏 Keychain 不可读时的 fallback）
+    NSDictionary *cache = @{
+        @"username": username ?: @"",
+        @"password": password ?: @"",
+        @"teamID": teamId ?: @""
+    };
+    [cache writeToFile:kCredentialsCachePath atomically:YES];
+
+    // 设置权限 600（仅 owner 可读）
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600}
+                                     ofItemAtPath:kCredentialsCachePath
+                                            error:nil];
 }
 
 /// 把已存在的 Apple ID 密码 Keychain 项升级为 AfterFirstUnlock。
@@ -175,6 +206,9 @@ static dispatch_once_t nanoRegistryOnceToken;
 
     // Remove password from Keychain
     [SAMKeychain deletePasswordForService:SERVICENAME account:username];
+
+    // 删除本地凭证缓存文件
+    [[NSFileManager defaultManager] removeItemAtPath:kCredentialsCachePath error:nil];
 
     [self _broadcastNotification:@"RPVDisplayAccountSignInController" withUserInfo:nil];
 }

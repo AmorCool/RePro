@@ -342,6 +342,52 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     });
 }
 
+- (void)fetchOtherAppsWithCompletion:(void (^)(NSArray<RPVAppInfo *> *, NSError *_Nullable))completion {
+    dispatch_async(self.workQueue, ^{
+        NSString *teamID = [RPVResources getTeamID];
+
+        // 未登录时无法区分"其他应用"，返回空
+        if (teamID.length == 0) {
+            RPVBridgeCallOnMain(^{
+                if (completion) completion(@[], nil);
+            });
+            return;
+        }
+
+        NSArray *applications = [[RPVApplicationDatabase sharedInstance] getAllSideloadedApplicationsNotMatchingTeamID:teamID];
+
+        NSMutableArray<RPVAppInfo *> *results = [NSMutableArray arrayWithCapacity:applications.count];
+        for (RPVApplication *application in applications) {
+            RPVAppInfo *info = [RPVBridge _infoFromApplication:application];
+            if (info.bundleIdentifier.length > 0) {
+                // 从 embedded.mobileprovision 提取原始签名者的 Team ID
+                NSString *appPath = [[application locationOfApplicationOnFilesystem] path];
+                if (appPath) {
+                    NSString *provPath = [appPath stringByAppendingString:@"/embedded.mobileprovision"];
+                    NSDictionary *plist = [RPVApplication provisioningProfileAtPath:provPath];
+                    NSArray *teamIds = plist[@"TeamIdentifier"];
+                    info.originalTeamID = [teamIds firstObject] ?: @"未知";
+                }
+                [results addObject:info];
+            }
+        }
+
+        // 按到期时间升序排列
+        [results sortUsingComparator:^NSComparisonResult(RPVAppInfo *lhs, RPVAppInfo *rhs) {
+            if (!lhs.expiryDate && !rhs.expiryDate) {
+                return [lhs.displayName localizedCaseInsensitiveCompare:rhs.displayName];
+            }
+            if (!lhs.expiryDate) return NSOrderedDescending;
+            if (!rhs.expiryDate) return NSOrderedAscending;
+            return [lhs.expiryDate compare:rhs.expiryDate];
+        }];
+
+        RPVBridgeCallOnMain(^{
+            if (completion) completion(results, nil);
+        });
+    });
+}
+
 #pragma mark - 重签名
 
 /// 开一轮新的重签流水线。已有一轮在跑时直接拒绝，和原版的

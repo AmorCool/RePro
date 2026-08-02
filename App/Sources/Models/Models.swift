@@ -13,6 +13,8 @@ struct InstalledApp: Identifiable, Hashable {
     let iconData: Data?
     let certificateExpiryDate: Date?
     let hasEmbeddedProvision: Bool
+    /// 原始签名者的 Team ID（「其他应用」中显示，用于区分非当前账户签名的应用）
+    let originalTeamID: String?
 
     /// 是否正在签名（仅 UI 状态，由 SigningViewModel 维护）
     var isSigning: Bool = false

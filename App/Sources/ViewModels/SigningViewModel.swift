@@ -13,6 +13,7 @@ import Combine
 final class SigningViewModel: ObservableObject {
 
     @Published var installedApps: [InstalledApp] = []
+    @Published var otherApps: [InstalledApp] = []
     @Published var isBusy: Bool = false
     @Published var progressMessage: String = ""
     @Published var lastError: String?
@@ -21,7 +22,10 @@ final class SigningViewModel: ObservableObject {
 
     init() {
         bindSigningCallbacks()
-        Task { await refreshApps() }
+        Task {
+            await refreshApps()
+            await refreshOtherApps()
+        }
     }
 
     // MARK: - 进度订阅
@@ -77,6 +81,59 @@ final class SigningViewModel: ObservableObject {
                                             source: "SigningViewModel")
                 }
                 continuation.resume()
+            }
+        }
+    }
+
+    // MARK: - 其他应用（非当前 Apple ID 签名的应用）
+
+    /// 拉取「其他应用」列表——设备上已安装但不是当前账户签名的应用
+    func refreshOtherApps() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            client.fetchOtherApps { [weak self] result in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                switch result {
+                case .success(let apps):
+                    self.otherApps = apps
+                case .failure(let error):
+                    LogManager.shared.error("获取其他应用列表失败: \(error.localizedDescription)",
+                                            source: "SigningViewModel")
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    /// 重签一个「其他应用」（非当前 Apple ID 签名的应用）。
+    /// 与普通 resign 相同流程，但 autoRevoke 逻辑已在调用方处理。
+    func resignOtherApp(_ app: InstalledApp) {
+        guard !app.isSigning else { return }
+        guard beginWork("正在重签 \(app.displayName)…") else { return }
+
+        markSigning(true, for: app.bundleIdentifier)
+        LogManager.shared.info("重签其他应用: \(app.bundleIdentifier)（原签名 TeamID: \(app.originalTeamID ?? "未知")）",
+                               source: "SigningViewModel")
+
+        autoRevokeBeforeSigning { [weak self] in
+            guard let self = self else { return }
+            self.client.resign(bundleID: app.bundleIdentifier) { result in
+                self.markSigning(false, for: app.bundleIdentifier)
+                switch result {
+                case .success:
+                    LogManager.shared.info("其他应用重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                    self.endWork(message: "签名完成")
+                case .failure(let error):
+                    LogManager.shared.error("其他应用重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
+                                            source: "SigningViewModel")
+                    self.endWork(message: "签名失败", error: error)
+                }
+                Task {
+                    await self.refreshApps()
+                    await self.refreshOtherApps()
+                }
             }
         }
     }
