@@ -1,5 +1,5 @@
 //
-//  repro-signingd.m — 后台静默重签守护进程（v1.1.59 增强）
+//  repro-signingd.m — 后台静默重签守护进程（v1.1.60 增强）
 //
 //  核心能力：
 //    1. 定时器自动续签（可配置间隔，默认 2 小时）
@@ -8,15 +8,26 @@
 //    4. 低电量模式跳过
 //    5. nextFireDate 持久化（daemon 重启后不丢失调度状态）
 //    6. --resign-now 手动触发
-//    7. ★ 主动唤醒 App 到后台执行静默续签（不再依赖用户手动打开 App）
+//    7. 主动唤醒 App 到后台执行静默续签
+//    8. ★ BKSProcessAssertion 保活（防止 App 被系统挂起）
+//    9. ★ IOPMSchedulePowerEvent 系统级唤醒（锁屏时也能准时触发）
+//
+//  架构说明（与 test2 reprovisiond 一致）：
+//    Daemon 本身不执行签名操作（签名需要 zsign + 凭证访问 + 网络请求）。
+//    Daemon 的角色是「调度器 + 唤醒器 + 保活管理者」：
+//      定时器/解锁/亮屏 → 写 trigger 标记 → SBSLaunchApplication 唤醒 App 到后台
+//      → BKSProcessAssertion 防止 App 被挂起 → App 执行 silentResignAndExit → exit(0)
+//    用户全程无需手动打开 App。
 //
 //  日志: fopen/fprintf 同步写入 <jbroot>/var/log/reprorefresh_at.log
+//  日志文件被删除后会自动检测并重新创建（fstat nlink 检查）
 //
 
 #include <notify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
+#include <signal.h>
 #include <dlfcn.h>
 #import <Foundation/Foundation.h>
 
@@ -36,13 +47,28 @@ static BOOL      gUpdateQueuedForUnlock = NO;
 static int gLockStateToken = 0;
 static int gBacklightToken = 0;
 
-// ─── 日志 ────────────────────────────────────────────────────────
+// ─── 日志（带文件删除自愈） ───────────────────────────────────
+// 修复：日志文件被外部删除后，通过 fstat(st_nlink == 0) 检测，
+//       自动 fclose + 重新 fopen，避免 fd 泄漏和静默丢日志。
+
+static void s_ensure_log_valid(void) {
+    if (!gLogFile) { s_open_log(); return; }
+    struct stat st;
+    if (fstat(fileno(gLogFile), &st) != 0 || st.st_nlink == 0) {
+        s_log(@"检测到日志文件失效（nlink=0 或 fstat 错误），重新打开");
+        fclose(gLogFile);
+        gLogFile = NULL;
+        s_open_log();
+    }
+}
 
 static void s_log(NSString *fmt, ...) {
     va_list a; va_start(a, fmt);
     NSString *s = [[NSString alloc] initWithFormat:fmt arguments:a]; va_end(a);
     time_t t = time(NULL); struct tm tm; localtime_r(&t, &tm);
     char ts[64]; strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
+    // 每次写入前检查文件是否仍然有效
+    s_ensure_log_valid();
     if (gLogFile) { fprintf(gLogFile, "[%s] %s\n", ts, s.UTF8String); fflush(gLogFile); }
     NSLog(@"[repro-signingd] %@", s);
 }
@@ -112,20 +138,137 @@ static void s_clearNextFireDate(void) {
 // 但 s_initiateAndReschedule 需要调用它。
 static void s_start_timer(NSTimeInterval sec);
 
-// ─── 唤醒 App 到后台执行静默续签 ─────────────────────────────
-// 通过 dlopen+dlsym 动态调用 SBSLaunchApplicationWithIdentifierAndLaunchOptions（SpringBoardServices 私有 API）。
-// 不需要在编译时链接私有框架。失败时降级为纯 notify_post（App 下次激活时检查）。
+// ─── 唤醒 App 到后台执行静默续签（含保活 + 系统唤醒） ────────
+// 与 test2 RPVDaemonListener._launchApplicationBackgroundedWithNotification 一致：
+//   1. SBSLaunchApplicationWithIdentifierAndLaunchOptions 唤醒 App 到后台
+//   2. BKSProcessAssertion 防止 App 被系统挂起/杀死
+//   3. IOPMSchedulePowerEvent 确保锁屏时设备也能准时醒来
+//
+// 所有私有 API 通过 dlopen+dlsym 运行时动态加载，无需编译时链接。
+
+static int32_t gAppPID = 0;            // 被唤醒 App 的 PID（用于 BKS）
+static void    *gBKSAssertion = NULL;  // BKSProcessAssertion 对象
+
+/// 获取 App 的 PID（通过 SBSProcessIDForDisplayIdentifier）
+static pid_t s_getAppPID(NSString *bundleID) {
+    void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+    if (!sbs) return 0;
+    typedef pid_t (*Fn)(CFStringRef);
+    Fn fn = (Fn)dlsym(sbs, "SBSProcessIDForDisplayIdentifier");
+    if (!fn) { dlclose(sbs); return 0; }
+    pid_t pid = fn((__bridge CFStringRef)bundleID);
+    dlclose(sbs);
+    return pid;
+}
+
+/// 获取 BKSProcessAssertion 防止 App 被挂起（与 test2 一致）
+static void *s_acquireBKSAssertion(pid_t targetPid) {
+    // dlopen BackBoardServices（iOS 16+）或 BoardServices（iOS 15）
+    static const char *frameworkPaths[] = {
+        "/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices",
+        "/System/Library/PrivateFrameworks/BoardServices.framework/BoardServices",
+        NULL
+    };
+
+    void *bksHandle = NULL;
+    for (int i = 0; frameworkPaths[i]; i++) {
+        bksHandle = dlopen(frameworkPaths[i], RTLD_NOW);
+        if (bksHandle) break;
+    }
+    if (!bksHandle) {
+        s_log(@"无法加载 BackBoardServices/BoardServices: %s", dlerror());
+        return NULL;
+    }
+
+    // BKSProcessAssertioninitWithPID:flags:reason:name:withHandler:
+    typedef void *(*BKSInitFn)(id, SEL, pid_t, uint32_t, NSString *, NSString *, id);
+    BKSInitFn initFn = (BKSInitFn)dlsym(bksHandle, "BKSProcessAssertioninitWithPID:flags:reason:name:withHandler:");
+    if (!initFn) {
+        s_log(@"无法找到 BKSProcessAssertion 初始化方法");
+        dlclose(bksHandle);
+        return NULL;
+    }
+
+    // 获取 BKSProcessAssertion 类
+    Class bksClass = NSClassFromString(@"BKSProcessAssertion");
+    if (!bksClass) {
+        s_log(@"无法获取 BKSProcessAssertion 类");
+        dlclose(bksHandle);
+        return NULL;
+    }
+
+    // flags: PreventSuspend | AllowIdleSleep (与 test2 一致)
+    uint32_t flags = 0x3;  // PreventSuspend=0x1 | AllowIdleSleep=0x2
+
+    id assertion = [[bksClass alloc] init];
+    SEL sel = NSSelectorFromString(@"_initWithPID:flags:reason:name:withHandler:");
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    id result = [assertion performSelector:sel withObject:(id)(intptr_t)targetPid
+                  withObject:(id)(intptr_t)flags
+                  withObject:@"jp.soh.reprovision background signing"
+                  withObject:@"ReProvision"
+                  withObject:^(BOOL success) {
+        s_log(@"BKSProcessAssertion %@ (pid=%d)", success ? @"生效" : @"失败", targetPid);
+    }];
+#pragma clang diagnostic pop
+
+    // 不 dlclose——BKS 对象运行时可能还需要该框架
+    s_log(@"已获取 BKSProcessAssertion (pid=%d)", targetPid);
+    return (__bridge void *)(result ?: assertion);
+}
+
+/// 设置系统级电源唤醒（与 test2 IOPMSchedulePowerEvent 一致）
+/// 确保锁屏状态下设备也能在指定时间醒来执行续签。
+static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
+    void *ioKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+    if (!ioKit) { s_log(@"无法加载 IOKit"); return NO; }
+
+    typedef IOReturn (*IOPMSchedFn)(CFDateRef, CFStringRef, CFStringRef);
+    IOPMSchedFn schedFn = (IOPMSchedFn)dlsym(ioKit, "IOPMSchedulePowerEvent");
+    if (!schedFn) {
+        s_log(@"无法找到 IOPMSchedulePowerEvent");
+        dlclose(ioKit);
+        return NO;
+    }
+
+    NSDate *wakeDate = [NSDate dateWithTimeIntervalSinceNow:secondsFromNow];
+    IOReturn ret = schedFn((__bridge CFDateRef)wakeDate,
+                           CFSTR("jp.soh.reprovision.signingd"),
+                           CFSTR("AutoWakeOrPowerOn"));
+    dlclose(ioKit);
+
+    if (ret == 0) {
+        s_log(@"已设置系统级唤醒 — %.0f 秒后 (%@)", secondsFromNow, wakeDate);
+        return YES;
+    } else {
+        s_log(@"系统级唤醒设置失败 (IOReturn=0x%x)", (unsigned int)ret);
+        return NO;
+    }
+}
+
+/// 释放 BKSProcessAssertion（续签完成后调用）
+static void s_releaseBKSAssertion(void) {
+    if (gBKSAssertion) {
+        SEL relSel = NSSelectorFromString(@"release");
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [(id)gBKSAssertion performSelector:relSel];
+#pragma clang diagnostic pop
+        gBKSAssertion = NULL;
+        s_log(@"已释放 BKSProcessAssertion");
+    }
+}
 
 static BOOL s_launchAppInBackground(void) {
-    // dlopen SpringBoardServices
+    // ── Step 1: SBSLaunchApplication 唤醒 App 到后台 ──
     void *handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
     if (!handle) {
         s_log(@"无法加载 SpringBoardServices: %s", dlerror());
         return NO;
     }
 
-    // dlsym 获取 SBSLaunchApplicationWithIdentifierAndLaunchOptions
-    typedef void (*SBSLaunchFn)(CFStringRef identifier, CFDictionaryRef options, void **error);
+    typedef void (*SBSLaunchFn)(CFStringRef, CFDictionaryRef, void **);
     SBSLaunchFn fn = (SBSLaunchFn)dlsym(handle, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
     if (!fn) {
         s_log(@"无法找到 SBSLaunchApplicationWithIdentifierAndLaunchOptions: %s", dlerror());
@@ -133,19 +276,41 @@ static BOOL s_launchAppInBackground(void) {
         return NO;
     }
 
-    // 构造 launch options：后台启动、不显示 UI、不添加到切换器
-    // 这些 key 是 SpringBoardServices 的 CFStringRef 常量，
-    // 不链接该框架时用等价字符串字面量替代。
     NSDictionary *options = @{
-        @"SBSBackgroundOnly": @YES,          // 后台启动
-        @"SBSUnlockDevice": @NO,             // 不解锁设备
+        @"SBSBackgroundOnly": @YES,
+        @"SBSUnlockDevice": @NO,
     };
 
-    // 调用
     fn((__bridge CFStringRef)kAppBundleID, (__bridge CFDictionaryRef)options, NULL);
     dlclose(handle);
+    s_log(@"[Step 1/3] 已发送后台启动请求给 %@", kAppBundleID);
 
-    s_log(@"已发送后台启动请求给 %@", kAppBundleID);
+    // ── Step 2: 获取 App PID 并创建 BKSProcessAssertion 保活 ──
+    // 等 2 秒让 App 启动完成
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        pid_t appPID = s_getAppPID(kAppBundleID);
+        if (appPID > 0) {
+            gAppPID = appPID;
+            gBKSAssertion = s_acquireBKSAssertion(appPID);
+            if (gBKSAssertion) {
+                s_log(@"[Step 2/3] BKSProcessAssertion 已生效 (pid=%d)", appPID);
+            } else {
+                s_log(@"[Step 2/3] BKSProcessAssertion 获取失败 — App 可能被系统挂起");
+            }
+        } else {
+            s_log(@"[Step 2/3] 无法获取 App PID — BKS 保活跳过");
+        }
+    });
+
+    // ── Step 3: 设置系统级电源唤醒（确保锁屏时也能触发）──
+    sd_config c = s_cfg();
+    // 在下次触发前 30 秒唤醒设备（给 App 足够的启动+签名时间）
+    NSTimeInterval wakeInterval = ((NSTimeInterval)c.minutes * 60.0) - 30;
+    if (wakeInterval > 10) {
+        s_scheduleSystemWake(wakeInterval);
+    }
+
     return YES;
 }
 
@@ -158,7 +323,6 @@ static void s_fire(void) {
     // 低电量模式检查（与 test2 一致）
     if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
         s_log(@"低电量模式，跳过续签");
-        // 不更新 nextFireDate，下次检查再试
         return;
     }
 
@@ -170,13 +334,11 @@ static void s_fire(void) {
     } writeToFile:kTriggerPath atomically:YES];
     chown(kTriggerPath.UTF8String, 501, 501);
 
-    // ★ 主动唤醒 App 到后台执行静默续签
-    // App 被 launchd 拉起后，didFinishLaunchingWithOptions 检测到 trigger 文件新鲜（10秒内）
-    // → 走 silentResignAndExit() 路径 → 完成后续签后 exit(0)
+    // 主动唤醒 App 到后台执行静默续签（含保活 + 系统唤醒）
     if (s_launchAppInBackground()) {
-        s_log(@"触发续签 — 阈值 %ld 天（已唤醒 App 后台执行）", (long)c.days);
+        s_log(@"触发续签 — 阈值 %ld 天（已唤醒 App + BKS 保活 + 系统唤醒）", (long)c.days);
     } else {
-        // 降级：仅发 notify_post，等用户下次打开 App 时触发
+        // 降级：仅发 notify_post
         notify_post("com.reprovision.schedule-resign");
         s_log(@"触发续签 — 阈值 %ld 天（唤醒失败，降级为 notify_post）", (long)c.days);
     }
@@ -307,6 +469,22 @@ static void s_setupNotifyPosts(void) {
     s_log(@"已注册屏幕解锁/背光监听");
 }
 
+// ─── 信号处理（优雅退出） ─────────────────────────────────────
+
+static void s_signal_handler(int sig) {
+    s_log(@"收到信号 %d → 释放资源并退出", sig);
+    s_releaseBKSAssertion();
+    if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
+    _exit(0);
+}
+
+static void s_setup_signal_handlers(void) {
+    signal(SIGTERM, s_signal_handler);  // launchd 发送
+    signal(SIGHUP, s_signal_handler);   // launchctl unload
+    signal(SIGINT, s_signal_handler);   // Ctrl+C（调试用）
+    s_log(@"已注册信号处理 (SIGTERM/SIGHUP/SIGINT)");
+}
+
 // ─── main ────────────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
@@ -317,11 +495,14 @@ int main(int argc, char *argv[]) {
         s_log(@"收到 --resign-now");
         s_fire();
         s_log(@"触发完成 — 打开 App 时自动续签");
+        if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
         return 0;
     }
 
     // 正常守护模式
     s_log(@"=== 启动 pid=%d uid=%d ===", getpid(), getuid());
+    s_setup_signal_handlers();
+
     [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
     chown(kIpcDir.UTF8String, 501, 501);
 
@@ -329,6 +510,8 @@ int main(int argc, char *argv[]) {
     s_log(@"配置: 自动=%@ 间隔=%ld分 阈值=%ld天",
           c.enabled ? @"是" : @"否", (long)c.minutes, (long)c.days);
     s_log(@"BundleID: %@ | 触发路径: %@", kAppBundleID, kTriggerPath);
+    s_log(@"架构: Daemon(调度+唤醒+保活) → App(后台静默签名) → exit(0)");
+    s_log(@"      用户无需手动打开 App");
 
     // 注册系统通知监听（解锁/背光）
     s_setupNotifyPosts();
@@ -350,9 +533,12 @@ int main(int argc, char *argv[]) {
         s_startSigningTimer();
     });
 
-    // 续签完成通知
+    // 续签完成通知 → 释放 BKS 保活
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
-        dispatch_get_main_queue(), ^(int _){ s_log(@"续签完成"); });
+        dispatch_get_main_queue(), ^(int _){
+        s_log(@"续签完成 → 释放 BKSProcessAssertion");
+        s_releaseBKSAssertion();
+    });
 
     s_log(@"进入主循环");
     [[NSRunLoop mainRunLoop] run];
