@@ -44,6 +44,8 @@ struct SettingsView: View {
     @State private var showTeamID = false
     /// 登录前：密码框是否明文显示
     @State private var showPwdBefore = false
+    /// 登录前：Apple ID 框是否明文显示（默认显示，点眼睛可掩码）
+    @State private var showAppleIDBefore = true
     @State private var loginMessage: String?
     @State private var loginSucceeded = false
 
@@ -87,6 +89,7 @@ struct SettingsView: View {
                     showAccount = false
                     showTeamID = false
                     showPwdBefore = false
+                    showAppleIDBefore = true
                 }
             }
             .onDisappear {
@@ -163,11 +166,24 @@ struct SettingsView: View {
                 }
             } else {
                 // 登录前：Apple ID + 密码信息栏（预填已保存凭据，密码默认掩码可点眼睛查看）
-                TextField("Apple ID", text: $appleID)
-                    .textContentType(.username)
-                    .keyboardType(.emailAddress)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
+                HStack {
+                    if showAppleIDBefore {
+                        TextField("Apple ID", text: $appleID)
+                    } else {
+                        SecureField("Apple ID", text: $appleID)
+                    }
+                    Button {
+                        showAppleIDBefore.toggle()
+                    } label: {
+                        Image(systemName: showAppleIDBefore ? "eye.slash.fill" : "eye.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .textContentType(.username)
+                .keyboardType(.emailAddress)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
                 HStack {
                     if showPwdBefore {
                         TextField("密码", text: $password)
