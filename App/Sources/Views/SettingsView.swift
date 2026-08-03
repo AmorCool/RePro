@@ -175,7 +175,9 @@ struct SettingsView: View {
                     Button {
                         showAppleIDBefore.toggle()
                     } label: {
-                        Image(systemName: showAppleIDBefore ? "eye.slash.fill" : "eye.fill")
+                        // v1.1.101: 「当前状态语义」——睁眼=明文（能看见）、闭眼=掩码（被遮住），
+                        // 与用户直觉一致。密码框与登录后账号行保持 iOS 系统标准（点击后状态语义）不动。
+                        Image(systemName: showAppleIDBefore ? "eye.fill" : "eye.slash.fill")
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)

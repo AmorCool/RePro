@@ -363,6 +363,19 @@ static NSString *RZBundleIdentifierAtPath(NSString *bundlePath) {
     return info[@"CFBundleIdentifier"];
 }
 
+// v1.1.101: lara 类工具习惯把 CFBundleIdentifier 写成 `<bundle>.<TEAMID>`（把 team id 拼在后面），
+// 而 profile 的 application-identifier 也可能写成 `<TEAMID>.<bundle>.<TEAMID>` 的怪形式。
+// 比对仍必须用原始字符串（避免遮蔽「不同 app」错误），但展示给用户前剥掉末尾的 .<TEAMID> 后缀
+// 看起来更干净。
+static NSString *RZStripTeamIDSuffix(NSString *str, NSString *teamID) {
+    if (str.length == 0 || teamID.length == 0) return str;
+    NSString *suffix = [@"." stringByAppendingString:teamID];
+    if ([str hasSuffix:suffix] && str.length > suffix.length) {
+        return [str substringToIndex:str.length - suffix.length];
+    }
+    return str;
+}
+
 // Dump the provisioning-profile ↔ signed-entitlements match — the actual root
 // cause of install-time 0xe8008015 (per the LiveContainer/ReproVision guides:
 // application-identifier exact match + device UDID registration + TeamIdentifier
@@ -597,8 +610,23 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
                 }
             }
             if (appBundle.length && profBundle.length && ![profBundle isEqualToString:@"*"] && ![profBundle isEqualToString:appBundle]) {
+                // v1.1.101: 展示给用户的字符串剥掉 lara 类 IPA 在末尾拼的 .<TEAMID> 后缀（仅展示用，
+                // 比对仍用原始字符串，避免遮蔽真正的「不同应用」错误）。
+                id teamIDRaw = emb[@"TeamIdentifier"];
+                NSString *profileTeamID = nil;
+                if ([teamIDRaw isKindOfClass:[NSArray class]]) {
+                    profileTeamID = [(NSArray *)teamIDRaw firstObject];
+                } else if ([teamIDRaw isKindOfClass:[NSString class]]) {
+                    profileTeamID = (NSString *)teamIDRaw;
+                }
+                NSString *appShown  = RZStripTeamIDSuffix(appBundle, profileTeamID);
+                NSString *profShown = RZStripTeamIDSuffix(profBundle, profileTeamID);
                 NSError *mismatch = [NSError errorWithDomain:@"ReSignError" code:9876 userInfo:@{
-                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"应用标识不一致：安装包 %@ 与证书 %@ 是不同应用，不匹配的 profile 无法签名。请改用「通配符」或与该安装包 bundle id 一致的 profile。", appBundle, profBundle],
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:
+                        @"IPA 的 bundle id 是「%@」，与当前 profile 的 bundle id「%@」不匹配。\n\n"
+                        @"这两个是不同的应用，profile 不能跨 app 通用。请用「通配符 profile（TEAMID.*）」"
+                        @"或与该 IPA bundle id 一致的 profile 重新导入后再试。",
+                        appShown, profShown],
                     @"appBundle": appBundle,
                     @"profBundle": profBundle,
                 }];
