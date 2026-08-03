@@ -73,11 +73,17 @@
 }
 
 + (void)notifyBypass3AppRequest {
-    // 开关关着就不用惊动 daemon（daemon 侧也会再判一次，双保险）
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"bypassFreeAppLimit"]) return;
+    BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"bypassFreeAppLimit"];
+    if (!enabled) {
+        // 开关关着：直接说明，避免用户去日志里找不到任何痕迹
+        NSLog(@"[ReSign] 3 应用绕过未启用（设置 → 免费账号限制 → 「自动绕过 3 应用限制」开关为关闭），跳过请求 daemon");
+        return;
+    }
     uint32_t status = notify_post("com.reprovision.bypass-3app-request");
     if (status != 0) {
         NSLog(@"[ReSign] 请求 3 应用绕过失败: notify_post 0x%x", status);
+    } else {
+        NSLog(@"[ReSign] 已向 repro-signingd 发送 3 应用绕过请求（daemon 约 2 秒后执行，详见 daemon 日志 reprorefresh_at.log）");
     }
 }
 

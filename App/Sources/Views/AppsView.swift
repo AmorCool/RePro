@@ -565,9 +565,10 @@ struct BlacklistRowView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
 
-                // 来源标签（ReSign 签应用 / 其它应用）+ 证书 / Apple ID 来源
+                // 来源标签（ReSign / 其它应用）+ 有效时间 + 证书 / Apple ID 来源
                 HStack(spacing: 4) {
                     pill(app.sourceLabel, color: .orange)
+                    expiryBadge
                     signingSourcePill(app)
                 }
             }
@@ -583,9 +584,38 @@ struct BlacklistRowView: View {
                     .controlSize(.small)
             }
         }
+        .frame(minHeight: 64) // 固定行高，避免 List 单元格复用时的滚动鬼影/掉帧
         .padding(.vertical, 8)
         .padding(.horizontal, 16)
         .contentShape(Rectangle())
+    }
+
+    /// 有效时间徽标（与 AppRowView.expiryBadge 同款）：已过期 / 临近过期 / 有效 / 无描述文件
+    @ViewBuilder
+    private var expiryBadge: some View {
+        if let daysLeft = app.daysUntilExpiry {
+            if daysLeft < 0 {
+                badge("已过期", color: .red)
+            } else if daysLeft <= 3 {
+                badge("\(daysLeft) 天后过期", color: .orange)
+            } else {
+                badge("有效 (\(daysLeft) 天)", color: .green)
+            }
+        } else if app.hasEmbeddedProvision {
+            badge("到期时间未知", color: .secondary)
+        } else {
+            badge("无描述文件", color: .secondary)
+        }
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundColor(color)
+            .cornerRadius(4)
     }
 
     @ViewBuilder

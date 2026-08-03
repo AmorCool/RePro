@@ -609,24 +609,41 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
                     profBundle = [[pa subarrayWithRange:NSMakeRange(1, pa.count - 1)] componentsJoinedByString:@"."];
                 }
             }
-            if (appBundle.length && profBundle.length && ![profBundle isEqualToString:@"*"] && ![profBundle isEqualToString:appBundle]) {
-                // v1.1.101: 展示给用户的字符串剥掉 lara 类 IPA 在末尾拼的 .<TEAMID> 后缀（仅展示用，
-                // 比对仍用原始字符串，避免遮蔽真正的「不同应用」错误）。
-                id teamIDRaw = emb[@"TeamIdentifier"];
-                NSString *profileTeamID = nil;
-                if ([teamIDRaw isKindOfClass:[NSArray class]]) {
-                    profileTeamID = [(NSArray *)teamIDRaw firstObject];
-                } else if ([teamIDRaw isKindOfClass:[NSString class]]) {
-                    profileTeamID = (NSString *)teamIDRaw;
+            // v1.1.103: lara 类工具常把 Team ID 拼到 bundle id 两端
+            // （CFBundleIdentifier = <bundle>.<TEAMID>，application-identifier = <TEAMID>.<bundle>.<TEAMID>）。
+            // 比对前先把两端的「<TEAMID>.」前缀 / 「.<TEAMID>」后缀剥掉，只比较真正的 core bundle id，
+            // 避免把「同一个 app」误判成「不同 app」。若剥完两端后 core 仍不一致，才是真的不同 app → 中止。
+            id teamIDRaw = emb[@"TeamIdentifier"];
+            NSString *profileTeamID = nil;
+            if ([teamIDRaw isKindOfClass:[NSArray class]]) {
+                profileTeamID = [(NSArray *)teamIDRaw firstObject];
+            } else if ([teamIDRaw isKindOfClass:[NSString class]]) {
+                profileTeamID = (NSString *)teamIDRaw;
+            }
+            NSString *(^stripTeamID)(NSString *) = ^NSString *(NSString *s){
+                if (s.length == 0 || profileTeamID.length == 0) return s;
+                // 剥前缀 "<TEAMID>."
+                NSString *prefix = [profileTeamID stringByAppendingString:@"."];
+                if ([s hasPrefix:prefix] && s.length > prefix.length) {
+                    s = [s substringFromIndex:prefix.length];
                 }
-                NSString *appShown  = RZStripTeamIDSuffix(appBundle, profileTeamID);
-                NSString *profShown = RZStripTeamIDSuffix(profBundle, profileTeamID);
+                // 剥后缀 ".<TEAMID>"
+                NSString *suffix = [@"." stringByAppendingString:profileTeamID];
+                if ([s hasSuffix:suffix] && s.length > suffix.length) {
+                    s = [s substringToIndex:s.length - suffix.length];
+                }
+                return s;
+            };
+            NSString *appCore  = stripTeamID(appBundle);
+            NSString *profCore = stripTeamID(profBundle);
+
+            if (appBundle.length && profBundle.length && ![profBundle isEqualToString:@"*"] && ![profCore isEqualToString:appCore]) {
                 NSError *mismatch = [NSError errorWithDomain:@"ReSignError" code:9876 userInfo:@{
                     NSLocalizedDescriptionKey: [NSString stringWithFormat:
                         @"IPA 的 bundle id 是「%@」，与当前 profile 的 bundle id「%@」不匹配。\n\n"
                         @"这两个是不同的应用，profile 不能跨 app 通用。请用「通配符 profile（TEAMID.*）」"
                         @"或与该 IPA bundle id 一致的 profile 重新导入后再试。",
-                        appShown, profShown],
+                        appCore, profCore],
                     @"appBundle": appBundle,
                     @"profBundle": profBundle,
                 }];

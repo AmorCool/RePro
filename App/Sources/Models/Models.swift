@@ -11,7 +11,7 @@ enum BlacklistSource: String {
 
     var label: String {
         switch self {
-        case .installed: return "ReSign 签应用"
+        case .installed: return "ReSign"
         case .other: return "其它应用"
         }
     }

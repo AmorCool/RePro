@@ -1307,6 +1307,7 @@ int main(int argc, char *argv[]) {
     //   2 秒延迟让 installd 把 xattr 写完再删，避免竞态。
     int t3; notify_register_dispatch("com.reprovision.bypass-3app-request", &t3,
         dispatch_get_main_queue(), ^(int _){
+        s_log(@"3应用绕过: 收到 App 的 bypass-3app-request 信号，2 秒后执行（让 installd 写完 xattr）");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             s_bypass3AppLimitIfEnabled(@"App 签名完成");
