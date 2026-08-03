@@ -228,6 +228,8 @@ final class BridgeClient: ObservableObject {
 
     func resign(bundleID: String, completion: @escaping (Result<Void, Error>) -> Void) {
         bridge.resignApplication(bundleIdentifier: bundleID) { error in
+            // 会话级兜底：单点重签收口也发一次绕过请求（与逐 app progress=100 互补）
+            RPVSigningdNotify.notifyBypass3AppRequest()
             if let error = error {
                 completion(.failure(error))
             } else {
@@ -239,6 +241,8 @@ final class BridgeClient: ObservableObject {
     func resignAllExpiring(thresholdDays: Int, completion: @escaping (Result<Void, Error>) -> Void) {
         bridge.resignAllExpiringApplications(thresholdDays: Int32(thresholdDays)) { [weak self] error in
             self?.notifyPipelineResult(error)
+            // 会话级兜底：整条流水线结束（前台/后台续签都走这）发一次绕过请求
+            RPVSigningdNotify.notifyBypass3AppRequest()
             if let error = error {
                 completion(.failure(error))
             } else {
@@ -251,6 +255,8 @@ final class BridgeClient: ObservableObject {
     func resignAllApplications(completion: @escaping (Result<Void, Error>) -> Void) {
         bridge.resignAllApplications { [weak self] error in
             self?.notifyPipelineResult(error)
+            // 会话级兜底：批量刷新整条流水线结束时发一次绕过请求（修复「批量签名不触发绕过」）
+            RPVSigningdNotify.notifyBypass3AppRequest()
             if let error = error {
                 completion(.failure(error))
             } else {
@@ -269,6 +275,8 @@ final class BridgeClient: ObservableObject {
     func importIPA(url: URL, completion: @escaping (Result<InstalledApp, Error>) -> Void) {
         bridge.importAndInstallIPA(url: url) { info, error in
             if let info = info {
+                // IPA 安装成功 → 发一次绕过请求（与逐 app progress=100 互补）
+                RPVSigningdNotify.notifyBypass3AppRequest()
                 completion(.success(InstalledApp(info: info)))
             } else {
                 completion(.failure(error ?? ReSignError.invalidIPA))

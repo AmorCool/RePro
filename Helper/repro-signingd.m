@@ -380,7 +380,25 @@ static BOOL s_bypassEnabled(void) {
     return NO;
 }
 
-/// 扫描所有已安装 App，删除免费账号计数用的 xattr。返回实际清除的个数。
+/// 递归收集一个 App 容器里所有「会被 installd 打免费计数 xattr」的 bundle：
+/// 主 .app 以及它内部的扩展 .appex（扩展还可能嵌套在 PlugIns 下，逐层向下找）。
+/// 这是 v1.1.105 修复「带多个扩展的 App 没正确绕过」的关键——每个 .appex 也是独立计数 bundle。
+static void s_enumerateSignedBundles(NSString *root, void (^cb)(NSString *bundlePath)) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *entry in [fm contentsOfDirectoryAtPath:root error:nil] ?: @[]) {
+        NSString *full = [root stringByAppendingPathComponent:entry];
+        BOOL isDir = NO;
+        [fm fileExistsAtPath:full isDirectory:&isDir];
+        if (!isDir) continue;
+        if ([entry.pathExtension isEqualToString:@"app"] ||
+            [entry.pathExtension isEqualToString:@"appex"]) {
+            cb(full);
+        }
+        s_enumerateSignedBundles(full, cb); // 继续向下找嵌套扩展
+    }
+}
+
+/// 扫描所有已安装 App（含扩展），删除免费账号计数用的 xattr。返回实际清除的个数。
 static NSInteger s_bypass3AppLimit(NSString *reason) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray *uuids = [fm contentsOfDirectoryAtPath:kBundleRoot error:nil];
@@ -389,43 +407,39 @@ static NSInteger s_bypass3AppLimit(NSString *reason) {
         return 0;
     }
 
-    NSInteger scanned = 0, cleared = 0, failed = 0;
-    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    __block NSInteger scanned = 0, cleared = 0, failed = 0;
+    __block NSMutableArray<NSString *> *names = [NSMutableArray array];
 
     for (NSString *uuid in uuids) {
         @autoreleasepool {
             NSString *container = [kBundleRoot stringByAppendingPathComponent:uuid];
-            NSArray *entries = [fm contentsOfDirectoryAtPath:container error:nil];
-            for (NSString *entry in entries) {
-                if (![entry.pathExtension isEqualToString:@"app"]) continue;
-
-                NSString *appPath = [container stringByAppendingPathComponent:entry];
-                const char *cpath = appPath.fileSystemRepresentation;
+            s_enumerateSignedBundles(container, ^(NSString *bp) {
+                const char *cpath = bp.fileSystemRepresentation;
                 scanned++;
 
                 // 没有该 xattr = App Store 应用 或 已经绕过过了 → 不动
-                if (getxattr(cpath, kFreeProfileXattr, NULL, 0, 0, 0) < 0) continue;
+                if (getxattr(cpath, kFreeProfileXattr, NULL, 0, 0, 0) < 0) return;
 
                 if (removexattr(cpath, kFreeProfileXattr, 0) == 0) {
                     cleared++;
-                    [names addObject:[entry stringByDeletingPathExtension]];
+                    [names addObject:bp.lastPathComponent];
                 } else {
                     failed++;
                     s_log(@"3应用绕过: 清除「%@」的 xattr 失败 errno=%d(%s)",
-                          entry, errno, strerror(errno));
+                          bp.lastPathComponent, errno, strerror(errno));
                 }
-            }
+            });
         }
     }
 
     if (cleared > 0) {
-        s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，已解除 %ld 个 → %@",
+        s_log(@"3应用绕过[%@]: 扫描 %ld 个 bundle（含扩展），已解除 %ld 个 → %@",
               reason, (long)scanned, (long)cleared, [names componentsJoinedByString:@", "]);
     } else if (failed > 0) {
-        s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，%ld 个清除失败",
+        s_log(@"3应用绕过[%@]: 扫描 %ld 个 bundle，%ld 个清除失败",
               reason, (long)scanned, (long)failed);
     } else {
-        s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，没有需要处理的（均已解除或非免费签名）",
+        s_log(@"3应用绕过[%@]: 扫描 %ld 个 bundle，没有需要处理的（均已解除或非免费签名）",
               reason, (long)scanned);
     }
     return cleared;
@@ -460,6 +474,7 @@ static void s_clearNextFireDate(void) {
 
 // 前向声明
 static void s_start_timer(NSTimeInterval sec);
+static void s_requestBypass(NSString *reason);
 
 // ─── 唤醒 App 到后台执行静默续签（含保活 + 系统唤醒） ────────
 
@@ -1099,12 +1114,33 @@ static void s_onSigningComplete(void) {
     [result writeToFile:kResultPath atomically:YES];
     chown(kResultPath.UTF8String, 501, 501);
 
-    // 续签重装完成 → 立刻解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
-    // 延迟 2 秒让 installd 收尾，避免刚删又被写回。
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        s_bypass3AppLimitIfEnabled(@"续签完成");
-    });
+    // 续签重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
+    // 通过合并计时器，2 秒后执行一次（让 installd 收尾，避免刚删又被写回）。
+    s_requestBypass(@"续签完成");
+}
+
+// ─── 3 应用绕过：合并计时器 ────────────────────────────────────
+// 批量签名时每个 app / 每次流水线结束都会请求一次，这里合并为
+// 「最后一次请求后 2 秒」只真正执行一次，避免反复扫描 installd 目录。
+static dispatch_source_t s_bypassTimer = NULL;
+static NSString *s_bypassReason = nil;
+
+static void s_requestBypass(NSString *reason) {
+    s_bypassReason = reason ?: @"合并请求";
+    if (!s_bypassTimer) {
+        s_bypassTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                               dispatch_get_main_queue());
+        dispatch_source_set_event_handler(s_bypassTimer, ^{
+            dispatch_source_cancel(s_bypassTimer);
+            s_bypassTimer = NULL;
+            s_bypass3AppLimitIfEnabled(s_bypassReason);
+        });
+        dispatch_resume(s_bypassTimer);
+    }
+    // 以最后一次请求为准，2 秒后触发
+    dispatch_source_set_timer(s_bypassTimer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER, 0);
 }
 
 // ─── --status 诊断输出 ──────────────────────────────────────────
@@ -1142,17 +1178,15 @@ static int s_printStatus(void) {
         printf("3应用绕过开关    : %s\n", on ? "开" : "关");
 
         NSFileManager *fm = [NSFileManager defaultManager];
-        NSInteger total = 0, marked = 0;
+        __block NSInteger total = 0, marked = 0;
         for (NSString *uuid in [fm contentsOfDirectoryAtPath:kBundleRoot error:nil]) {
             NSString *container = [kBundleRoot stringByAppendingPathComponent:uuid];
-            for (NSString *entry in [fm contentsOfDirectoryAtPath:container error:nil]) {
-                if (![entry.pathExtension isEqualToString:@"app"]) continue;
+            s_enumerateSignedBundles(container, ^(NSString *p) {
                 total++;
-                NSString *p = [container stringByAppendingPathComponent:entry];
                 if (getxattr(p.fileSystemRepresentation, kFreeProfileXattr, NULL, 0, 0, 0) >= 0) marked++;
-            }
+            });
         }
-        printf("免费签名计数     : %ld / %ld 个应用仍带计数标记%s\n",
+        printf("免费签名计数     : %ld / %ld 个 bundle 仍带计数标记%s\n",
                (long)marked, (long)total,
                marked > 0 ? "（≥3 个会触发限制，可 --bypass-3app 手动解除）" : "");
     }
@@ -1307,18 +1341,12 @@ int main(int argc, char *argv[]) {
     //   2 秒延迟让 installd 把 xattr 写完再删，避免竞态。
     int t3; notify_register_dispatch("com.reprovision.bypass-3app-request", &t3,
         dispatch_get_main_queue(), ^(int _){
-        s_log(@"3应用绕过: 收到 App 的 bypass-3app-request 信号，2 秒后执行（让 installd 写完 xattr）");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            s_bypass3AppLimitIfEnabled(@"App 签名完成");
-        });
+        s_log(@"3应用绕过: 收到 App 的 bypass-3app-request 信号（合并后执行）");
+        s_requestBypass(@"App 签名完成");
     });
 
     // 启动时先跑一次：覆盖 daemon 未运行期间（重启后 / 刚装完 deb）新装的应用
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        s_bypass3AppLimitIfEnabled(@"daemon 启动");
-    });
+    s_requestBypass(@"daemon 启动");
 
     s_log(@"进入主循环（等待定时器/SIGHUP/解锁/亮屏触发）");
     [[NSRunLoop mainRunLoop] run];
