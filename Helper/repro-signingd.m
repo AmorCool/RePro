@@ -28,6 +28,9 @@
 //    8. 主动唤醒 App 到后台执行静默续签
 //    9. ★ BKSProcessAssertion 保活（防止 App 被系统挂起）
 //   10. ★ IOPMSchedulePowerEvent 系统级唤醒（锁屏时也能准时触发）
+//   11. ★ v1.1.95 解除免费账号「同一设备最多 3 个自签应用」限制
+//          （删除 .app 目录上的 com.apple.installd.validatedByFreeProfile 扩展属性，
+//           参考 rooootdev/Lara；每次签名/续签完成后自动执行，需在 App 设置里开启）
 //
 //  架构说明（与 test2 reprovisiond 一致）：
 //    Daemon 本身不执行签名操作（签名需要 zsign + 凭证访问 + 网络请求）。
@@ -42,6 +45,9 @@
 
 #include <notify.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
+#include <errno.h>
+#include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
@@ -62,6 +68,11 @@ static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
 // （kAppBundleID 也用于读 App 配置：App 把设置同步到共享 plist
 //  /var/mobile/Library/RePro/signingd-config.plist，与 BundleID 无关，不受影响。）
 static NSString *const kAppBundleID = @"com.reprovision.repro";
+
+// 免费账号「同一设备最多 3 个自签应用」限制所依赖的扩展属性名
+static const char *const kFreeProfileXattr = "com.apple.installd.validatedByFreeProfile";
+// 用户 App 安装根目录（rootless / RootHide 下真实路径一致；daemon 跑在 rootfs 真实命名空间）
+static NSString *const kBundleRoot = @"/var/containers/Bundle/Application";
 
 static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
 static const NSInteger  kFallbackDays    = 2;
@@ -350,6 +361,98 @@ static sd_config s_cfg(void) {
         }
     }
     return cfg;
+}
+
+// ─── 免费账号「3 个自签应用」限制绕过 ────────────────────────────
+//
+// 原理（参考 rooootdev/Lara 的 sbx3apbypass()，已实测支持 iOS 17.0–18.7.1）：
+//   installd 在安装「用免费开发者账号 profile 校验通过」的 App 时，会给该
+//   .app 目录打上扩展属性 com.apple.installd.validatedByFreeProfile。
+//   系统就是靠数这个 xattr 的个数来执行「同一设备最多 3 个免费签名 App」的限制。
+//   把这个 xattr 删掉，系统数不到，限制自然失效。
+//
+//   Lara 需要 DarkSword 内核漏洞 + VFS 才能拿到写权限；我们不需要 ——
+//   repro-signingd 本身就是 rootfs LaunchDaemon，以 root 跑在真实命名空间里，
+//   直接 removexattr() 即可，RootHide 的 namespace 隔离也影响不到 daemon。
+//
+// ⚠️ 只解决「设备同时 3 个」这一条设备侧限制。
+//    Apple 服务端的「每 7 天最多 10 个 App ID」是完全不同的另一套机制，绕不过。
+//
+// 安全性：只删「本来就带这个 xattr」的目录（即免费账号签名的 App），
+//         App Store 应用不带该属性，扫描时会被 getxattr 直接跳过，不会被动到。
+
+/// 读设置开关 bypassFreeAppLimit（三级来源回退，默认关闭）
+static BOOL s_bypassEnabled(void) {
+    NSArray *sources = @[
+        s_readAppPreferences() ?: @{},
+        [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{},
+        s_readContainerPreferences() ?: @{},
+    ];
+    for (NSDictionary *d in sources) {
+        id v = d[@"bypassFreeAppLimit"];
+        if (v) return [v boolValue];
+    }
+    return NO;
+}
+
+/// 扫描所有已安装 App，删除免费账号计数用的 xattr。返回实际清除的个数。
+static NSInteger s_bypass3AppLimit(NSString *reason) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *uuids = [fm contentsOfDirectoryAtPath:kBundleRoot error:nil];
+    if (uuids.count == 0) {
+        s_log(@"3应用绕过[%@]: %@ 为空或不可读，跳过", reason, kBundleRoot);
+        return 0;
+    }
+
+    NSInteger scanned = 0, cleared = 0, failed = 0;
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+
+    for (NSString *uuid in uuids) {
+        @autoreleasepool {
+            NSString *container = [kBundleRoot stringByAppendingPathComponent:uuid];
+            NSArray *entries = [fm contentsOfDirectoryAtPath:container error:nil];
+            for (NSString *entry in entries) {
+                if (![entry.pathExtension isEqualToString:@"app"]) continue;
+
+                NSString *appPath = [container stringByAppendingPathComponent:entry];
+                const char *cpath = appPath.fileSystemRepresentation;
+                scanned++;
+
+                // 没有该 xattr = App Store 应用 或 已经绕过过了 → 不动
+                if (getxattr(cpath, kFreeProfileXattr, NULL, 0, 0, 0) < 0) continue;
+
+                if (removexattr(cpath, kFreeProfileXattr, 0) == 0) {
+                    cleared++;
+                    [names addObject:[entry stringByDeletingPathExtension]];
+                } else {
+                    failed++;
+                    s_log(@"3应用绕过: 清除「%@」的 xattr 失败 errno=%d(%s)",
+                          entry, errno, strerror(errno));
+                }
+            }
+        }
+    }
+
+    if (cleared > 0) {
+        s_log(@"✅ 3应用绕过[%@]: 扫描 %ld 个 App，已解除 %ld 个 → %@",
+              reason, (long)scanned, (long)cleared, [names componentsJoinedByString:@", "]);
+    } else if (failed > 0) {
+        s_log(@"⚠️ 3应用绕过[%@]: 扫描 %ld 个 App，%ld 个清除失败",
+              reason, (long)scanned, (long)failed);
+    } else {
+        s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，没有需要处理的（均已解除或非免费签名）",
+              reason, (long)scanned);
+    }
+    return cleared;
+}
+
+/// 带开关判断的入口：设置里没开就直接返回
+static void s_bypass3AppLimitIfEnabled(NSString *reason) {
+    if (!s_bypassEnabled()) {
+        s_log(@"3应用绕过[%@]: 设置未开启，跳过", reason);
+        return;
+    }
+    s_bypass3AppLimit(reason);
 }
 
 // ─── 状态持久化（nextFireDate） ──────────────────────────────────
@@ -1010,6 +1113,13 @@ static void s_onSigningComplete(void) {
     if (appReport) result[@"appReport"] = appReport;
     [result writeToFile:kResultPath atomically:YES];
     chown(kResultPath.UTF8String, 501, 501);
+
+    // 续签重装完成 → 立刻解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
+    // 延迟 2 秒让 installd 收尾，避免刚删又被写回。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s_bypass3AppLimitIfEnabled(@"续签完成");
+    });
 }
 
 // ─── --status 诊断输出 ──────────────────────────────────────────
@@ -1040,6 +1150,27 @@ static int s_printStatus(void) {
     printf("自动续签开关     : %s\n", c.enabled ? "开" : "关");
     printf("检查间隔         : %ld 分钟   ← 应与 App「设置」页一致\n", (long)c.minutes);
     printf("提前重签阈值     : %ld 天     ← 应与 App「设置」页一致\n", (long)c.days);
+
+    // 2b. 免费账号 3 应用限制绕过
+    {
+        BOOL on = s_bypassEnabled();
+        printf("3应用绕过开关    : %s\n", on ? "开" : "关");
+
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSInteger total = 0, marked = 0;
+        for (NSString *uuid in [fm contentsOfDirectoryAtPath:kBundleRoot error:nil]) {
+            NSString *container = [kBundleRoot stringByAppendingPathComponent:uuid];
+            for (NSString *entry in [fm contentsOfDirectoryAtPath:container error:nil]) {
+                if (![entry.pathExtension isEqualToString:@"app"]) continue;
+                total++;
+                NSString *p = [container stringByAppendingPathComponent:entry];
+                if (getxattr(p.fileSystemRepresentation, kFreeProfileXattr, NULL, 0, 0, 0) >= 0) marked++;
+            }
+        }
+        printf("免费签名计数     : %ld / %ld 个应用仍带计数标记%s\n",
+               (long)marked, (long)total,
+               marked > 0 ? "（≥3 个会触发限制，可 --bypass-3app 手动解除）" : " ✅");
+    }
 
     // 3. 下次计划触发
     NSDate *next = s_getNextFireDate();
@@ -1119,6 +1250,17 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    // ── --bypass-3app: 手动解除免费账号 3 应用限制（无视设置开关，强制执行一次） ──
+    if (argc >= 2 && strcmp(argv[1], "--bypass-3app") == 0) {
+        s_log(@"========================================");
+        s_log(@"收到 --bypass-3app（手动强制执行，忽略设置开关）");
+        NSInteger n = s_bypass3AppLimit(@"手动命令");
+        printf("已解除 %ld 个应用的免费签名计数标记\n", (long)n);
+        s_log(@"========================================");
+        if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
+        return 0;
+    }
+
     // ── 正常守护模式 ──
     s_log(@"========================================");
     s_log(@"=== 启动 pid=%d uid=%d ===", getpid(), getuid());
@@ -1126,6 +1268,7 @@ int main(int argc, char *argv[]) {
     s_log(@"  sudo /usr/libexec/repro-signingd --status      ← 查看是否真的续签了（推荐先看这个）");
     s_log(@"  sudo killall -HUP repro-signingd              ← 手动触发续签（daemon 不会退出）");
     s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 同步手动触发（前台看完整输出）");
+    s_log(@"  sudo /usr/libexec/repro-signingd --bypass-3app ← 手动解除免费账号 3 应用限制");
     s_log(@"  sudo launchctl kickstart -k system/jp.soh.reprovision.signingd  ← 重启 daemon");
     s_log(@"========================================");
     s_setup_signal_handlers();
@@ -1172,6 +1315,23 @@ int main(int argc, char *argv[]) {
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
         dispatch_get_main_queue(), ^(int _){
         s_onSigningComplete();
+    });
+
+    // ★ App 每完成一个应用的签名安装就发一次，daemon 立即解除 3 应用限制。
+    //   前台手动签名 / IPA 导入安装 / 其它应用签名 / 后台续签 全部走这条通道。
+    //   2 秒延迟让 installd 把 xattr 写完再删，避免竞态。
+    int t3; notify_register_dispatch("com.reprovision.bypass-3app-request", &t3,
+        dispatch_get_main_queue(), ^(int _){
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            s_bypass3AppLimitIfEnabled(@"App 签名完成");
+        });
+    });
+
+    // 启动时先跑一次：覆盖 daemon 未运行期间（重启后 / 刚装完 deb）新装的应用
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s_bypass3AppLimitIfEnabled(@"daemon 启动");
     });
 
     s_log(@"进入主循环（等待定时器/SIGHUP/解锁/亮屏触发）");

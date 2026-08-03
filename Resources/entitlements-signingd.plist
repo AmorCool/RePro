@@ -26,6 +26,15 @@
     <key>com.apple.private.skip-library-validation</key>
     <true/>
 
+    <!-- ★ v1.1.95：/var/containers/Bundle/Application 在 iOS 上是 data vault，
+         没有这两条即使 root 也会被内核挡在门外（EPERM）。
+         「解除免费账号 3 应用限制」需要对 .app 目录 removexattr，必须有它们。
+         （RootHide 版权限文件里本来就有，这里给 rootful / rootless 补齐。） -->
+    <key>com.apple.private.security.storage.AppBundles</key>
+    <true/>
+    <key>com.apple.private.security.storage.AppDataContainers</key>
+    <true/>
+
     <!-- ★ 允许通过 SpringBoardServices 请求 backboardd 启动 App（后台唤醒的前提） -->
     <key>com.apple.backboardd.launchapplications</key>
     <true/>

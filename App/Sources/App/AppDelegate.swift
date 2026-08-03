@@ -321,9 +321,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let d = UserDefaults.standard
         let intervalMin = d.object(forKey: "checkIntervalMin") as? Int ?? 120
         let config: [String: Any] = [
-            "autoResign":       d.object(forKey: "autoResign") as? Bool ?? true,
-            "checkIntervalMin": intervalMin,
-            "resignThreshold":  d.object(forKey: "resignThreshold") as? Int ?? 2,
+            "autoResign":         d.object(forKey: "autoResign") as? Bool ?? true,
+            "checkIntervalMin":   intervalMin,
+            "resignThreshold":    d.object(forKey: "resignThreshold") as? Int ?? 2,
+            // daemon 的 s_bypassEnabled() 会按 CFPreferences → 本 plist → 容器偏好 三级回退，
+            // 这里同步一份，保证 RootHide 下 cfprefsd 跨 namespace 读不到时仍能生效。
+            "bypassFreeAppLimit": d.object(forKey: "bypassFreeAppLimit") as? Bool ?? false,
         ]
         let fm = FileManager.default
         if !fm.fileExists(atPath: Self.ipcDir) {

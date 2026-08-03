@@ -72,6 +72,15 @@
     notify_post("com.reprovision.signing-complete");
 }
 
++ (void)notifyBypass3AppRequest {
+    // 开关关着就不用惊动 daemon（daemon 侧也会再判一次，双保险）
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"bypassFreeAppLimit"]) return;
+    uint32_t status = notify_post("com.reprovision.bypass-3app-request");
+    if (status != 0) {
+        NSLog(@"[ReSign] 请求 3 应用绕过失败: notify_post 0x%x", status);
+    }
+}
+
 - (void)dealloc {
     if (_token > 0) notify_cancel(_token);
 }

@@ -10,6 +10,10 @@ struct SettingsView: View {
     // checkIntervalMin: 检查间隔，单位分钟，默认 120（2小时），最少 1 分钟
     @AppStorage("checkIntervalMin") private var checkIntervalMin: Int = 120
 
+    // 免费账号「同一设备最多 3 个自签应用」限制绕过。
+    // 键名必须与 repro-signingd.m 的 s_bypassEnabled() 读取的键一致。
+    @AppStorage("bypassFreeAppLimit") private var bypassFreeAppLimit: Bool = false
+
     // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
     @AppStorage("notificationsDebug") private var notificationsDebug: Bool = false
@@ -48,6 +52,7 @@ struct SettingsView: View {
             Form {
                 accountSection
                 autoResignSection
+                freeLimitSection
                 notificationSection
                 signingBackendSection
                 systemSection
@@ -227,6 +232,32 @@ struct SettingsView: View {
                     .foregroundColor(.red)
                 }
                 .padding(.top, 4)
+            }
+        }
+    }
+
+    // MARK: - 免费账号应用数量限制
+
+    private var freeLimitSection: some View {
+        Section {
+            Toggle("自动绕过 3 应用限制", isOn: $bypassFreeAppLimit)
+                .onChange(of: bypassFreeAppLimit) { newValue in
+                    needsConfigSync = true
+                    LogManager.shared.info("3 应用限制绕过已\(newValue ? "开启" : "关闭")", source: "SettingsView")
+                    if newValue {
+                        // 立刻对现有已安装应用执行一次，不必等下次签名
+                        RPVSigningdNotify.notifyBypass3AppRequest()
+                    }
+                }
+        } header: {
+            Text("免费账号限制")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("免费 Apple ID 默认同一台设备最多只能有 3 个自签应用。系统靠给 App 目录打扩展属性 com.apple.installd.validatedByFreeProfile 来计数，开启后 repro-signingd 会在每次签名（含后台续签）完成后以 root 权限清除该标记，让系统数不到，从而突破 3 个的上限。")
+                Text("⚠️ 这只解除「设备同时 3 个」这一条限制。Apple 服务端的「每 7 天最多注册 10 个 App ID」是另一套机制，无法绕过。")
+                    .foregroundColor(.orange)
+                Text("只会动带该标记的自签应用，App Store 应用不受影响。如需手动执行一次：sudo /usr/libexec/repro-signingd --bypass-3app")
+                    .font(.caption)
             }
         }
     }
