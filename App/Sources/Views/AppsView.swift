@@ -115,15 +115,10 @@ struct AppsView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 8)
 
-                if viewModel.installedApps.isEmpty {
+                if viewModel.installedApps.isEmpty && viewModel.otherApps.isEmpty {
                     emptyState
                 } else {
                     appList
-                }
-
-                // 「其他应用」Section（非当前 Apple ID 签名的应用）
-                if !viewModel.otherApps.isEmpty {
-                    otherAppsSection
                 }
             }
             .background(Color(.systemGroupedBackground)) // 浅灰底，不刺眼
@@ -220,19 +215,29 @@ struct AppsView: View {
         }
     }
 
-    // MARK: 应用列表（ReSign 签名应用）
+    // MARK: 应用列表（ReSign 签应用 + 其它应用，同一 List 同层 Section）
     private var appList: some View {
         List {
+            // Section 1: ReSign 签应用（本机 Apple ID 签名的应用）
             Section {
-                ForEach(viewModel.installedApps) { app in
-                    AppRowView(app: app) {
-                        viewModel.resign(app: app)
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            pendingUninstall = app
-                        } label: {
-                            Label("卸载", systemImage: "trash")
+                if viewModel.installedApps.isEmpty {
+                    Text("暂无本机签名的应用")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 12)
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(viewModel.installedApps) { app in
+                        AppRowView(app: app) {
+                            viewModel.resign(app: app)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                pendingUninstall = app
+                            } label: {
+                                Label("卸载", systemImage: "trash")
+                            }
                         }
                     }
                 }
@@ -245,55 +250,49 @@ struct AppsView: View {
                 .padding(.vertical, 4)
                 .textCase(nil) // 保留原始大小写
             }
+
+            // Section 2: 其它应用（非当前 Apple ID 签名的应用，永远显示做预留）
+            Section {
+                if viewModel.otherApps.isEmpty {
+                    Text("暂无其它应用")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 12)
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(viewModel.otherApps) { app in
+                        OtherAppRowView(app: app) {
+                            pendingOtherAppResign = app
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("其它应用")
+                        .font(.headline)
+                    Spacer()
+                    if !viewModel.otherApps.isEmpty {
+                        Button("签名") {
+                            // 批量重签所有其它应用（带警告）
+                            if let first = viewModel.otherApps.first {
+                                pendingOtherAppResign = first
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(viewModel.isBusy || !account.isSignedIn)
+                    }
+                }
+                .padding(.vertical, 4)
+                .textCase(nil)
+            }
         }
         .refreshable {
             await viewModel.refreshApps()
             await viewModel.refreshOtherApps()
         }
         .scrollContentBackground(.hidden) // 让 List 透出外层浅灰底
-    }
-
-    // MARK: 其他应用（非当前 Apple ID 签名）
-    private var otherAppsSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Section 标题 + 签名按钮
-            HStack {
-                Text("其他应用")
-                    .font(.headline)
-                Spacer()
-                Button("签名") {
-                    // 批量重签所有其他应用（带警告）
-                    if let first = viewModel.otherApps.first {
-                        pendingOtherAppResign = first
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(viewModel.isBusy || !account.isSignedIn)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            Divider()
-
-            // 其他应用列表
-            ForEach(viewModel.otherApps) { app in
-                OtherAppRowView(app: app) {
-                    pendingOtherAppResign = app
-                }
-            }
-
-            // 底部统计
-            Text("已找到 \(viewModel.otherApps.count) 个 App ID")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-        }
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(12)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
 }
 
