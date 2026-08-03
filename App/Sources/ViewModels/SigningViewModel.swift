@@ -1,6 +1,13 @@
 import Foundation
 import Combine
 
+// 导入含扩展的 IPA 时，用户对扩展的处理选择
+enum ExtensionChoice {
+    case useMainProfile    // 扩展复用主 App 的通配符 profile 签名
+    case removeExtensions  // 移除所有 PlugIns/*.appex
+    case cancel            // 取消导入
+}
+
 // MARK: - 签名逻辑协调 ViewModel
 //
 // 所有实际工作都交给 BridgeClient -> RPVBridge -> Vendor/ReProvision，
@@ -24,6 +31,11 @@ final class SigningViewModel: ObservableObject {
     @Published var isBusy: Bool = false
     @Published var progressMessage: String = ""
     @Published var lastError: String?
+
+    /// 导入含扩展的 IPA 时弹出的「扩展处理方式」选择弹窗状态
+    @Published var showExtensionChoice = false
+    /// 待用户确认处理方式的 IPA（含扩展）：URL 与文件名
+    private var pendingExtensionIPA: (url: URL, fileName: String)?
 
     private let client = BridgeClient.shared
 
@@ -207,8 +219,25 @@ final class SigningViewModel: ObservableObject {
     /// Vendor 侧 RPVIpaBundleApplication 会自己 startAccessingSecurityScopedResource,
     /// 所以这里不再手动往 tmp 复制一份。
     func importIPA(url: URL) {
-        guard beginWork("正在导入 \(url.lastPathComponent)…") else { return }
         LogManager.shared.info("导入 IPA: \(url.lastPathComponent)", source: "SigningViewModel")
+
+        // 检测是否含 App 扩展；含则先弹窗让用户决定处理方式，不直接开始导入。
+        if RPVBridge.ipaContainsExtensions(at: url) {
+            LogManager.shared.info("导入 IPA 检测到扩展（PlugIns/*.appex）: \(url.lastPathComponent)", source: "SigningViewModel")
+            pendingExtensionIPA = (url: url, fileName: url.lastPathComponent)
+            showExtensionChoice = true
+            return
+        }
+
+        performImport(url: url, removeExtensions: false, useMainProfile: false)
+    }
+
+    /// 真正发起导入（含扩展选项的透传）。
+    private func performImport(url: URL, removeExtensions: Bool, useMainProfile: Bool) {
+        guard beginWork("正在导入 \(url.lastPathComponent)…") else { return }
+        // 透传扩展处理选项给 EEBackend（仅影响本次导入；signBundleAtPath 入口读入后立即清零）。
+        RPVBridge.setExtensionImportOptions(removeExtensions: removeExtensions, useMainProfile: useMainProfile)
+        LogManager.shared.info("开始导入 IPA（扩展选项 remove=\(removeExtensions) useMain=\(useMainProfile)）: \(url.lastPathComponent)", source: "SigningViewModel")
 
         // 导入 IPA 不在此处撤销证书：导入后本就会重新签名安装，
         // 撤销证书反而可能打断其签名流程，属多余操作。
@@ -223,6 +252,25 @@ final class SigningViewModel: ObservableObject {
                 self.endWork(message: "导入失败", error: error)
             }
             Task { await self.refreshApps() }
+        }
+    }
+
+    /// 弹窗里用户对扩展处理方式的确认回调（由 AppsView 的 confirmationDialog 调用）。
+    func confirmExtensionChoice(_ choice: ExtensionChoice) {
+        showExtensionChoice = false
+        guard let pending = pendingExtensionIPA else { return }
+        pendingExtensionIPA = nil
+        let fileName = pending.fileName
+        switch choice {
+        case .useMainProfile:
+            LogManager.shared.info("导入 IPA 扩展处理: 用户选择=扩展用主 profile 签名 | IPA=\(fileName)", source: "SigningViewModel")
+            performImport(url: pending.url, removeExtensions: false, useMainProfile: true)
+        case .removeExtensions:
+            LogManager.shared.info("导入 IPA 扩展处理: 用户选择=移除所有扩展 | IPA=\(fileName)", source: "SigningViewModel")
+            performImport(url: pending.url, removeExtensions: true, useMainProfile: false)
+        case .cancel:
+            LogManager.shared.info("导入 IPA 扩展处理: 用户取消导入 | IPA=\(fileName)", source: "SigningViewModel")
+            // 取消：不导入，也不设置任何扩展选项。
         }
     }
 

@@ -153,6 +153,21 @@ struct AppsView: View {
                     Text("这将移除「\(app.displayName)」的当前证书，并使用你的 Apple ID 重新签发新证书。\n\n此操作可能导致该应用的保存设置和文件丢失。")
                 }
             }
+            .confirmationDialog("检测到 App 扩展",
+                                isPresented: $viewModel.showExtensionChoice,
+                                titleVisibility: .visible) {
+                Button("扩展用主 profile 签名") {
+                    viewModel.confirmExtensionChoice(.useMainProfile)
+                }
+                Button("移除所有扩展") {
+                    viewModel.confirmExtensionChoice(.removeExtensions)
+                }
+                Button("取消", role: .cancel) {
+                    viewModel.confirmExtensionChoice(.cancel)
+                }
+            } message: {
+                Text("该 IPA 包含 PlugIns 扩展（*.appex）。\n「扩展用主 profile 签名」：扩展复用团队通配符 profile（TEAMID.*），不额外占用 App ID 配额与 3 应用槽；若通配 profile 获取失败会自动回退各自注册。\n「移除所有扩展」：签名前删除所有 PlugIns/*.appex，扩展功能将不可用。")
+            }
         }
         .navigationViewStyle(.stack)
     }

@@ -200,6 +200,21 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
                       completion:(void (^)(RPVAppInfo *_Nullable info, NSError *_Nullable error))completion
     NS_SWIFT_NAME(importAndInstallIPA(url:completion:));
 
+/// 检测 IPA 是否包含 App 扩展（Payload/*/PlugIns/*.appex）。
+/// 用于导入前决定是否需要弹窗让用户选择扩展处理方式。
+/// 注：RPVIpaBundleApplication._loadFileWithFormat: 只展开单个 "*" 通配目录，
+/// 故这里用 "Payload/*/PlugIns/*/Info.plist" 来探测 PlugIns 下的子 bundle。
++ (BOOL)ipaContainsExtensionsAtURL:(NSURL *)url
+    NS_SWIFT_NAME(ipaContainsExtensions(at:));
+
+/// 透传本次导入的「扩展处理」选项给 EEBackend（仅影响本次导入签名，单点/批量重签不受影响）。
+/// - removeExtensions: 签名前删除所有 PlugIns/*.appex（移除扩展）
+/// - useMainProfile:   扩展不再各自向 Apple 注册 App ID，而是复用团队通配符 profile（TEAMID.*）签名；
+///                      若该通配 profile 获取失败，自动回退为各自注册（不破坏主 App 签名）
++ (void)setExtensionImportOptionsRemoveExtensions:(BOOL)remove
+                       useMainProfileForExtensions:(BOOL)useMain
+    NS_SWIFT_NAME(setExtensionImportOptions(removeExtensions:useMainProfile:));
+
 #pragma mark 环境体检
 
 /// 采集运行环境快照（磁盘 IO 在后台队列，回调在主队列）

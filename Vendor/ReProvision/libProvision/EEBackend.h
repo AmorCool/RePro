@@ -33,6 +33,15 @@
 + (void)signBundleAtPath:(NSString*)path identity:(NSString*)identity gsToken:(NSString*)gsToken priorChosenTeamID:(NSString*)teamId withCompletionHandler:(void (^)(NSError *))completionHandler;
 
 /**
+ * 导入 IPA 时由 RPVBridge 设置的「扩展处理」选项。这两个开关只影响本次导入签名，
+ * 在 signBundleAtPath 入口被读入局部变量后立即清零，因此不会泄漏到后续的批量/单点重签。
+ * - removeExtensions: 签名前删除所有 PlugIns/*.appex（移除 App 扩展）。
+ * - useMainProfileForExtensions: 扩展不再各自向 Apple 注册 App ID，而是复用团队通配符
+ *   profile（TEAMID.*）签名；若该通配符 profile 获取失败，则自动回退为各自注册（不破坏主 App 签名）。
+ */
++ (void)setExtensionImportOptionsRemoveExtensions:(BOOL)removeExtensions useMainProfileForExtensions:(BOOL)useMainProfileForExtensions;
+
+/**
  Signs the IPA specified at the inputPath, then outputs it to the outputPath. *simple*.
  
  @param ipaPath The path the IPA to sign is currently available at.

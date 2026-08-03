@@ -28,6 +28,37 @@
 #import "CodeDirectory.h"
 #import "libMobileGestalt.h"
 
+#pragma mark - 导入 IPA 时的「扩展处理」选项（仅本次导入生效，signBundleAtPath 入口读入局部变量后立即清零）
+
+static BOOL g_rpvRemoveExtensionsOnImport = NO;
+static BOOL g_rpvUseMainProfileForExtensions = NO;
+
++ (void)setExtensionImportOptionsRemoveExtensions:(BOOL)removeExtensions useMainProfileForExtensions:(BOOL)useMainProfileForExtensions {
+    g_rpvRemoveExtensionsOnImport = removeExtensions;
+    g_rpvUseMainProfileForExtensions = useMainProfileForExtensions;
+}
+
+// 签名前删除 path 下所有 PlugIns/*.appex（App 扩展）。仅删扩展目录本身，不动主程序。
++ (void)_removeAppExtensionsAtPath:(NSString *)path {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *plugIns = [path stringByAppendingPathComponent:@"PlugIns"];
+    NSArray *entries = [fm contentsOfDirectoryAtPath:plugIns error:nil];
+    NSInteger removed = 0;
+    for (NSString *entry in entries) {
+        if ([[entry pathExtension] isEqualToString:@"appex"]) {
+            NSString *extPath = [plugIns stringByAppendingPathComponent:entry];
+            if ([fm removeItemAtPath:extPath error:nil]) removed++;
+        }
+    }
+    if (removed > 0) {
+        NSLog(@"[ReSign] 按用户选择移除扩展：已删除 %ld 个 PlugIns/*.appex", (long)removed);
+        // PlugIns 空了就一并删掉，避免 installd 因残留空目录报错。
+        if ([fm contentsOfDirectoryAtPath:plugIns error:nil].count == 0) {
+            [fm removeItemAtPath:plugIns error:nil];
+        }
+    }
+}
+
 #pragma mark - ARM64e：只读侦测，绝不改动用户二进制
 
 // 历史教训（1.1.32 一次性清算）：
@@ -530,6 +561,17 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 }
 
 + (void)signBundleAtPath:(NSString *)path identity:(NSString *)identity gsToken:(NSString *)gsToken priorChosenTeamID:(NSString *)teamId withCompletionHandler:(void (^)(NSError *error))completionHandler {
+    // 读入本次导入的「扩展处理」选项后立即清零，避免泄漏到后续批量/单点重签。
+    BOOL removeExtensions = g_rpvRemoveExtensionsOnImport;
+    BOOL useMainProfileForExtensions = g_rpvUseMainProfileForExtensions;
+    g_rpvRemoveExtensionsOnImport = NO;
+    g_rpvUseMainProfileForExtensions = NO;
+
+    // 用户选择「移除扩展」：签名前先把所有 PlugIns/*.appex 删掉。
+    if (removeExtensions) {
+        [self _removeAppExtensionsAtPath:path];
+    }
+
     // Signing kernel: zsign (replaces the old ldid-based EESigning path).
     //
     // zsign re-signs a whole .app (main executable + every nested extension /
@@ -567,7 +609,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
     context[@"profiles"] = [NSMutableArray array];
     context[@"tempFiles"] = [NSMutableArray array];
 
-    [self _provisionBundleAtPath:path identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context withCompletionHandler:^(NSError *provisionError) {
+    [self _provisionBundleAtPath:path identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context isExtension:NO withCompletionHandler:^(NSError *provisionError) {
         if (provisionError) {
             [self _cleanupTempFilesInContext:context];
             completionHandler(provisionError);
@@ -703,7 +745,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 // bundle's embedded.mobileprovision, and collects a staged copy of that profile
 // (plus, once, the shared certificate + private key) into `context` for the
 // single zsign pass performed by signBundleAtPath:.
-+ (void)_provisionBundleAtPath:(NSString *)path identity:(NSString *)identity gsToken:(NSString *)gsToken priorChosenTeamID:(NSString *)teamId context:(NSMutableDictionary *)context withCompletionHandler:(void (^)(NSError *error))completionHandler {
++ (void)_provisionBundleAtPath:(NSString *)path identity:(NSString *)identity gsToken:(NSString *)gsToken priorChosenTeamID:(NSString *)teamId context:(NSMutableDictionary *)context isExtension:(BOOL)isExtension withCompletionHandler:(void (^)(NSError *error))completionHandler {
     dispatch_group_t dispatch_group = dispatch_group_create();
     NSMutableArray *__block subBundleErrors = [NSMutableArray array];
 
@@ -718,7 +760,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 
             NSLog(@"Provisioning sub-bundle: %@", subBundlePath);
 
-            [self _provisionBundleAtPath:subBundlePath identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context withCompletionHandler:^(NSError *error) {
+            [self _provisionBundleAtPath:subBundlePath identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context isExtension:YES withCompletionHandler:^(NSError *error) {
                 if (error)
                     [subBundleErrors addObject:error];
 
@@ -739,7 +781,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 
             NSLog(@"Provisioning sub-bundle: %@", subBundlePath);
 
-            [self _provisionBundleAtPath:subBundlePath identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context withCompletionHandler:^(NSError *error) {
+            [self _provisionBundleAtPath:subBundlePath identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context isExtension:YES withCompletionHandler:^(NSError *error) {
                 if (error)
                     [subBundleErrors addObject:error];
 
@@ -854,11 +896,27 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
     NSString *applicationName = [infoplist objectForKey:@"CFBundleName"];
     NSString *binaryLocation = [path stringByAppendingFormat:@"/%@", [infoplist objectForKey:@"CFBundleExecutable"]];
 
-    // We get entitlements from the binary using ldid::Analyze() during provisioning, updating them as needed
-    // for the current Team ID.
+    // 扩展「用主 profile 签名」：复用团队通配符 profile（TEAMID.*），不各自向 Apple 注册 App ID，
+    // 从而不烧「7 天 10 个 App ID」配额、也不占 3 应用槽。获取失败则回退为扩展各自注册（不破坏主 App 签名）。
+    BOOL useWildcardForExtension = (useMainProfileForExtensions && isExtension);
 
     EEProvisioning *provisioner = [EEProvisioning provisionerWithCredentials:identity:gsToken];
-    [provisioner downloadProvisioningProfileForApplicationIdentifier:applicationId applicationName:applicationName binaryLocation:(NSString *)binaryLocation withTeamIDCheck:^NSString *(NSArray *teams) {
+
+    // 通配符 profile 只获取一次，缓存到 context 供多个扩展复用（避免每个扩展重复注册）。
+    if (useWildcardForExtension && context[@"wildcardProfile"]) {
+        NSData *wp = context[@"wildcardProfile"];
+        [wp writeToFile:embeddedPath options:NSDataWritingAtomic error:nil];
+        NSString *staged = [self _writeTempData:wp extension:@"mobileprovision" context:context];
+        if (staged.length) {
+            @synchronized(context) { [context[@"profiles"] addObject:staged]; }
+        }
+        completionHandler(nil);
+        return;
+    }
+
+    NSString *provisioningAppId = useWildcardForExtension ? [teamId stringByAppendingString:@".*"] : applicationId;
+
+    [provisioner downloadProvisioningProfileForApplicationIdentifier:provisioningAppId applicationName:applicationName binaryLocation:(NSString *)binaryLocation withTeamIDCheck:^NSString *(NSArray *teams) {
         // If this is called, then the user is on multiple teams, and must be asked which one they want to use.
         // When integrated into an app, this backend can assume that this choice has been prior made, and so
         // we can return the result of that choice now.
@@ -866,9 +924,24 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         return teamId;
     } systemType:systemType andCallback:^(NSError *error, NSData *embeddedMobileProvision, NSString *privateKey, NSDictionary *certificate, NSDictionary *entitlements) {
         if (error) {
+            if (useWildcardForExtension) {
+                // 通配符获取失败：回退为扩展各自注册（当前行为），不破坏主 App 签名。
+                NSLog(@"[ReSign] 扩展通配符 profile 获取失败，回退各自注册: %@", error.localizedDescription);
+                [provisioner downloadProvisioningProfileForApplicationIdentifier:applicationId applicationName:applicationName binaryLocation:binaryLocation withTeamIDCheck:^NSString *(NSArray *teams){ return teamId; } systemType:systemType andCallback:^(NSError *error2, NSData *embeddedMobileProvision2, NSString *privateKey2, NSDictionary *certificate2, NSDictionary *entitlements2) {
+                    if (error2) { completionHandler(error2); return; }
+                    [self _finalizeProvisioningForPath:path embeddedPath:embeddedPath isEmbeddedExists:isEmbeddedExists embeddedMobileProvision:embeddedMobileProvision2 privateKey:privateKey2 certificate:certificate2 entitlements:entitlements2 teamId:teamId baseApplicationId:baseApplicationId context:context completionHandler:completionHandler];
+                }];
+                return;
+            }
             completionHandler(error);
             return;
         }
+
+        if (useWildcardForExtension) {
+            context[@"wildcardProfile"] = embeddedMobileProvision; // 缓存供其它扩展复用
+        }
+
+        // 主路径（正常 / 通配符成功）继续走下面的 inline finalize。
 
         // We now have a valid provisioning profile for this application!
         // And, we also have a valid development codesigning certificate, with its private key!
@@ -976,6 +1049,13 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 //     → expected to install cleanly. CS entitlement is a runtime concern,
 //       handled by libsubstitute on the jailbroken device.
         NSMutableDictionary *rzEntitlements = [entitlements isKindOfClass:[NSDictionary class]] ? [entitlements mutableCopy] : [NSMutableDictionary dictionary];
+        if (useWildcardForExtension) {
+            // 通配符 profile 的 entitlements 里 application-identifier 是 "TEAMID.*"，
+            // 但扩展自身真正的 bundle id 是 TEAMID.<baseApplicationId>。这里强制写成具体值：
+            // 扩展的实际签名 application-identifier 必须是自身 bundle id，而通配 profile
+            // （TEAMID.*）恰好授权任意 TEAMID.* 子项，所以是合法的子集（与根 -e 一致）。
+            rzEntitlements[@"application-identifier"] = [NSString stringWithFormat:@"%@.%@", teamId, baseApplicationId];
+        }
         if (rzEntitlements[@"application-identifier"] == nil) {
             rzEntitlements[@"application-identifier"] = [NSString stringWithFormat:@"%@.%@", teamId, baseApplicationId];
         }
@@ -998,6 +1078,77 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 
         completionHandler(nil);
     }];
+}
+
+// 把已获取到的 profile/证书/entitlements 写入 bundle 并暂存供 zsign 使用。
+// 单一收口，供正常流程与「扩展用主 profile（通配符）」回退流程共用，避免重复实现导致签名不一致。
++ (void)_finalizeProvisioningForPath:(NSString *)path
+                       embeddedPath:(NSString *)embeddedPath
+                   isEmbeddedExists:(BOOL)isEmbeddedExists
+           embeddedMobileProvision:(NSData *)embeddedMobileProvision
+                        privateKey:(NSString *)privateKey
+                        certificate:(NSDictionary *)certificate
+                       entitlements:(NSDictionary *)entitlements
+                            teamId:(NSString *)teamId
+                   baseApplicationId:(NSString *)baseApplicationId
+                            context:(NSMutableDictionary *)context
+                  completionHandler:(void (^)(NSError *))completionHandler {
+    NSError *fileIOError;
+
+    if (isEmbeddedExists) {
+        [[NSFileManager defaultManager] removeItemAtPath:embeddedPath error:&fileIOError];
+        if (fileIOError) {
+            NSLog(@"%@", fileIOError);
+            completionHandler(fileIOError);
+            return;
+        }
+    }
+
+    if (![(NSData *)embeddedMobileProvision writeToFile:embeddedPath options:NSDataWritingAtomic error:&fileIOError]) {
+        NSError *writeError = fileIOError ?: [self _errorFromString:[NSString stringWithFormat:@"Failed to write '%@'.", embeddedPath]];
+        NSLog(@"%@", writeError);
+        completionHandler(writeError);
+        return;
+    }
+
+    NSString *stagedProfile = [self _writeTempData:embeddedMobileProvision extension:@"mobileprovision" context:context];
+    if (stagedProfile.length == 0) {
+        completionHandler([self _errorFromString:@"Failed to stage provisioning profile for signing."]);
+        return;
+    }
+
+    @synchronized(context) {
+        [context[@"profiles"] addObject:stagedProfile];
+        if (context[@"keyPath"] == nil) {
+            NSData *certificateContent = [[NSData alloc] initWithBase64EncodedString:certificate[@"certificateContent"] options:0];
+            NSString *stagedKey = [self _writeTempString:privateKey extension:@"pem" context:context];
+            NSString *stagedCert = [self _writeTempData:certificateContent extension:@"cer" context:context];
+            if (stagedKey.length && stagedCert.length) {
+                context[@"keyPath"] = stagedKey;
+                context[@"certPath"] = stagedCert;
+            }
+        }
+    }
+
+    NSMutableDictionary *rzEntitlements = [entitlements isKindOfClass:[NSDictionary class]] ? [entitlements mutableCopy] : [NSMutableDictionary dictionary];
+    if (rzEntitlements[@"application-identifier"] == nil) {
+        rzEntitlements[@"application-identifier"] = [NSString stringWithFormat:@"%@.%@", teamId, baseApplicationId];
+    }
+    if (rzEntitlements[@"com.apple.developer.team-identifier"] == nil) {
+        rzEntitlements[@"com.apple.developer.team-identifier"] = teamId;
+    }
+    if (rzEntitlements[@"get-task-allow"] == nil) {
+        rzEntitlements[@"get-task-allow"] = @YES;
+    }
+
+    NSString *stagedEntitlements = [self _writeTempPlist:rzEntitlements context:context];
+    @synchronized(context) {
+        if (stagedEntitlements.length) {
+            context[@"entitlementsPath"] = stagedEntitlements;
+        }
+    }
+
+    completionHandler(nil);
 }
 
 // Writes `data` to a uniquely-named file in the temporary directory and records

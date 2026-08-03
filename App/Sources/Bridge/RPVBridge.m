@@ -23,6 +23,7 @@
 #import "RPVResources.h"
 #import "RZSignRunner.h"
 #import "EEAppleServices.h"
+#import "EEBackend.h"
 #import <sys/sysctl.h>   // respring: sysctl 枚举进程
 #import <signal.h>       // respring: kill(SIGTERM)
 
@@ -563,6 +564,36 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
                                                                   username:[RPVResources getUsername]
                                                                   password:[RPVResources getPassword]];
     });
+}
+
+#pragma mark - 导入前扩展检测 / 选项透传
+
++ (BOOL)ipaContainsExtensionsAtURL:(NSURL *)url {
+    if (!url || ![url isFileURL]) return NO;
+
+    // security-scoped 的 URL 必须先 startAccessing… 才能读取其磁盘内容。
+    BOOL scoped = [url startAccessingSecurityScopedResource];
+
+    // RPVIpaBundleApplication._loadFileWithFormat: 只会展开单个 "*" 通配目录，
+    // 故用 "Payload/*/PlugIns/*/Info.plist" 来探测 PlugIns 下的任意子 bundle。
+    // 只抽取匹配到的那一个 Info.plist（SSZipArchive delegate 对非匹配项返回 NO），开销很小。
+    RPVIpaBundleApplication *detector = [[RPVIpaBundleApplication alloc] init];
+    NSData *data = [detector _loadFileWithFormat:@"Payload/*/PlugIns/*/Info.plist"
+                                         fromIPA:url
+                       multipleCandiateChooser:^NSString *(NSArray *candidates) {
+                           return [candidates firstObject];
+                       }];
+
+    if (scoped) [url stopAccessingSecurityScopedResource];
+
+    return data != nil && data.length > 0;
+}
+
++ (void)setExtensionImportOptionsRemoveExtensions:(BOOL)remove
+                       useMainProfileForExtensions:(BOOL)useMain {
+    // 透传给 EEBackend 的静态开关；signBundleAtPath 入口读入后立即清零，
+    // 因此只影响紧随其后的那一次导入签名。
+    [EEBackend setExtensionImportOptionsRemoveExtensions:remove useMainProfileForExtensions:useMain];
 }
 
 #pragma mark - RPVApplicationSigningProtocol
