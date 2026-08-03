@@ -308,14 +308,15 @@ final class SigningViewModel: ObservableObject {
 
     /// 把应用加入小黑屋；source 记录它来自哪个原始列表。
     /// 加入后自动续签/批量签名会跳过它，但单点「重签」仍可手动触发。
+    ///
+    /// 只调 `recomputeLists()` 即可——黑名单只是个 UserDefaults 集合，**不会**
+    /// 改变设备上已装应用列表，所以无需重新从 installd 拉取。
+    /// 旧版本会再 `refreshApps()/refreshOtherApps()`，造成连续 2~3 次渲染，
+    /// 加上异步拉取延迟，用户会看到「割裂感→约 1 秒后恢复」的鬼影。
     func addToBlacklist(_ app: InstalledApp, source: BlacklistSource) {
         BlacklistStore.shared.add(app.bundleIdentifier, source: source)
         recomputeLists()
         LogManager.shared.info("已加入小黑屋: \(app.bundleIdentifier)（来源: \(source.label)）", source: "SigningViewModel")
-        Task {
-            await refreshApps()
-            await refreshOtherApps()
-        }
     }
 
     /// 把应用移出小黑屋。
@@ -323,10 +324,6 @@ final class SigningViewModel: ObservableObject {
         BlacklistStore.shared.remove(app.bundleIdentifier)
         recomputeLists()
         LogManager.shared.info("已移出小黑屋: \(app.bundleIdentifier)", source: "SigningViewModel")
-        Task {
-            await refreshApps()
-            await refreshOtherApps()
-        }
     }
 
     /// 清空小黑屋（设置页调用）。
@@ -334,10 +331,6 @@ final class SigningViewModel: ObservableObject {
         BlacklistStore.shared.clear()
         recomputeLists()
         LogManager.shared.info("已清空小黑屋", source: "SigningViewModel")
-        Task {
-            await refreshApps()
-            await refreshOtherApps()
-        }
     }
 
     // MARK: - 卸载

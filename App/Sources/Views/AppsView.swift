@@ -565,9 +565,11 @@ struct BlacklistRowView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
 
-                // 来源标签（ReSign / 其它应用）+ 有效时间 + 证书 / Apple ID 来源
+                // 有效时间 + 证书 / Apple ID 来源
+                // 小黑屋里的「ReSign 签应用 / 其它应用」来源徽标已删除——
+                // 用户实测三徽标挤一行时 "ReSign" 被压成两行（"ReSig\nn"），
+                // 删掉后剩两个徽标各自有足够空间显示。
                 HStack(spacing: 4) {
-                    pill(app.sourceLabel, color: .orange)
                     expiryBadge
                     signingSourcePill(app)
                 }
