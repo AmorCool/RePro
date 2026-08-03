@@ -33,32 +33,6 @@
 static BOOL g_rpvRemoveExtensionsOnImport = NO;
 static BOOL g_rpvUseMainProfileForExtensions = NO;
 
-+ (void)setExtensionImportOptionsRemoveExtensions:(BOOL)removeExtensions useMainProfileForExtensions:(BOOL)useMainProfileForExtensions {
-    g_rpvRemoveExtensionsOnImport = removeExtensions;
-    g_rpvUseMainProfileForExtensions = useMainProfileForExtensions;
-}
-
-// 签名前删除 path 下所有 PlugIns/*.appex（App 扩展）。仅删扩展目录本身，不动主程序。
-+ (void)_removeAppExtensionsAtPath:(NSString *)path {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *plugIns = [path stringByAppendingPathComponent:@"PlugIns"];
-    NSArray *entries = [fm contentsOfDirectoryAtPath:plugIns error:nil];
-    NSInteger removed = 0;
-    for (NSString *entry in entries) {
-        if ([[entry pathExtension] isEqualToString:@"appex"]) {
-            NSString *extPath = [plugIns stringByAppendingPathComponent:entry];
-            if ([fm removeItemAtPath:extPath error:nil]) removed++;
-        }
-    }
-    if (removed > 0) {
-        NSLog(@"[ReSign] 按用户选择移除扩展：已删除 %ld 个 PlugIns/*.appex", (long)removed);
-        // PlugIns 空了就一并删掉，避免 installd 因残留空目录报错。
-        if ([fm contentsOfDirectoryAtPath:plugIns error:nil].count == 0) {
-            [fm removeItemAtPath:plugIns error:nil];
-        }
-    }
-}
-
 #pragma mark - ARM64e：只读侦测，绝不改动用户二进制
 
 // 历史教训（1.1.32 一次性清算）：
@@ -534,6 +508,34 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 
 @implementation EEBackend
 
+#pragma mark - 导入 IPA「扩展处理」选项透传
+
++ (void)setExtensionImportOptionsRemoveExtensions:(BOOL)removeExtensions useMainProfileForExtensions:(BOOL)useMainProfileForExtensions {
+    g_rpvRemoveExtensionsOnImport = removeExtensions;
+    g_rpvUseMainProfileForExtensions = useMainProfileForExtensions;
+}
+
+// 签名前删除 path 下所有 PlugIns/*.appex（App 扩展）。仅删扩展目录本身，不动主程序。
++ (void)_removeAppExtensionsAtPath:(NSString *)path {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *plugIns = [path stringByAppendingPathComponent:@"PlugIns"];
+    NSArray *entries = [fm contentsOfDirectoryAtPath:plugIns error:nil];
+    NSInteger removed = 0;
+    for (NSString *entry in entries) {
+        if ([[entry pathExtension] isEqualToString:@"appex"]) {
+            NSString *extPath = [plugIns stringByAppendingPathComponent:entry];
+            if ([fm removeItemAtPath:extPath error:nil]) removed++;
+        }
+    }
+    if (removed > 0) {
+        NSLog(@"[ReSign] 按用户选择移除扩展：已删除 %ld 个 PlugIns/*.appex", (long)removed);
+        // PlugIns 空了就一并删掉，避免 installd 因残留空目录报错。
+        if ([fm contentsOfDirectoryAtPath:plugIns error:nil].count == 0) {
+            [fm removeItemAtPath:plugIns error:nil];
+        }
+    }
+}
+
 + (void)provisionDevice:(NSString *)udid name:(NSString *)name identity:(NSString *)identity gsToken:(NSString *)gsToken priorChosenTeamID:(NSString *)teamId systemType:(EESystemType)systemType withCallback:(void (^)(NSError *))completionHandler {
     EEProvisioning *provisioner = [EEProvisioning provisionerWithCredentials:identity:gsToken];
     [provisioner provisionDevice:udid name:name withTeamIDCheck:^NSString *(NSArray *teams) {
@@ -608,6 +610,8 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
     NSMutableDictionary *context = [NSMutableDictionary dictionary];
     context[@"profiles"] = [NSMutableArray array];
     context[@"tempFiles"] = [NSMutableArray array];
+    // 把「扩展用主 profile 签名」选项透传给 _provisionBundleAtPath（经 context，避免改动递归签名接口签名）。
+    context[@"useMainProfileForExtensions"] = @(useMainProfileForExtensions);
 
     [self _provisionBundleAtPath:path identity:identity gsToken:gsToken priorChosenTeamID:teamId context:context isExtension:NO withCompletionHandler:^(NSError *provisionError) {
         if (provisionError) {
@@ -746,6 +750,9 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 // (plus, once, the shared certificate + private key) into `context` for the
 // single zsign pass performed by signBundleAtPath:.
 + (void)_provisionBundleAtPath:(NSString *)path identity:(NSString *)identity gsToken:(NSString *)gsToken priorChosenTeamID:(NSString *)teamId context:(NSMutableDictionary *)context isExtension:(BOOL)isExtension withCompletionHandler:(void (^)(NSError *error))completionHandler {
+    // 从 context 取回「扩展用主 profile 签名」选项（由 signBundleAtPath 透传，避免改动递归签名接口签名）。
+    BOOL useMainProfileForExtensions = [context[@"useMainProfileForExtensions"] boolValue];
+
     dispatch_group_t dispatch_group = dispatch_group_create();
     NSMutableArray *__block subBundleErrors = [NSMutableArray array];
 
