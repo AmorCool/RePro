@@ -33,9 +33,14 @@ struct SettingsView: View {
 
     @ObservedObject private var account = BridgeClient.shared
 
-    @State private var appleID: String = ""
-    @State private var password: String = ""
+    @State private var appleID: String = BridgeClient.shared.username ?? ""
+    @State private var password: String = BridgeClient.shared.savedPassword ?? ""
     @State private var isLoggingIn = false
+    /// 登录后：账户 / TeamID 是否明文显示（默认隐藏，点眼睛切换）
+    @State private var showAccount = false
+    @State private var showTeamID = false
+    /// 登录前：密码框是否明文显示
+    @State private var showPwdBefore = false
     @State private var loginMessage: String?
     @State private var loginSucceeded = false
 
@@ -70,6 +75,16 @@ struct SettingsView: View {
             .onChange(of: autoResign) { _ in needsConfigSync = true }
             .onChange(of: checkIntervalMin) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
+            .onChange(of: account.isSignedIn) { signedIn in
+                // 退出登录后，重置登录前输入框（带已保存凭据预填）与显示开关
+                if !signedIn {
+                    appleID = account.username ?? ""
+                    password = account.savedPassword ?? ""
+                    showAccount = false
+                    showTeamID = false
+                    showPwdBefore = false
+                }
+            }
             .onDisappear {
                 if needsConfigSync {
                     NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
@@ -109,33 +124,63 @@ struct SettingsView: View {
     private var accountSection: some View {
         Section("Apple ID 账户") {
             if account.isSignedIn {
+                // 账号：默认掩码，点眼睛明文
                 HStack {
                     Text("账号")
                     Spacer()
-                    Text(account.username ?? "-")
+                    Text(showAccount ? (account.username ?? "-") : Self.masked(account.username))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                    Button {
+                        showAccount.toggle()
+                    } label: {
+                        Image(systemName: showAccount ? "eye.slash.fill" : "eye.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
                 }
+                // Team ID：默认掩码，点眼睛明文
                 HStack {
                     Text("Team ID")
                     Spacer()
-                    Text(account.teamID ?? "-")
+                    Text(showTeamID ? (account.teamID ?? "-") : Self.masked(account.teamID))
                         .font(.system(.callout, design: .monospaced))
                         .foregroundColor(.secondary)
+                    Button {
+                        showTeamID.toggle()
+                    } label: {
+                        Image(systemName: showTeamID ? "eye.slash.fill" : "eye.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
                 }
                 Button("退出登录", role: .destructive) {
                     showingSignOutAlert = true
                 }
             } else {
+                // 登录前：Apple ID + 密码信息栏（预填已保存凭据，密码默认掩码可点眼睛查看）
                 TextField("Apple ID", text: $appleID)
                     .textContentType(.username)
                     .keyboardType(.emailAddress)
                     .autocapitalization(.none)
                     .disableAutocorrection(true)
-                TextField("密码", text: $password)
-                    .textContentType(.password)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
+                HStack {
+                    if showPwdBefore {
+                        TextField("密码", text: $password)
+                    } else {
+                        SecureField("密码", text: $password)
+                    }
+                    Button {
+                        showPwdBefore.toggle()
+                    } label: {
+                        Image(systemName: showPwdBefore ? "eye.slash.fill" : "eye.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .textContentType(.password)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
 
                 if isLoggingIn {
                     HStack {
@@ -156,6 +201,15 @@ struct SettingsView: View {
                 .disabled(isLoggingIn || appleID.isEmpty || password.isEmpty)
             }
         }
+    }
+
+    /// 把敏感字符串掩码：保留首尾、中间用圆点替代，空值返回 "-"
+    private static func masked(_ value: String?) -> String {
+        guard let s = value, !s.isEmpty else { return "-" }
+        if s.count <= 3 { return String(repeating: "•", count: s.count) }
+        let head = s.prefix(2)
+        let tail = s.suffix(1)
+        return head + String(repeating: "•", count: max(4, s.count - 3)) + tail
     }
 
     // MARK: - 自动重签

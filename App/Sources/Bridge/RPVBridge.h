@@ -110,6 +110,8 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 @property (nonatomic, readonly, copy, nullable) NSString *username;
 /// 已保存的 Team ID（未登录为 nil）
 @property (nonatomic, readonly, copy, nullable) NSString *teamID;
+/// 已保存的密码（登录前预填用；未登录为 nil）。存储的是 Apple 返回的 gsToken。
+@property (nonatomic, readonly, copy, nullable) NSString *savedPassword;
 /// 三要素（账号 / 密码 / TeamID）齐全才算已登录
 @property (nonatomic, readonly) BOOL isSignedIn;
 /// 把已登录 Apple ID 密码 + 签名状态项的 Keychain accessible 升级为 AfterFirstUnlock（见 RPVResources）

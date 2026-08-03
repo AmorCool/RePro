@@ -18,6 +18,9 @@ final class BridgeClient: ObservableObject {
     @Published private(set) var username: String?
     @Published private(set) var teamID: String?
 
+    /// 已保存的密码（gsToken），供登录前界面预填。未登录为 nil。
+    var savedPassword: String? { bridge.savedPassword }
+
     /// bundleID → 显示名。发通知时把「com.xxx.yyy」换成用户看得懂的名字，
     /// 由 fetchInstalledApps 顺带刷新。
     private var appNameCache: [String: String] = [:]

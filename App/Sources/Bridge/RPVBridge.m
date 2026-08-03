@@ -153,6 +153,14 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     return value.length > 0 ? value : nil;
 }
 
+/// 已保存的密码（登录前预填用；未登录为 nil）。
+/// 注意：存储的是 Apple 返回的 gsToken 而非明文 Apple ID 密码，
+/// 原版 ReProvision 的自动登录正是复用这个值，因此预填它即可直接重登。
+- (NSString *)savedPassword {
+    NSString *value = [RPVResources getPassword];
+    return value.length > 0 ? value : nil;
+}
+
 - (BOOL)isSignedIn {
     return [RPVResources getUsername].length > 0
         && [RPVResources getPassword].length > 0
