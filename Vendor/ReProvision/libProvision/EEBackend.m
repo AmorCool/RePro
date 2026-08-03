@@ -581,9 +581,10 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         // entitlements, which is what fixes the iOS 17 re-sign launch crash.
         NSString *rootEntitlementsPath = context[@"entitlementsPath"];
 
-        // ── v1.1.97: Profile ↔ BundleID 一致性闸门（签名前拦截，避免 0xe8008015 闪退）──
+        // ── Profile ↔ BundleID 一致性闸门（签名前拦截，避免 0xe8008015 闪退）──
         // 用 provisioning 刚写入 .app 的 embedded.mobileprovision 来比对（那是 zsign 真正会用的 profile）。
-        // 非通配且不一致 → 直接中止，把两边字符串带回上层弹窗，绝不「检测到不匹配仍继续安装」。
+        // 非通配且不一致 → 直接中止。不同 bundle id 视为不同应用，不再改写其一去迁就对方，
+        // 而是清晰报错，提示改用「通配符」或与该安装包 bundle id 一致的 profile。
         {
             NSString *appBundle = RZBundleIdentifierAtPath(path);
             NSDictionary *emb = RZExtractProfilePlist([path stringByAppendingPathComponent:@"embedded.mobileprovision"]);
@@ -597,7 +598,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
             }
             if (appBundle.length && profBundle.length && ![profBundle isEqualToString:@"*"] && ![profBundle isEqualToString:appBundle]) {
                 NSError *mismatch = [NSError errorWithDomain:@"ReSignError" code:9876 userInfo:@{
-                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"应用标识不一致：安装包 %@，证书 %@", appBundle, profBundle],
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"应用标识不一致：安装包 %@ 与证书 %@ 是不同应用，不匹配的 profile 无法签名。请改用「通配符」或与该安装包 bundle id 一致的 profile。", appBundle, profBundle],
                     @"appBundle": appBundle,
                     @"profBundle": profBundle,
                 }];

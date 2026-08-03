@@ -441,14 +441,6 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 
 - (void)resignApplicationWithBundleIdentifier:(NSString *)bundleIdentifier
                                    completion:(void (^)(NSError *_Nullable))completion {
-    [self resignApplicationWithBundleIdentifier:bundleIdentifier
-                       targetBundleIdentifier:nil
-                                   completion:completion];
-}
-
-- (void)resignApplicationWithBundleIdentifier:(NSString *)bundleIdentifier
-                       targetBundleIdentifier:(NSString *)targetBundleIdentifier
-                                   completion:(void (^)(NSError *_Nullable))completion {
     if (!self.isSignedIn) {
         RPVBridgeCallOnMain(^{
             if (completion) {
@@ -474,8 +466,6 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     if (![self _beginPipelineWithCompletion:completion]) return;
 
     dispatch_async(self.workQueue, ^{
-        // v1.1.97: 把本次签名要改写的 bundle id 交给签名引擎，它在 provisioning 前改写暂存副本。
-        [RPVApplicationSigning sharedInstance].pendingTargetBundleIdentifier = targetBundleIdentifier;
         [[RPVApplicationSigning sharedInstance] resignSpecificApplications:@[application]
                                                                 withTeamID:[RPVResources getTeamID]
                                                                   username:[RPVResources getUsername]
@@ -537,12 +527,6 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 
 - (void)importAndInstallIPAAtURL:(NSURL *)url
                       completion:(void (^)(RPVAppInfo *_Nullable, NSError *_Nullable))completion {
-    [self importAndInstallIPAAtURL:url targetBundleIdentifier:nil completion:completion];
-}
-
-- (void)importAndInstallIPAAtURL:(NSURL *)url
-           targetBundleIdentifier:(NSString *)targetBundleIdentifier
-                       completion:(void (^)(RPVAppInfo *_Nullable, NSError *_Nullable))completion {
     if (!self.isSignedIn) {
         RPVBridgeCallOnMain(^{
             if (completion) {
@@ -574,8 +558,6 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
         }];
         if (!started) return;
 
-        // v1.1.97: 把本次签名要改写的 bundle id 交给签名引擎，它在 provisioning 前改写暂存副本。
-        [RPVApplicationSigning sharedInstance].pendingTargetBundleIdentifier = targetBundleIdentifier;
         [[RPVApplicationSigning sharedInstance] resignSpecificApplications:@[ipaApplication]
                                                                 withTeamID:[RPVResources getTeamID]
                                                                   username:[RPVResources getUsername]

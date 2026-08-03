@@ -624,15 +624,6 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         return;
     }
 
-    // v1.1.97: 若本次签名带着改写目标（来自「应用标识不一致」弹窗确认），
-    // 在 provisioning 注册 app-id 之前改写暂存副本的 Info.plist CFBundleIdentifier，
-    // 使注册到的 app-id 与证书一致，从而通过 EEBackend 的一致性闸门。
-    if (self.pendingTargetBundleIdentifier.length > 0) {
-        [self _rewriteBundleIdentifier:self.pendingTargetBundleIdentifier
-                        inBundleAtPath:[applicationBundleURL path]];
-        self.pendingTargetBundleIdentifier = nil;
-    }
-
     // Update progress to 30% for this application.
     for (id<RPVApplicationSigningProtocol> observer in [self.observers reverseObjectEnumerator]) {
         [observer applicationSigningUpdateProgress:30 forBundleIdentifier:[application bundleIdentifier]];
@@ -800,22 +791,6 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     NSString *bundleIdentifier = [[notification userInfo] objectForKey:@"bundleIdentifier"];
     if (bundleIdentifier) {
         [[LSApplicationWorkspace defaultWorkspace] uninstallApplication:bundleIdentifier withOptions:nil];
-    }
-}
-
-// v1.1.97: 把暂存 .app 的 Info.plist 里的 CFBundleIdentifier 改写为新值。
-// 在 provisioning 注册 app-id 之前调用，使注册到的 app-id 与证书一致。
-- (void)_rewriteBundleIdentifier:(NSString *)newId inBundleAtPath:(NSString *)bundlePath {
-    if (newId.length == 0 || bundlePath.length == 0) return;
-    NSString *plistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
-    NSMutableDictionary *info = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    if (!info) {
-        NSLog(@"*** [ReProvision] _rewriteBundleIdentifier 失败：无法读取 %@", plistPath);
-        return;
-    }
-    info[@"CFBundleIdentifier"] = newId;
-    if (![info writeToFile:plistPath atomically:YES]) {
-        NSLog(@"*** [ReProvision] _rewriteBundleIdentifier 失败：无法写入 %@", plistPath);
     }
 }
 

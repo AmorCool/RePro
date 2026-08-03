@@ -30,8 +30,6 @@ final class BridgeClient: ObservableObject {
     /// 否则界面一旦订阅就会把通知逻辑覆盖掉。
     private var externalProgressHandler: ((String, Int) -> Void)?
     private var externalErrorHandler: ((String, Error) -> Void)?
-    /// 应用标识不一致（Profile↔BundleID 不匹配）回调：(安装包标识, 证书标识, 触发签名的 bundle id)
-    private var externalMismatchHandler: ((String, String, String) -> Void)?
 
     private let notifier = RPVNotificationManager.sharedInstance()
 
@@ -162,11 +160,6 @@ final class BridgeClient: ObservableObject {
         externalErrorHandler = handler
     }
 
-    /// 应用标识不一致（Profile↔BundleID 不匹配）回调，在主队列触发
-    func observeBundleMismatch(_ handler: ((String, String, String) -> Void)?) {
-        externalMismatchHandler = handler
-    }
-
     // MARK: - 本地通知（语义对齐 test2 源码）
 
     private func installSigningNotificationHooks() {
@@ -210,14 +203,6 @@ final class BridgeClient: ObservableObject {
     }
 
     private func handleSigningError(bundleID: String, error: Error) {
-        let nsError = error as NSError
-        // v1.1.97: Profile↔BundleID 不一致。交给界面弹窗处理，不再走普通失败提示。
-        if nsError.domain == "ReSignError" && nsError.code == 9876 {
-            let appBundle = (nsError.userInfo["appBundle"] as? String) ?? ""
-            let profBundle = (nsError.userInfo["profBundle"] as? String) ?? ""
-            externalMismatchHandler?(appBundle, profBundle, bundleID)
-            return
-        }
         notifier.sendNotification(title: "签名失败",
                                   body: "「\(displayName(for: bundleID))」：\(error.localizedDescription)",
                                   isDebug: false, identifier: nil)
@@ -241,8 +226,8 @@ final class BridgeClient: ObservableObject {
         }
     }
 
-    func resign(bundleID: String, targetBundleIdentifier: String? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
-        bridge.resignApplication(bundleIdentifier: bundleID, targetBundleIdentifier: targetBundleIdentifier) { error in
+    func resign(bundleID: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        bridge.resignApplication(bundleIdentifier: bundleID) { error in
             if let error = error {
                 completion(.failure(error))
             } else {
@@ -281,8 +266,8 @@ final class BridgeClient: ObservableObject {
 
     // MARK: - IPA 导入
 
-    func importIPA(url: URL, targetBundleIdentifier: String? = nil, completion: @escaping (Result<InstalledApp, Error>) -> Void) {
-        bridge.importAndInstallIPA(url: url, targetBundleIdentifier: targetBundleIdentifier) { info, error in
+    func importIPA(url: URL, completion: @escaping (Result<InstalledApp, Error>) -> Void) {
+        bridge.importAndInstallIPA(url: url) { info, error in
             if let info = info {
                 completion(.success(InstalledApp(info: info)))
             } else {

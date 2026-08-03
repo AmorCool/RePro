@@ -180,12 +180,6 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
                                    completion:(void (^)(NSError *_Nullable error))completion
     NS_SWIFT_NAME(resignApplication(bundleIdentifier:completion:));
 
-/// 重签指定应用，签名前先把 .app 的 bundle id 改写为 targetBundleIdentifier（来自「应用标识不一致」弹窗确认）。
-- (void)resignApplicationWithBundleIdentifier:(NSString *)bundleIdentifier
-                       targetBundleIdentifier:(nullable NSString *)targetBundleIdentifier
-                                   completion:(void (^)(NSError *_Nullable error))completion
-    NS_SWIFT_NAME(resignApplication(bundleIdentifier:targetBundleIdentifier:completion:));
-
 /// 重签所有临近过期的应用（threshold 单位为天）
 - (void)resignAllExpiringApplicationsWithThreshold:(int)thresholdDays
                                         completion:(void (^)(NSError *_Nullable error))completion
@@ -205,12 +199,6 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 - (void)importAndInstallIPAAtURL:(NSURL *)url
                       completion:(void (^)(RPVAppInfo *_Nullable info, NSError *_Nullable error))completion
     NS_SWIFT_NAME(importAndInstallIPA(url:completion:));
-
-/// 导入并安装 .ipa，签名前先把 bundle id 改写为 targetBundleIdentifier（来自「应用标识不一致」弹窗确认）。
-- (void)importAndInstallIPAAtURL:(NSURL *)url
-           targetBundleIdentifier:(nullable NSString *)targetBundleIdentifier
-                       completion:(void (^)(RPVAppInfo *_Nullable info, NSError *_Nullable error))completion
-    NS_SWIFT_NAME(importAndInstallIPA(url:targetBundleIdentifier:completion:));
 
 #pragma mark 环境体检
 

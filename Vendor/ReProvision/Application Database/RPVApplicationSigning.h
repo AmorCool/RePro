@@ -67,8 +67,4 @@
  */
 + (void)setDaemonProfileInstallHandler:(BOOL (^)(NSString *profilePath))handler;
 
-/// v1.1.97: 本次签名把 .app 的 CFBundleIdentifier 改写为该值后再签名（来自「应用标识不一致」弹窗确认）。
-/// 仅对当前这一次签名流水线生效，消费后立即清零，避免泄漏到队列里的下一个应用。
-@property (nonatomic, copy, nullable) NSString *pendingTargetBundleIdentifier;
-
 @end

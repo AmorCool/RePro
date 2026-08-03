@@ -1,14 +1,6 @@
 import Foundation
 import Combine
 
-/// 应用标识不一致（Profile↔BundleID 不匹配）弹窗的数据。
-/// appBundle = 安装包里的 CFBundleIdentifier，profBundle = 证书 application-identifier 的 bundle 部分。
-struct BundleMismatch: Identifiable {
-    let id = UUID()
-    let appBundle: String
-    let profBundle: String
-}
-
 // MARK: - 签名逻辑协调 ViewModel
 //
 // 所有实际工作都交给 BridgeClient -> RPVBridge -> Vendor/ReProvision，
@@ -32,11 +24,6 @@ final class SigningViewModel: ObservableObject {
     @Published var isBusy: Bool = false
     @Published var progressMessage: String = ""
     @Published var lastError: String?
-
-    /// 应用标识不一致弹窗（Profile↔BundleID 不匹配）。非空时界面弹出对比与确认。
-    @Published var bundleMismatch: BundleMismatch?
-    /// 用户确认改写后，用证书标识重新触发签名所用的闭包（参数即目标 bundle id）。
-    private var pendingRetry: ((String) -> Void)?
 
     private let client = BridgeClient.shared
 
@@ -68,36 +55,6 @@ final class SigningViewModel: ObservableObject {
             LogManager.shared.error("签名出错 [\(bundleID)]: \(error.localizedDescription)",
                                     source: "SigningViewModel")
         }
-        client.observeBundleMismatch { [weak self] appBundle, profBundle, _ in
-            guard let self = self else { return }
-            LogManager.shared.warning("应用标识不一致：安装包 \(appBundle) vs 证书 \(profBundle)",
-                                      source: "SigningViewModel")
-            self.bundleMismatch = BundleMismatch(appBundle: appBundle, profBundle: profBundle)
-        }
-    }
-
-    // MARK: - 应用标识不一致弹窗
-
-    /// 是否为「Profile↔BundleID 不一致」导致的失败（来自 EEBackend 闸门，错误域 ReSignError code 9876）
-    private func isBundleMismatch(_ error: Error) -> Bool {
-        let ns = error as NSError
-        return ns.domain == "ReSignError" && ns.code == 9876
-    }
-
-    /// 用户确认：把安装包标识改写为证书标识后重新签名。
-    func confirmBundleRewrite() {
-        guard let target = bundleMismatch?.profBundle else { return }
-        bundleMismatch = nil
-        if let retry = pendingRetry {
-            pendingRetry = nil
-            retry(target)
-        }
-    }
-
-    /// 用户取消：丢弃本次不一致处理。
-    func dismissBundleMismatch() {
-        bundleMismatch = nil
-        pendingRetry = nil
     }
 
     private func applyProgress(_ progress: Int, to bundleID: String) {
@@ -224,35 +181,24 @@ final class SigningViewModel: ObservableObject {
         LogManager.shared.info("重签其他应用: \(app.bundleIdentifier)（原签名 TeamID: \(app.originalTeamID ?? "未知")）",
                                source: "SigningViewModel")
 
-        var perform: ((String?) -> Void)!
-        perform = { [weak self] targetBundleIdentifier in
-            guard let self = self else { return }
-            self.autoRevokeBeforeSigning {
-                self.client.resign(bundleID: app.bundleIdentifier, targetBundleIdentifier: targetBundleIdentifier) { result in
-                    self.markSigning(false, for: app.bundleIdentifier)
-                    switch result {
-                    case .success:
-                        LogManager.shared.info("其他应用重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                        self.endWork(message: "签名完成")
-                    case .failure(let error):
-                        if self.isBundleMismatch(error) {
-                            // 交给应用标识不一致弹窗处理，不再弹失败提示
-                            self.pendingRetry = { tid in perform(tid) }
-                            self.endWork(message: "")
-                        } else {
-                            LogManager.shared.error("其他应用重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
-                                                    source: "SigningViewModel")
-                            self.endWork(message: "签名失败", error: error)
-                        }
-                    }
-                    Task {
-                        await self.refreshApps()
-                        await self.refreshOtherApps()
-                    }
+        autoRevokeBeforeSigning {
+            self.client.resign(bundleID: app.bundleIdentifier) { result in
+                self.markSigning(false, for: app.bundleIdentifier)
+                switch result {
+                case .success:
+                    LogManager.shared.info("其他应用重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                    self.endWork(message: "签名完成")
+                case .failure(let error):
+                    LogManager.shared.error("其他应用重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
+                                            source: "SigningViewModel")
+                    self.endWork(message: "签名失败", error: error)
+                }
+                Task {
+                    await self.refreshApps()
+                    await self.refreshOtherApps()
                 }
             }
         }
-        perform(nil)
     }
 
     // MARK: - 导入 IPA
@@ -266,29 +212,18 @@ final class SigningViewModel: ObservableObject {
 
         // 导入 IPA 不在此处撤销证书：导入后本就会重新签名安装，
         // 撤销证书反而可能打断其签名流程，属多余操作。
-        var perform: ((String?) -> Void)!
-        perform = { [weak self] targetBundleIdentifier in
+        self.client.importIPA(url: url) { [weak self] result in
             guard let self = self else { return }
-            self.client.importIPA(url: url, targetBundleIdentifier: targetBundleIdentifier) { [weak self] result in
-                guard let self = self else { return }
-                switch result {
-                case .success(let app):
-                    LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                    self.endWork(message: "\(app.displayName) 安装完成")
-                case .failure(let error):
-                    if self.isBundleMismatch(error) {
-                        // 交给应用标识不一致弹窗处理，不再弹失败提示
-                        self.pendingRetry = { tid in perform(tid) }
-                        self.endWork(message: "")
-                    } else {
-                        LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
-                        self.endWork(message: "导入失败", error: error)
-                    }
-                }
-                Task { await self.refreshApps() }
+            switch result {
+            case .success(let app):
+                LogManager.shared.info("IPA 安装成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                self.endWork(message: "\(app.displayName) 安装完成")
+            case .failure(let error):
+                LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
+                self.endWork(message: "导入失败", error: error)
             }
+            Task { await self.refreshApps() }
         }
-        perform(nil)
     }
 
     // MARK: - 重签
@@ -307,32 +242,21 @@ final class SigningViewModel: ObservableObject {
         markSigning(true, for: app.bundleIdentifier)
         LogManager.shared.info("开始重签: \(app.bundleIdentifier)", source: "SigningViewModel")
 
-        var perform: ((String?) -> Void)!
-        perform = { [weak self] targetBundleIdentifier in
-            guard let self = self else { return }
-            self.autoRevokeBeforeSigning {
-                self.client.resign(bundleID: app.bundleIdentifier, targetBundleIdentifier: targetBundleIdentifier) { result in
-                    self.markSigning(false, for: app.bundleIdentifier)
-                    switch result {
-                    case .success:
-                        LogManager.shared.info("重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
-                        self.endWork(message: "签名完成")
-                    case .failure(let error):
-                        if self.isBundleMismatch(error) {
-                            // 交给应用标识不一致弹窗处理，不再弹失败提示
-                            self.pendingRetry = { tid in perform(tid) }
-                            self.endWork(message: "")
-                        } else {
-                            LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
-                                                    source: "SigningViewModel")
-                            self.endWork(message: "签名失败", error: error)
-                        }
-                    }
-                    Task { await self.refreshApps() }
+        autoRevokeBeforeSigning {
+            self.client.resign(bundleID: app.bundleIdentifier) { result in
+                self.markSigning(false, for: app.bundleIdentifier)
+                switch result {
+                case .success:
+                    LogManager.shared.info("重签成功: \(app.bundleIdentifier)", source: "SigningViewModel")
+                    self.endWork(message: "签名完成")
+                case .failure(let error):
+                    LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
+                                            source: "SigningViewModel")
+                    self.endWork(message: "签名失败", error: error)
                 }
+                Task { await self.refreshApps() }
             }
         }
-        perform(nil)
     }
 
     /// 重签所有临近过期的应用。阈值取设置页里的「提前 N 天重签」。
