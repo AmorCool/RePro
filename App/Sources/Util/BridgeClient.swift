@@ -180,10 +180,6 @@ final class BridgeClient: ObservableObject {
             notifier.sendNotification(title: "重签完成",
                                       body: "已重新签名「\(name)」",
                                       isDebug: false, identifier: nil)
-            // ★ 每完成一个应用的签名安装，就请求 daemon 解除免费账号 3 应用限制。
-            //   这里是前台手动签名 / IPA 导入安装 / 其它应用签名 / 后台续签的共同收口点，
-            //   放这一处即可覆盖「每次签名（含续签）都 bypass 一次」的需求。
-            //   开关关闭时 notifyBypass3AppRequest 内部直接 return。
             RPVSigningdNotify.notifyBypass3AppRequest()
         case 10:
             notifier.sendNotification(title: "调试", body: "开始签名「\(name)」",

@@ -253,10 +253,9 @@ struct SettingsView: View {
             Text("免费账号限制")
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                Text("免费 Apple ID 默认同一台设备最多只能有 3 个自签应用。系统靠给 App 目录打扩展属性 com.apple.installd.validatedByFreeProfile 来计数，开启后 repro-signingd 会在每次签名（含后台续签）完成后以 root 权限清除该标记，让系统数不到，从而突破 3 个的上限。")
                 Text("⚠️ 这只解除「设备同时 3 个」这一条限制。Apple 服务端的「每 7 天最多注册 10 个 App ID」是另一套机制，无法绕过。")
                     .foregroundColor(.orange)
-                Text("只会动带该标记的自签应用，App Store 应用不受影响。如需手动执行一次：sudo /usr/libexec/repro-signingd --bypass-3app")
+                Text("sudo /usr/libexec/repro-signingd --bypass-3app")
                     .font(.caption)
             }
         }

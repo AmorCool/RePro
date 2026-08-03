@@ -28,7 +28,7 @@
 //    8. 主动唤醒 App 到后台执行静默续签
 //    9. ★ BKSProcessAssertion 保活（防止 App 被系统挂起）
 //   10. ★ IOPMSchedulePowerEvent 系统级唤醒（锁屏时也能准时触发）
-//   11. ★ v1.1.95 解除免费账号「同一设备最多 3 个自签应用」限制
+//   11. v1.1.95 解除免费账号「同一设备最多 3 个自签应用」限制
 //          （删除 .app 目录上的 com.apple.installd.validatedByFreeProfile 扩展属性，
 //           参考 rooootdev/Lara；每次签名/续签完成后自动执行，需在 App 设置里开启）
 //
@@ -365,21 +365,6 @@ static sd_config s_cfg(void) {
 
 // ─── 免费账号「3 个自签应用」限制绕过 ────────────────────────────
 //
-// 原理（参考 rooootdev/Lara 的 sbx3apbypass()，已实测支持 iOS 17.0–18.7.1）：
-//   installd 在安装「用免费开发者账号 profile 校验通过」的 App 时，会给该
-//   .app 目录打上扩展属性 com.apple.installd.validatedByFreeProfile。
-//   系统就是靠数这个 xattr 的个数来执行「同一设备最多 3 个免费签名 App」的限制。
-//   把这个 xattr 删掉，系统数不到，限制自然失效。
-//
-//   Lara 需要 DarkSword 内核漏洞 + VFS 才能拿到写权限；我们不需要 ——
-//   repro-signingd 本身就是 rootfs LaunchDaemon，以 root 跑在真实命名空间里，
-//   直接 removexattr() 即可，RootHide 的 namespace 隔离也影响不到 daemon。
-//
-// ⚠️ 只解决「设备同时 3 个」这一条设备侧限制。
-//    Apple 服务端的「每 7 天最多 10 个 App ID」是完全不同的另一套机制，绕不过。
-//
-// 安全性：只删「本来就带这个 xattr」的目录（即免费账号签名的 App），
-//         App Store 应用不带该属性，扫描时会被 getxattr 直接跳过，不会被动到。
 
 /// 读设置开关 bypassFreeAppLimit（三级来源回退，默认关闭）
 static BOOL s_bypassEnabled(void) {
@@ -434,10 +419,10 @@ static NSInteger s_bypass3AppLimit(NSString *reason) {
     }
 
     if (cleared > 0) {
-        s_log(@"✅ 3应用绕过[%@]: 扫描 %ld 个 App，已解除 %ld 个 → %@",
+        s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，已解除 %ld 个 → %@",
               reason, (long)scanned, (long)cleared, [names componentsJoinedByString:@", "]);
     } else if (failed > 0) {
-        s_log(@"⚠️ 3应用绕过[%@]: 扫描 %ld 个 App，%ld 个清除失败",
+        s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，%ld 个清除失败",
               reason, (long)scanned, (long)failed);
     } else {
         s_log(@"3应用绕过[%@]: 扫描 %ld 个 App，没有需要处理的（均已解除或非免费签名）",
@@ -1169,7 +1154,7 @@ static int s_printStatus(void) {
         }
         printf("免费签名计数     : %ld / %ld 个应用仍带计数标记%s\n",
                (long)marked, (long)total,
-               marked > 0 ? "（≥3 个会触发限制，可 --bypass-3app 手动解除）" : " ✅");
+               marked > 0 ? "（≥3 个会触发限制，可 --bypass-3app 手动解除）" : "");
     }
 
     // 3. 下次计划触发
