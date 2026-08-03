@@ -173,7 +173,7 @@ final class SigningViewModel: ObservableObject {
                         if self.isBundleMismatch(error) {
                             // 交给应用标识不一致弹窗处理，不再弹失败提示
                             self.pendingRetry = { tid in perform(tid) }
-                            self.endWork()
+                            self.endWork(message: "")
                         } else {
                             LogManager.shared.error("其他应用重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
                                                     source: "SigningViewModel")
@@ -213,7 +213,7 @@ final class SigningViewModel: ObservableObject {
                     if self.isBundleMismatch(error) {
                         // 交给应用标识不一致弹窗处理，不再弹失败提示
                         self.pendingRetry = { tid in perform(tid) }
-                        self.endWork()
+                        self.endWork(message: "")
                     } else {
                         LogManager.shared.error("IPA 安装失败: \(error.localizedDescription)", source: "SigningViewModel")
                         self.endWork(message: "导入失败", error: error)
@@ -254,7 +254,7 @@ final class SigningViewModel: ObservableObject {
                         if self.isBundleMismatch(error) {
                             // 交给应用标识不一致弹窗处理，不再弹失败提示
                             self.pendingRetry = { tid in perform(tid) }
-                            self.endWork()
+                            self.endWork(message: "")
                         } else {
                             LogManager.shared.error("重签失败 [\(app.bundleIdentifier)]: \(error.localizedDescription)",
                                                     source: "SigningViewModel")
