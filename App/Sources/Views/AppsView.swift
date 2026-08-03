@@ -293,6 +293,18 @@ struct AppsView: View {
             await viewModel.refreshOtherApps()
         }
         .scrollContentBackground(.hidden) // 让 List 透出外层浅灰底
+        .alert(item: $viewModel.bundleMismatch) { mismatch in
+            Alert(
+                title: Text("应用标识不一致"),
+                message: Text("安装包标识：\n\(mismatch.appBundle)\n\n证书标识：\n\(mismatch.profBundle)\n\n两者不一致，继续安装会导致打开即闪退。是否将安装包标识改为证书标识后重新签名？"),
+                primaryButton: .default(Text("改为 \(mismatch.profBundle) 后签名")) {
+                    viewModel.confirmBundleRewrite()
+                },
+                secondaryButton: .cancel(Text("取消")) {
+                    viewModel.dismissBundleMismatch()
+                }
+            )
+        }
     }
 }
 

@@ -356,6 +356,13 @@ static NSDictionary *RZExtractProfilePlist(NSString *provPath) {
     return [NSPropertyListSerialization propertyListWithData:plistData options:0 format:NULL error:nil];
 }
 
+// 读取 .app 的 CFBundleIdentifier（用于 Profile↔BundleID 一致性闸门）。
+static NSString *RZBundleIdentifierAtPath(NSString *bundlePath) {
+    NSString *plistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    return info[@"CFBundleIdentifier"];
+}
+
 // Dump the provisioning-profile ↔ signed-entitlements match — the actual root
 // cause of install-time 0xe8008015 (per the LiveContainer/ReproVision guides:
 // application-identifier exact match + device UDID registration + TeamIdentifier
@@ -573,6 +580,32 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         // was crashing — gets the specific application-identifier + cs.* safety
         // entitlements, which is what fixes the iOS 17 re-sign launch crash.
         NSString *rootEntitlementsPath = context[@"entitlementsPath"];
+
+        // ── v1.1.97: Profile ↔ BundleID 一致性闸门（签名前拦截，避免 0xe8008015 闪退）──
+        // 用 provisioning 刚写入 .app 的 embedded.mobileprovision 来比对（那是 zsign 真正会用的 profile）。
+        // 非通配且不一致 → 直接中止，把两边字符串带回上层弹窗，绝不「检测到不匹配仍继续安装」。
+        {
+            NSString *appBundle = RZBundleIdentifierAtPath(path);
+            NSDictionary *emb = RZExtractProfilePlist([path stringByAppendingPathComponent:@"embedded.mobileprovision"]);
+            NSString *aid = emb[@"Entitlements"][@"application-identifier"];
+            NSString *profBundle = nil;
+            if (aid.length) {
+                NSArray *pa = [aid componentsSeparatedByString:@"."];
+                if (pa.count >= 2) {
+                    profBundle = [[pa subarrayWithRange:NSMakeRange(1, pa.count - 1)] componentsJoinedByString:@"."];
+                }
+            }
+            if (appBundle.length && profBundle.length && ![profBundle isEqualToString:@"*"] && ![profBundle isEqualToString:appBundle]) {
+                NSError *mismatch = [NSError errorWithDomain:@"ReSignError" code:9876 userInfo:@{
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"应用标识不一致：安装包 %@，证书 %@", appBundle, profBundle],
+                    @"appBundle": appBundle,
+                    @"profBundle": profBundle,
+                }];
+                [self _cleanupTempFilesInContext:context];
+                completionHandler(mismatch);
+                return;
+            }
+        }
 
         // 只读侦测：把每个 Mach-O 的架构打进日志，确认 arm64e 被原样保留。
         // 1.1.32 起这里不再对二进制做任何写操作（不瘦身、不 patch）。
