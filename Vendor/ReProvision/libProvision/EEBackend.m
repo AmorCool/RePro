@@ -752,6 +752,10 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
 + (void)_provisionBundleAtPath:(NSString *)path identity:(NSString *)identity gsToken:(NSString *)gsToken priorChosenTeamID:(NSString *)teamId context:(NSMutableDictionary *)context isExtension:(BOOL)isExtension withCompletionHandler:(void (^)(NSError *error))completionHandler {
     // 从 context 取回「扩展用主 profile 签名」选项（由 signBundleAtPath 透传，避免改动递归签名接口签名）。
     BOOL useMainProfileForExtensions = [context[@"useMainProfileForExtensions"] boolValue];
+    if (useMainProfileForExtensions && isExtension) {
+        NSLog(@"[ReSign] 「扩展用主 profile」选项对扩展无效：iOS 要求扩展代码签名必须是具体 application-identifier，"
+              @"通配符 profile 无法为扩展产出合法 app-id，故该扩展改走各自注册具体 profile（保证安装成功）。");
+    }
 
     dispatch_group_t dispatch_group = dispatch_group_create();
     NSMutableArray *__block subBundleErrors = [NSMutableArray array];
@@ -901,17 +905,25 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         }
     }
 
-    // 剥离已有的 TeamID 后缀再追加，防止重复追加导致
-    // "com.x.YVW4KHS3Q4.YVW4KHS3Q4"（双后缀→entitlements 三 TeamID →与 profile 不匹配→0xe8008015）。
+    // 通用规则：剥除 TeamID 后缀再追加，保持 lara 风格宿主 App 的 idempotent（防止双后缀→0xe8008015）。
+    // 重要：扩展（isExtension）绝不追加 Team 后缀。扩展 id 形如 hostFinalId.extName，
+    // 一旦被追加 ".TEAMID" 会变成 hostFinalId.extName.TEAMID，而扩展的代码签名 application-identifier
+    // 必须 == 自身 CFBundleIdentifier 后缀，多出来的 TEAMID 会让二者错位 →
+    // installd 报 0xe8008017（A signed resource has been added/modified/deleted）。
+    // 这也是「别人用普通 IPA（不含 Team 后缀）带扩展安装失败」的通用根因。
     NSString *teamIdSuffix = [NSString stringWithFormat:@".%@", teamId];
-    while ([applicationId hasSuffix:teamIdSuffix]) {
-        applicationId = [applicationId substringToIndex:applicationId.length - teamIdSuffix.length];
+    NSString *baseApplicationId = nil;
+
+    if (isExtension) {
+        // 扩展：保持前缀重写后的 id 不变（含 Team 后缀的宿主前缀 + 扩展名，无扩展级 Team 后缀）。
+        baseApplicationId = applicationId;
+    } else {
+        while ([applicationId hasSuffix:teamIdSuffix]) {
+            applicationId = [applicationId substringToIndex:applicationId.length - teamIdSuffix.length];
+        }
+        baseApplicationId = applicationId;
+        applicationId = [applicationId stringByAppendingString:teamIdSuffix];
     }
-
-    // 取剥离后的原始 bundle ID 作为回退（line 895 fallback）。
-    NSString *baseApplicationId = applicationId;
-
-    applicationId = [applicationId stringByAppendingString:teamIdSuffix];
     [infoplist setObject:applicationId forKey:@"CFBundleIdentifier"];
 
     NSError *error = nil;
@@ -931,9 +943,13 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
     NSString *applicationName = [infoplist objectForKey:@"CFBundleName"];
     NSString *binaryLocation = [path stringByAppendingFormat:@"/%@", [infoplist objectForKey:@"CFBundleExecutable"]];
 
-    // 扩展「用主 profile 签名」：复用团队通配符 profile（TEAMID.*），不各自向 Apple 注册 App ID，
-    // 从而不烧「7 天 10 个 App ID」配额、也不占 3 应用槽。获取失败则回退为扩展各自注册（不破坏主 App 签名）。
-    BOOL useWildcardForExtension = (useMainProfileForExtensions && isExtension);
+    // 扩展「用主 profile 签名」选项在此对扩展恒为 NO：iOS 硬性要求扩展的代码签名
+    // application-identifier 必须是具体值（非通配符 *），通配符 profile（TEAMID.*）无法为扩展
+    // 产出合法的具体 app-id，会导致 installd 拒绝（0xe8008017）。故扩展一律走各自注册具体
+    // profile 的路径（已修复 id，可正常安装）。该选项对宿主 App 本就不生效（宿主也用各自 profile），
+    // 所以实际等价于「标准签名」——保证了安装成功，但无法为扩展省 App ID 配额
+    //（免费账号本就拿不到 TEAMID.* 通配符；付费团队需另行评估 zsign 对 * 的替换行为）。
+    BOOL useWildcardForExtension = NO;
 
     EEProvisioning *provisioner = [EEProvisioning provisionerWithCredentials:identity:gsToken];
 

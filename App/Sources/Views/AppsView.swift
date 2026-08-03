@@ -166,7 +166,7 @@ struct AppsView: View {
                     viewModel.confirmExtensionChoice(.cancel)
                 }
             } message: {
-                Text("该 IPA 包含 PlugIns 扩展（*.appex）。\n「扩展用主 profile 签名」：扩展复用团队通配符 profile（TEAMID.*），不额外占用 App ID 配额与 3 应用槽；若通配 profile 获取失败会自动回退各自注册。\n「移除所有扩展」：签名前删除所有 PlugIns/*.appex，扩展功能将不可用。")
+                Text("该 IPA 包含 PlugIns 扩展（*.appex）。\n「扩展用主 profile 签名」：iOS 要求扩展代码签名必须是具体 application-identifier，不能用通配符，因此扩展仍会各自注册具体 profile 再签名（保证可正常安装）；此选项与「标准签名」等价。\n「移除所有扩展」：签名前删除所有 PlugIns/*.appex，扩展功能将不可用。")
             }
         }
         .navigationViewStyle(.stack)
