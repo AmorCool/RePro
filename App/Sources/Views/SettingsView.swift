@@ -580,8 +580,8 @@ struct SettingsView: View {
             loginMessage = nil
         }
 
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self = self, self.loginAttempt == attempt else { return }
+        let workItem = DispatchWorkItem { [self] in
+            guard self.loginAttempt == attempt else { return }
             self.isLoggingIn = false
             self.loginSucceeded = false
             self.loginMessage = "登录超时（网络可能不稳定），请重试"
@@ -592,8 +592,8 @@ struct SettingsView: View {
         loginTimeoutWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + loginTimeout, execute: workItem)
 
-        account.login(appleID: appleID, password: password) { [weak self] step in
-            guard let self = self, self.loginAttempt == attempt else { return }
+        account.login(appleID: appleID, password: password) { [self] step in
+            guard self.loginAttempt == attempt else { return }
             workItem.cancel()
             self.handleLoginStep(step, retryCount: retryCount)
         }
@@ -617,8 +617,7 @@ struct SettingsView: View {
             loginMessage = "该 Apple ID 开启了两步验证，请在系统弹出的验证界面完成确认…"
             loginSucceeded = false
             LogManager.shared.info("账号需要两步验证，拉起系统验证界面", source: "SettingsView")
-            account.continueTwoFactor { [weak self] next in
-                guard let self = self else { return }
+            account.continueTwoFactor { [self] next in
                 if case .needsTwoFactor = next {
                     self.isLoggingIn = false
                     self.loginMessage = "两步验证未完成，请重试"
@@ -647,7 +646,7 @@ struct SettingsView: View {
         if isNetworkish && !isCredential && retryCount < loginMaxRetries {
             let next = retryCount + 1
             LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
                 self?.attemptLogin(retryCount: next)
             }
             return
