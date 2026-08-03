@@ -207,8 +207,8 @@ struct SettingsView: View {
     private static func masked(_ value: String?) -> String {
         guard let s = value, !s.isEmpty else { return "-" }
         if s.count <= 3 { return String(repeating: "•", count: s.count) }
-        let head = s.prefix(2)
-        let tail = s.suffix(1)
+        let head = String(s.prefix(2))
+        let tail = String(s.suffix(1))
         return head + String(repeating: "•", count: max(4, s.count - 3)) + tail
     }
 
