@@ -174,6 +174,9 @@
     // look "expired"). ISO Latin-1 maps all 256 byte values and never fails; the
     // <plist> payload itself is ASCII XML, so extraction stays correct.
     NSString *stringContent = [NSString stringWithContentsOfFile:path encoding:NSISOLatin1StringEncoding error:&err];
+    if (stringContent.length == 0) {
+        return @{};
+    }
 
     NSString *startMarker = @"<plist";
     NSString *endMarker = @"</plist>";
@@ -183,13 +186,27 @@
         return @{};
     }
 
-    NSRange endRange = [stringContent rangeOfString:endMarker];
+    // 关键修复：只在 <plist> 之后搜索闭合标签。.mobileprovision 是二进制 CMS 容器，
+    // 其二进制前缀里常有「碰巧」长得像 </plist> 的字节序列，排在真正的 XML payload 之前。
+    // 若对整个字符串取第一个 </plist>，会得到 end < start，算出的 length 为负，
+    // 传给 substringWithRange: 会让 CoreFoundation 触发
+    // "CFString cannot be created from a negative number of bytes" 直接 trap（首次启动必崩）。
+    NSRange searchRange = NSMakeRange(startRange.location, stringContent.length - startRange.location);
+    NSRange endRange = [stringContent rangeOfString:endMarker options:0 range:searchRange];
     if (endRange.location == NSNotFound) {
         return @{};
     }
 
-    NSInteger length = (endRange.location + endMarker.length) - startRange.location;
-    stringContent = [stringContent substringWithRange:NSMakeRange(startRange.location, length)];
+    NSInteger length = (NSInteger)(endRange.location + endMarker.length) - (NSInteger)startRange.location;
+    if (length <= 0) {
+        return @{};
+    }
+    NSRange sliceRange = NSMakeRange(startRange.location, (NSUInteger)length);
+    if (NSMaxRange(sliceRange) > stringContent.length) {
+        return @{};
+    }
+
+    stringContent = [stringContent substringWithRange:sliceRange];
 
     NSData *stringData = [stringContent dataUsingEncoding:NSUTF8StringEncoding];
 
