@@ -22,6 +22,13 @@ final class SigningViewModel: ObservableObject {
 
     @Published var installedApps: [InstalledApp] = []
     @Published var otherApps: [InstalledApp] = []
+    /// 小黑屋：被拉黑的应用（自动续签/批量签名会跳过，但单点「重签」仍可签）。
+    @Published var blacklistedApps: [InstalledApp] = []
+
+    /// 全量列表（未过滤黑名单），用于派生上面三个分区。
+    private var allInstalled: [InstalledApp] = []
+    private var allOther: [InstalledApp] = []
+
     @Published var isBusy: Bool = false
     @Published var progressMessage: String = ""
     @Published var lastError: String?
@@ -33,8 +40,16 @@ final class SigningViewModel: ObservableObject {
 
     private let client = BridgeClient.shared
 
+    /// 监听小黑屋变化通知（如设置页清空），及时重新分区。
+    private var blacklistObserver: NSObjectProtocol?
+
     init() {
         bindSigningCallbacks()
+        blacklistObserver = NotificationCenter.default.addObserver(
+            forName: BlacklistStore.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.recomputeLists()
+        }
         Task {
             await refreshApps()
             await refreshOtherApps()
@@ -86,16 +101,52 @@ final class SigningViewModel: ObservableObject {
     }
 
     private func applyProgress(_ progress: Int, to bundleID: String) {
-        if let index = installedApps.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
-            installedApps[index].isSigning = progress < 100
-            installedApps[index].signingProgress = progress
-            progressMessage = "\(installedApps[index].displayName) \(progress)%"
-        } else {
-            progressMessage = "\(bundleID) \(progress)%"
+        func update(_ arr: inout [InstalledApp]) {
+            if let index = arr.firstIndex(where: { $0.bundleIdentifier == bundleID }) {
+                arr[index].isSigning = progress < 100
+                arr[index].signingProgress = progress
+            }
         }
+        update(&installedApps)
+        update(&otherApps)
+        update(&blacklistedApps)
+        progressMessage = "\(bundleID) \(progress)%"
     }
 
     // MARK: - 应用列表
+
+    /// 把全量列表按小黑屋重新划分成 installedApps / otherApps / blacklistedApps 三个分区。
+    private func recomputeLists() {
+        let store = BlacklistStore.shared
+        var visibleInstalled: [InstalledApp] = []
+        var visibleOther: [InstalledApp] = []
+        var blacklisted: [InstalledApp] = []
+
+        for var app in allInstalled {
+            if store.isBlacklisted(app.bundleIdentifier) {
+                app.source = .installed
+                blacklisted.append(app)
+            } else {
+                visibleInstalled.append(app)
+            }
+        }
+        for var app in allOther {
+            if store.isBlacklisted(app.bundleIdentifier) {
+                app.source = .other
+                blacklisted.append(app)
+            } else {
+                visibleOther.append(app)
+            }
+        }
+        // 小黑屋按显示名排序，列表更稳定
+        blacklisted.sort {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+
+        self.installedApps = visibleInstalled
+        self.otherApps = visibleOther
+        self.blacklistedApps = blacklisted
+    }
 
     func refreshApps() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -108,9 +159,9 @@ final class SigningViewModel: ObservableObject {
                 case .success(let apps):
                     // 保留正在签名的 UI 状态，避免刷新时进度条被清掉
                     let signing = Dictionary(uniqueKeysWithValues:
-                        self.installedApps.filter { $0.isSigning }
+                        self.allInstalled.filter { $0.isSigning }
                             .map { ($0.bundleIdentifier, $0.signingProgress) })
-                    self.installedApps = apps.map { app in
+                    self.allInstalled = apps.map { app in
                         var app = app
                         if let progress = signing[app.bundleIdentifier] {
                             app.isSigning = true
@@ -118,6 +169,7 @@ final class SigningViewModel: ObservableObject {
                         }
                         return app
                     }
+                    self.recomputeLists()
                 case .failure(let error):
                     self.lastError = error.localizedDescription
                     LogManager.shared.error("获取应用列表失败: \(error.localizedDescription)",
@@ -140,7 +192,19 @@ final class SigningViewModel: ObservableObject {
                 }
                 switch result {
                 case .success(let apps):
-                    self.otherApps = apps
+                    // 保留正在签名的 UI 状态
+                    let signing = Dictionary(uniqueKeysWithValues:
+                        self.allOther.filter { $0.isSigning }
+                            .map { ($0.bundleIdentifier, $0.signingProgress) })
+                    self.allOther = apps.map { app in
+                        var app = app
+                        if let progress = signing[app.bundleIdentifier] {
+                            app.isSigning = true
+                            app.signingProgress = progress
+                        }
+                        return app
+                    }
+                    self.recomputeLists()
                 case .failure(let error):
                     LogManager.shared.error("获取其他应用列表失败: \(error.localizedDescription)",
                                             source: "SigningViewModel")
@@ -316,6 +380,42 @@ final class SigningViewModel: ObservableObject {
         }
     }
 
+    // MARK: - 小黑屋（黑名单）
+
+    /// 把应用加入小黑屋；source 记录它来自哪个原始列表。
+    /// 加入后自动续签/批量签名会跳过它，但单点「重签」仍可手动触发。
+    func addToBlacklist(_ app: InstalledApp, source: BlacklistSource) {
+        BlacklistStore.shared.add(app.bundleIdentifier, source: source)
+        recomputeLists()
+        LogManager.shared.info("已加入小黑屋: \(app.bundleIdentifier)（来源: \(source.label)）", source: "SigningViewModel")
+        Task {
+            await refreshApps()
+            await refreshOtherApps()
+        }
+    }
+
+    /// 把应用移出小黑屋。
+    func removeFromBlacklist(_ app: InstalledApp) {
+        BlacklistStore.shared.remove(app.bundleIdentifier)
+        recomputeLists()
+        LogManager.shared.info("已移出小黑屋: \(app.bundleIdentifier)", source: "SigningViewModel")
+        Task {
+            await refreshApps()
+            await refreshOtherApps()
+        }
+    }
+
+    /// 清空小黑屋（设置页调用）。
+    func clearBlacklist() {
+        BlacklistStore.shared.clear()
+        recomputeLists()
+        LogManager.shared.info("已清空小黑屋", source: "SigningViewModel")
+        Task {
+            await refreshApps()
+            await refreshOtherApps()
+        }
+    }
+
     // MARK: - 卸载
 
     func uninstall(app: InstalledApp) {
@@ -351,8 +451,13 @@ final class SigningViewModel: ObservableObject {
     }
 
     private func markSigning(_ signing: Bool, for bundleID: String) {
-        guard let index = installedApps.firstIndex(where: { $0.bundleIdentifier == bundleID }) else { return }
-        installedApps[index].isSigning = signing
-        if !signing { installedApps[index].signingProgress = 0 }
+        func update(_ arr: inout [InstalledApp]) {
+            guard let index = arr.firstIndex(where: { $0.bundleIdentifier == bundleID }) else { return }
+            arr[index].isSigning = signing
+            if !signing { arr[index].signingProgress = 0 }
+        }
+        update(&installedApps)
+        update(&otherApps)
+        update(&blacklistedApps)
     }
 }

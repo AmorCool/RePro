@@ -33,6 +33,9 @@ struct SettingsView: View {
 
     @ObservedObject private var account = BridgeClient.shared
 
+    /// 小黑屋存储（只读用于显示数量，清空按钮直接操作它）
+    @ObservedObject private var blacklist = BlacklistStore.shared
+
     @State private var appleID: String = BridgeClient.shared.username ?? ""
     @State private var password: String = BridgeClient.shared.savedPassword ?? ""
     @State private var isLoggingIn = false
@@ -58,6 +61,7 @@ struct SettingsView: View {
                 accountSection
                 autoResignSection
                 freeLimitSection
+                blacklistSection
                 notificationSection
                 signingBackendSection
                 systemSection
@@ -307,11 +311,41 @@ struct SettingsView: View {
             Text("免费账号限制")
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                Text("⚠️ 这只解除「设备同时 3 个」这一条限制。Apple 服务端的「每 7 天最多注册 10 个 App ID」是另一套机制，无法绕过。")
+                Text("这只解除「设备同时 3 个」这一条限制。Apple 服务端的「每 7 天最多注册 10 个 App ID」是另一套机制，无法绕过。")
                     .foregroundColor(.orange)
-                Text("sudo /usr/libexec/repro-signingd --bypass-3app")
+                Text("手动操作：sudo /usr/libexec/repro-signingd --bypass-3app")
                     .font(.caption)
             }
+        }
+    }
+
+    // MARK: - 小黑屋
+
+    private var blacklistSection: some View {
+        Section {
+            HStack {
+                Text("已拉黑应用")
+                Spacer()
+                Text("\(blacklist.entries.count) 个")
+                    .foregroundColor(.secondary)
+            }
+
+            if !blacklist.entries.isEmpty {
+                Button("清空小黑屋", role: .destructive) {
+                    BlacklistStore.shared.clear()
+                    LogManager.shared.info("设置页清空小黑屋", source: "SettingsView")
+                }
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                    .foregroundColor(.secondary)
+                Text("被拉黑的应用会被自动续签 / 批量签名跳过，但手动点击「重签」仍可为其签名。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        } header: {
+            Text("小黑屋")
         }
     }
 

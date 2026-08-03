@@ -57,6 +57,8 @@ struct AppsView: View {
     @State private var pendingUninstall: InstalledApp?
     /// 待重签的「其他应用」（用于弹出警告确认）
     @State private var pendingOtherAppResign: InstalledApp?
+    /// 小黑屋说明弹窗
+    @State private var showBlacklistHelp = false
 
     var body: some View {
         NavigationView {
@@ -115,7 +117,7 @@ struct AppsView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 8)
 
-                if viewModel.installedApps.isEmpty && viewModel.otherApps.isEmpty {
+                if viewModel.installedApps.isEmpty && viewModel.otherApps.isEmpty && viewModel.blacklistedApps.isEmpty {
                     emptyState
                 } else {
                     appList
@@ -232,6 +234,14 @@ struct AppsView: View {
                         AppRowView(app: app) {
                             viewModel.resign(app: app)
                         }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                viewModel.addToBlacklist(app, source: .installed)
+                            } label: {
+                                Label("加入小黑屋", systemImage: "nosign")
+                            }
+                            .tint(.orange)
+                        }
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
                                 pendingUninstall = app
@@ -265,6 +275,14 @@ struct AppsView: View {
                         OtherAppRowView(app: app) {
                             pendingOtherAppResign = app
                         }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                viewModel.addToBlacklist(app, source: .other)
+                            } label: {
+                                Label("加入小黑屋", systemImage: "nosign")
+                            }
+                            .tint(.orange)
+                        }
                     }
                 }
             } header: {
@@ -287,6 +305,48 @@ struct AppsView: View {
                 .padding(.vertical, 4)
                 .textCase(nil)
             }
+
+            // Section 3: 小黑屋（被拉黑的应用，自动续签/批量签名会跳过，但单点「重签」仍可）
+            Section {
+                if viewModel.blacklistedApps.isEmpty {
+                    Text("小黑屋里还没有应用")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 12)
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(viewModel.blacklistedApps) { app in
+                        BlacklistRowView(app: app) {
+                            viewModel.resign(app: app)
+                        }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                viewModel.removeFromBlacklist(app)
+                            } label: {
+                                Label("移出小黑屋", systemImage: "checkmark.circle")
+                            }
+                            .tint(.blue)
+                        }
+                    }
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("小黑屋")
+                        .font(.headline)
+                    Button {
+                        showBlacklistHelp = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+                .textCase(nil)
+            }
         }
         .refreshable {
             await viewModel.refreshApps()
@@ -305,7 +365,38 @@ struct AppsView: View {
                 }
             )
         }
+        .alert("小黑屋", isPresented: $showBlacklistHelp) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("将不喜欢的应用拉黑，后续所有续签 / 签名操作将会跳过这些应用。不过手动点击「重签」仍然可以为它们签名。")
+        }
     }
+}
+
+// MARK: - 徽标辅助
+
+/// 通用胶囊徽标
+private func pill(_ text: String, color: Color) -> some View {
+    Text(text)
+        .font(.caption2)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.15))
+        .foregroundColor(color)
+        .cornerRadius(4)
+}
+
+/// 证书 / Apple ID 来源徽标（依据 embedded.mobileprovision 到期时间判定：
+/// 距今天数 < 30 视为 Apple ID 免费签，否则视为证书签）
+private func signingSourcePill(_ app: InstalledApp) -> some View {
+    let color: Color
+    let text: String
+    switch app.signingSource {
+    case .cert:    (color, text) = (.purple, "证书")
+    case .appleID: (color, text) = (.blue, "Apple ID")
+    case .unknown: (color, text) = (.secondary, "未知")
+    }
+    return pill(text, color: color)
 }
 
 // MARK: - 应用行视图
@@ -331,7 +422,10 @@ struct AppRowView: View {
                     ProgressView(value: Double(app.signingProgress), total: 100)
                         .frame(maxWidth: 160)
                 } else {
-                    expiryBadge
+                    HStack(spacing: 4) {
+                        expiryBadge
+                        signingSourcePill(app)
+                    }
                 }
             }
 
@@ -420,6 +514,8 @@ struct OtherAppRowView: View {
                             .font(.caption)
                             .foregroundColor(daysLeft < 0 ? .red : .secondary)
                     }
+
+                    signingSourcePill(app)
                 }
             }
 
@@ -458,5 +554,64 @@ struct OtherAppRowView: View {
     private func formatExpiry(_ days: Int) -> String {
         if days < 0 { return "已过期" }
         return "\(days) 天后过期"
+    }
+}
+
+// MARK: - 小黑屋应用行视图
+
+struct BlacklistRowView: View {
+    let app: InstalledApp
+    let onResign: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            icon
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(app.displayName)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+
+                Text(app.bundleIdentifier)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                // 来源标签（ReSign 签应用 / 其它应用）+ 证书 / Apple ID 来源
+                HStack(spacing: 4) {
+                    pill(app.sourceLabel, color: .orange)
+                    signingSourcePill(app)
+                }
+            }
+
+            Spacer()
+
+            if app.isSigning {
+                ProgressView()
+                    .scaleEffect(0.7)
+            } else {
+                Button("重签", action: onResign)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if let icon = app.icon {
+            Image(uiImage: icon)
+                .resizable()
+                .frame(width: 48, height: 48)
+                .cornerRadius(10)
+        } else {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 48, height: 48)
+                .overlay(Image(systemName: "app").foregroundColor(.secondary))
+        }
     }
 }

@@ -180,6 +180,23 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         applications = [[[RPVApplicationDatabase sharedInstance] getAllApplicationsForTeamID:teamID] mutableCopy];
     }
 
+    // v1.1.98: 过滤「小黑屋」（黑名单）。
+    // 这一步同时覆盖 App 的批量续签与守护进程 repro-signingd 的自动续签（两者都走 resignApplications:），
+    // 而单点「重签」/IPA 导入走 resignSpecificApplications:，不经过这里，所以手动签名仍可签黑名单应用。
+    NSDictionary *blacklist = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"reproBlacklist"];
+    if (blacklist.count > 0) {
+        NSMutableArray *filtered = [NSMutableArray arrayWithCapacity:applications.count];
+        for (RPVApplication *app in applications) {
+            NSString *bid = [app bundleIdentifier];
+            if (bid.length > 0 && [blacklist objectForKey:bid] != nil) {
+                NSLog(@"[ReSign] 小黑屋应用，跳过自动续签: %@", bid);
+            } else {
+                [filtered addObject:app];
+            }
+        }
+        applications = filtered;
+    }
+
     [self _resignApplicationsArray:applications withTeamID:teamID username:username password:password];
 }
 

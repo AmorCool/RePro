@@ -2,6 +2,21 @@ import Foundation
 import UIKit
 import SwiftUI
 
+// MARK: - 小黑屋来源
+
+/// 应用被拉黑时所属的原始列表，用于在小黑屋里标注它来自哪里。
+enum BlacklistSource: String {
+    case installed  // ReSign 签应用
+    case other      // 其它应用
+
+    var label: String {
+        switch self {
+        case .installed: return "ReSign 签应用"
+        case .other: return "其它应用"
+        }
+    }
+}
+
 // MARK: - 已安装应用模型
 
 /// 界面层使用的应用快照。数据全部来自 RPVBridge（Vendor/ReProvision），
@@ -15,6 +30,10 @@ struct InstalledApp: Identifiable, Hashable {
     let hasEmbeddedProvision: Bool
     /// 原始签名者的 Team ID（「其他应用」中显示，用于区分非当前账户签名的应用）
     let originalTeamID: String?
+
+    /// 在小黑屋列表里标注它来自哪个原始列表（ReSign 签应用 / 其它应用）。
+    /// 普通列表里为 nil，被移入小黑屋后才赋值。
+    var source: BlacklistSource? = nil
 
     /// 是否正在签名（仅 UI 状态，由 SigningViewModel 维护）
     var isSigning: Bool = false
@@ -34,6 +53,38 @@ struct InstalledApp: Identifiable, Hashable {
     var daysUntilExpiry: Int? {
         guard let expiry = certificateExpiryDate else { return nil }
         return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
+    }
+
+    /// 小黑屋来源标签：ReSign 签应用 / 其它应用 / 未知
+    var sourceLabel: String {
+        source?.label ?? "未知"
+    }
+
+    // MARK: 签名来源判定（证书 vs Apple ID）
+
+    /// 签名来源：证书签（一年期）、Apple ID 免费签（7 天）、未知。
+    /// 依据 embedded.mobileprovision 的 ExpirationDate 距今天数判定：
+    /// Apple ID 免费签仅 7 天，证书签约 365 天，故阈值取 30 天——
+    /// 还差 30 天以上才到期的基本可确定是证书，30 天以内的基本是 Apple ID 免费签。
+    enum SigningSource {
+        case cert     // 证书签（一年期）
+        case appleID  // Apple ID 免费签（7 天）
+        case unknown  // 无到期信息
+    }
+
+    var signingSource: SigningSource {
+        guard let expiry = certificateExpiryDate else { return .unknown }
+        let days = Calendar.current.dateComponents([.day], from: Date(), to: expiry).day ?? 0
+        return days < 30 ? .appleID : .cert
+    }
+
+    /// 签名来源标签：证书 / Apple ID / 未知
+    var signingSourceLabel: String {
+        switch signingSource {
+        case .cert: return "证书"
+        case .appleID: return "Apple ID"
+        case .unknown: return "未知"
+        }
     }
 }
 
