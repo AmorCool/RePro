@@ -48,6 +48,11 @@ struct SettingsView: View {
     @State private var showAppleIDBefore = true
     @State private var loginMessage: String?
     @State private var loginSucceeded = false
+    /// 登录超时看门狗：网络卡住时自动解除“登录中”并触发重试，避免界面永久“卡住”。
+    @State private var loginAttempt: Int = 0
+    @State private var loginTimeoutWorkItem: DispatchWorkItem?
+    private let loginTimeout: TimeInterval = 30
+    private let loginMaxRetries: Int = 2
 
     @State private var availableTeams: [DeveloperTeam] = []
     @State private var showingTeamSheet = false
@@ -556,16 +561,45 @@ struct SettingsView: View {
     // MARK: - 动作
 
     private func performLogin() {
-        isLoggingIn = true
-        loginMessage = nil
-        loginSucceeded = false
+        attemptLogin(retryCount: 0)
+    }
 
-        account.login(appleID: appleID, password: password) { step in
-            handleLoginStep(step)
+    /// 一次登录尝试：带超时看门狗 + 网络错误自动重试。
+    /// 每次尝试用 loginAttempt 作为 epoch，旧的迟到回调会被忽略，避免重试时重复处理。
+    private func attemptLogin(retryCount: Int) {
+        loginTimeoutWorkItem?.cancel()
+
+        let attempt = loginAttempt + 1
+        loginAttempt = attempt
+
+        isLoggingIn = true
+        loginSucceeded = false
+        if retryCount > 0 {
+            loginMessage = "网络异常，正在自动重试（\(retryCount)/\(loginMaxRetries)）…"
+        } else {
+            loginMessage = nil
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self, self.loginAttempt == attempt else { return }
+            self.isLoggingIn = false
+            self.loginSucceeded = false
+            self.loginMessage = "登录超时（网络可能不稳定），请重试"
+            LogManager.shared.error("Apple ID 登录超时（\(Int(self.loginTimeout))s 无响应）", source: "SettingsView")
+            // 超时按网络错误处理，走自动重试
+            self.handleLoginFailure(reason: "timeout", retryCount: retryCount)
+        }
+        loginTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + loginTimeout, execute: workItem)
+
+        account.login(appleID: appleID, password: password) { [weak self] step in
+            guard let self = self, self.loginAttempt == attempt else { return }
+            workItem.cancel()
+            self.handleLoginStep(step, retryCount: retryCount)
         }
     }
 
-    private func handleLoginStep(_ step: BridgeClient.LoginStep) {
+    private func handleLoginStep(_ step: BridgeClient.LoginStep, retryCount: Int = 0) {
         switch step {
         case .chooseTeam(let teams):
             if teams.count == 1, let only = teams.first {
@@ -583,21 +617,45 @@ struct SettingsView: View {
             loginMessage = "该 Apple ID 开启了两步验证，请在系统弹出的验证界面完成确认…"
             loginSucceeded = false
             LogManager.shared.info("账号需要两步验证，拉起系统验证界面", source: "SettingsView")
-            account.continueTwoFactor { next in
+            account.continueTwoFactor { [weak self] next in
+                guard let self = self else { return }
                 if case .needsTwoFactor = next {
-                    isLoggingIn = false
-                    loginMessage = "两步验证未完成，请重试"
+                    self.isLoggingIn = false
+                    self.loginMessage = "两步验证未完成，请重试"
                     return
                 }
-                handleLoginStep(next)
+                self.handleLoginStep(next)
             }
 
         case .failed(let reason):
-            isLoggingIn = false
-            loginSucceeded = false
-            loginMessage = "登录失败: \(reason)"
-            LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
+            handleLoginFailure(reason: reason, retryCount: retryCount)
         }
+    }
+
+    /// 登录失败统一处理：网络/超时类错误自动重试（最多 loginMaxRetries 次）；
+    /// 账号/密码类错误直接报错，不重试以免死循环。
+    private func handleLoginFailure(reason: String, retryCount: Int) {
+        let lower = reason.lowercased()
+        let isNetworkish = reason.contains("超时") || reason.contains("timeout") || reason.contains("timed out")
+            || reason.contains("网络") || reason.contains("network") || reason.contains("connection")
+            || reason.contains("连接") || reason.contains("离线") || reason.contains("offline")
+            || reason.contains("请求失败") || reason.contains("could not connect")
+            || reason.contains("nsurlerrordomain") || reason.contains("dns")
+        let isCredential = reason.contains("密码") || lower.contains("incorrect")
+            || reason.contains("不正确") || reason.contains("app-specific")
+            || reason.contains("验证") || reason.contains("2fa")
+        if isNetworkish && !isCredential && retryCount < loginMaxRetries {
+            let next = retryCount + 1
+            LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.attemptLogin(retryCount: next)
+            }
+            return
+        }
+        isLoggingIn = false
+        loginSucceeded = false
+        loginMessage = "登录失败: \(reason)"
+        LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
     }
 
     private func selectTeam(_ team: DeveloperTeam) {
