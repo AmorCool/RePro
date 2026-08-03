@@ -647,7 +647,7 @@ struct SettingsView: View {
             let next = retryCount + 1
             LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
-                self?.attemptLogin(retryCount: next)
+                self.attemptLogin(retryCount: next)
             }
             return
         }
