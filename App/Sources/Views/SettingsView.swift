@@ -195,7 +195,9 @@ struct SettingsView: View {
                     Button {
                         showPwdBefore.toggle()
                     } label: {
-                        Image(systemName: showPwdBefore ? "eye.slash.fill" : "eye.fill")
+                        // v1.1.102: 与 Apple ID 框统一为「当前状态语义」——
+                        // 睁眼=明文（能看见）、闭眼=掩码（被遮住），与用户直觉一致。
+                        Image(systemName: showPwdBefore ? "eye.fill" : "eye.slash.fill")
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)
@@ -327,13 +329,6 @@ struct SettingsView: View {
                 }
         } header: {
             Text("免费账号限制")
-        } footer: {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("这只解除「设备同时 3 个」这一条限制。Apple 服务端的「每 7 天最多注册 10 个 App ID」是另一套机制，无法绕过。")
-                    .foregroundColor(.orange)
-                Text("手动操作：sudo /usr/libexec/repro-signingd --bypass-3app")
-                    .font(.caption)
-            }
         }
     }
 
