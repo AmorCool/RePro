@@ -802,6 +802,63 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         }
     }
 
+    // 内嵌 framework 处理：防止 installd 报 0xe8008017（A signed resource has been added/modified/deleted）。
+    //
+    // 根因（已精确定位到 zsign zhlynn/zsign @d6e929c 的 src/bundle.cpp:449-477）：
+    //   zsign 用 `endsWith(profile.application-identifier, bundle.CFBundleIdentifier)` 把每个 -m 描述文件
+    //   匹配到 bundle。许多第三方 / 越狱类 IPA（如 Via 的 Wormhole.framework）的 framework CFBundleIdentifier
+    //   是独立域名（如 com.tuyafeng.wormhole.Wormhole），不以宿主 app id 结尾 → 没有任何 -m 匹配 → zsign
+    //   不把任何 profile 写进该 framework → 其签名 `application-identifier`（来自 -e，= 宿主 app id
+    //   L7KYGKFQ5N.com.tuyafeng.122.L7KYGKFQ5N）无法被 embedded profile 覆盖 → installd 拒绝整个 .app。
+    //   这正是「别人用普通 IPA 装带 framework 的 App 也报 0xe8008017」的通用根因，与扩展无关。
+    //
+    // 修复：把 framework 的 CFBundleIdentifier 重写为「宿主最终 id」（如 com.tuyafeng.122.L7KYGKFQ5N，
+    //   含 team 后缀，与宿主实际签名 final id 一致），使 `endsWith(宿主profile.application-identifier,
+    //   framework.CFBundleIdentifier)` 为真 → zsign 会把宿主的 profile 写进该 framework，其签名
+    //   application-identifier 也被该 profile 覆盖 → installd 校验通过。framework 本就是宿主 app id 共享的
+    //   嵌套 bundle（Xcode 里 framework 复用宿主 App 的 provisioning），这里不额外注册 App ID、不烧配额。
+    //   只对宿主（isExtension==NO）做一次，避免递归重复。扩展内嵌的 framework 较罕见，其 profile 匹配
+    //   逻辑相同但取扩展的 host id，暂不覆盖（观察到的主场景是宿主级 Frameworks/）。
+    if (!isExtension) {
+        NSString *frameworkDir = [path stringByAppendingPathComponent:@"Frameworks"];
+        NSArray *fwList = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:frameworkDir error:nil];
+        for (NSString *fwDir in fwList) {
+            if (![fwDir hasSuffix:@".framework"]) continue;
+            NSString *fwPath = [frameworkDir stringByAppendingPathComponent:fwDir];
+            NSString *fwInfoPath = [fwPath stringByAppendingPathComponent:@"Info.plist"];
+            NSMutableDictionary *fwInfo = [NSMutableDictionary dictionaryWithContentsOfFile:fwInfoPath];
+            if (fwInfo) {
+                // 宿主最终 id（剥离已存在的 team 后缀再追加）——与下方 App 自身重写逻辑一致，保证与
+                // 宿主最终签名 application-identifier 的"非 team 前缀段"一致，从而让 zsign 的
+                // `endsWith(宿主profile.application-identifier, framework.CFBundleIdentifier)` 命中。
+                NSMutableDictionary *hostInfo = [NSMutableDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]];
+                NSString *hostId = hostInfo[@"CFBundleIdentifier"] ?: @"";
+                NSString *teamSuffix = [NSString stringWithFormat:@".%@", teamId];
+                NSString *hostBase = hostId;
+                while ([hostBase hasSuffix:teamSuffix]) {
+                    hostBase = [hostBase substringToIndex:hostBase.length - teamSuffix.length];
+                }
+                NSString *hostFinalId = [hostBase stringByAppendingString:teamSuffix];
+                // framework 复用宿主 app id（= hostFinalId，含 team 后缀）。宿主 profile 的
+                // application-identifier = TEAMID.hostFinalId，以 hostFinalId 结尾 → zsign endsWith 命中，
+                // 会把宿主 profile 写进该 framework，其签名应用 id 也被宿主 profile 覆盖 → installd 通过。
+                NSString *oldFwId = [fwInfo objectForKey:@"CFBundleIdentifier"] ?: @"";
+                if (![oldFwId isEqualToString:hostFinalId]) {
+                    NSLog(@"[ReSign] framework CFBundleIdentifier 不命中宿主 profile，改写: %@ -> %@（使 zsign 用宿主 -m 命中，防 0xe8008017）",
+                          oldFwId, hostFinalId);
+                    [fwInfo setObject:hostFinalId forKey:@"CFBundleIdentifier"];
+                    [fwInfo writeToFile:fwInfoPath atomically:YES];
+                }
+            }
+            // framework 不该带 embedded.mobileprovision（会干扰 installd 校验），历史遗留的清掉。
+            NSString *fwProv = [fwPath stringByAppendingPathComponent:@"embedded.mobileprovision"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:fwProv]) {
+                [[NSFileManager defaultManager] removeItemAtPath:fwProv error:nil];
+                NSLog(@"[ReSign] 已移除 framework 内非法的 embedded.mobileprovision: %@", fwDir);
+            }
+        }
+    }
+
     // Wait on sub-bundles to finish, if needed.
     dispatch_group_wait(dispatch_group, DISPATCH_TIME_FOREVER);
 
