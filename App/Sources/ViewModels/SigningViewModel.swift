@@ -160,7 +160,8 @@ final class SigningViewModel: ObservableObject {
         LogManager.shared.info("重签其他应用: \(app.bundleIdentifier)（原签名 TeamID: \(app.originalTeamID ?? "未知")）",
                                source: "SigningViewModel")
 
-        let perform: (String?) -> Void = { [weak self] targetBundleIdentifier in
+        var perform: ((String?) -> Void)!
+        perform = { [weak self] targetBundleIdentifier in
             guard let self = self else { return }
             self.autoRevokeBeforeSigning {
                 self.client.resign(bundleID: app.bundleIdentifier, targetBundleIdentifier: targetBundleIdentifier) { result in
@@ -201,7 +202,8 @@ final class SigningViewModel: ObservableObject {
 
         // 导入 IPA 不在此处撤销证书：导入后本就会重新签名安装，
         // 撤销证书反而可能打断其签名流程，属多余操作。
-        let perform: (String?) -> Void = { [weak self] targetBundleIdentifier in
+        var perform: ((String?) -> Void)!
+        perform = { [weak self] targetBundleIdentifier in
             guard let self = self else { return }
             self.client.importIPA(url: url, targetBundleIdentifier: targetBundleIdentifier) { [weak self] result in
                 guard let self = self else { return }
@@ -241,7 +243,8 @@ final class SigningViewModel: ObservableObject {
         markSigning(true, for: app.bundleIdentifier)
         LogManager.shared.info("开始重签: \(app.bundleIdentifier)", source: "SigningViewModel")
 
-        let perform: (String?) -> Void = { [weak self] targetBundleIdentifier in
+        var perform: ((String?) -> Void)!
+        perform = { [weak self] targetBundleIdentifier in
             guard let self = self else { return }
             self.autoRevokeBeforeSigning {
                 self.client.resign(bundleID: app.bundleIdentifier, targetBundleIdentifier: targetBundleIdentifier) { result in
