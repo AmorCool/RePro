@@ -873,6 +873,34 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
     else
         [infoplist setObject:applicationId forKey:@"REBundleIdentifier"];
 
+    // 扩展（含 Watch App）必须满足 iOS 硬性规则：CFBundleIdentifier 必须以「宿主 App 的 CFBundleIdentifier + 点」为前缀，
+    // 否则 installd 报 MIInstallerErrorDomain code=37 (AppexBundleIDNotPrefixed)。
+    // 许多被外部工具加了 Team 后缀的 IPA（lara 类）其扩展 id 形如 com.x.Share.L7KYGKFQ5N，
+    // 不以宿主 App 的 com.x.L7KYGKFQ5N. 为前缀 → 安装失败。这里统一改写为「宿主App最终id.扩展目录名」。
+    if (isExtension && teamId.length > 0) {
+        NSString *containingAppPath = [[path stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+        NSString *containingAppPlist = [containingAppPath stringByAppendingPathComponent:@"Info.plist"];
+        NSDictionary *containingInfo = [NSDictionary dictionaryWithContentsOfFile:containingAppPlist];
+        NSString *containingAppOriginalId = [containingInfo objectForKey:@"CFBundleIdentifier"];
+        if (containingAppOriginalId.length > 0) {
+            // 宿主 App 最终 id：与下方 App 自身重写逻辑一致（剥离 team 后缀再追加），避免双后缀。
+            NSString *rzTeamSuffix = [NSString stringWithFormat:@".%@", teamId];
+            NSString *containingBase = containingAppOriginalId;
+            while ([containingBase hasSuffix:rzTeamSuffix]) {
+                containingBase = [containingBase substringToIndex:containingBase.length - rzTeamSuffix.length];
+            }
+            NSString *containingAppFinalId = [containingBase stringByAppendingString:rzTeamSuffix];
+            NSString *requiredPrefix = [containingAppFinalId stringByAppendingString:@"."];
+            if (![applicationId hasPrefix:requiredPrefix]) {
+                NSString *extLocalName = [[path lastPathComponent] stringByDeletingPathExtension];
+                NSString *prefixedId = [NSString stringWithFormat:@"%@.%@", containingAppFinalId, extLocalName];
+                NSLog(@"[ReSign] 扩展 CFBundleIdentifier 不以宿主 App 前缀，已改写: %@ -> %@（防止 installd AppexBundleIDNotPrefixed）", applicationId, prefixedId);
+                [infoplist setObject:prefixedId forKey:@"CFBundleIdentifier"];
+                applicationId = prefixedId;
+            }
+        }
+    }
+
     // 剥离已有的 TeamID 后缀再追加，防止重复追加导致
     // "com.x.YVW4KHS3Q4.YVW4KHS3Q4"（双后缀→entitlements 三 TeamID →与 profile 不匹配→0xe8008015）。
     NSString *teamIdSuffix = [NSString stringWithFormat:@".%@", teamId];
