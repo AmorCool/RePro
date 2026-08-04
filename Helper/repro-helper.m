@@ -293,6 +293,127 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
     return 7;
 }
 
+#pragma mark - fix-cellular（国行越狱后修复蜂窝数据无法联网）
+
+// 原理（逆向 cn.tinyapps.Renet 实测路径）：国行越狱后蜂窝失效 = iOS 的 App 蜂窝/WiFi
+// 数据使用策略被重置。修复 = 遍历已安装应用，把每个应用的蜂窝/WiFi 策略设为「始终允许」
+// （SettingsCellular 私有框架 PSAppDataUsagePolicyCache 的
+// -setUsagePoliciesForBundle:cellular:wifi:），随后重启 SpringBoard 生效。
+// 在 root helper 里做：无需 App entitlements（com.apple.CommCenter.fine-grained 等），
+// root 权限直接调私有框架。
+
+/// 枚举已安装应用 bundle id：优先读系统安装记录，兜底扫容器 metadata.plist。
+static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    NSDictionary *install =
+        [NSDictionary dictionaryWithContentsOfFile:
+            @"/private/var/mobile/Library/Caches/com.apple.mobile.installation.plist"];
+    for (NSString *section in @[@"User", @"System"]) {
+        NSDictionary *apps = install[section];
+        for (NSString *bid in apps) {
+            if (bid.length && ![ids containsObject:bid]) {
+                [ids addObject:bid];
+            }
+        }
+    }
+    if (ids.count == 0) {
+        // 兜底：扫容器目录（越狱环境安装记录被清理时仍能拿到应用列表）
+        NSString *base = @"/var/mobile/Containers/Bundle/Application";
+        NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
+        for (NSString *dir in dirs) {
+            NSString *meta = [NSString stringWithFormat:@"%@/%@/.com.apple.mobile_container_manager.metadata.plist",
+                              base, dir];
+            NSString *bid = [NSDictionary dictionaryWithContentsOfFile:meta][@"MCMMetadataIdentifier"];
+            if (bid.length && ![ids containsObject:bid]) {
+                [ids addObject:bid];
+            }
+        }
+    }
+    return ids;
+}
+
+static int RPVHelperFixCellular(void) {
+    RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
+
+    NSArray<NSString *> *bundleIDs = RPVHelperEnumerateBundleIDs();
+    RPVHelperLog(@"fix-cellular: 共 %lu 个应用", (unsigned long)bundleIDs.count);
+    if (bundleIDs.count == 0) {
+        RPVHelperLog(@"fix-cellular 失败：枚举不到任何应用");
+        return 3;
+    }
+
+    // 加载 SettingsCellular 私有框架，拿 PSAppDataUsagePolicyCache
+    Class cacheClass = NSClassFromString(@"PSAppDataUsagePolicyCache");
+    if (!cacheClass) {
+        void *h = dlopen("/System/Library/PrivateFrameworks/SettingsCellular.framework/SettingsCellular", RTLD_NOW);
+        if (h) {
+            cacheClass = NSClassFromString(@"PSAppDataUsagePolicyCache");
+        }
+    }
+    if (!cacheClass) {
+        RPVHelperLog(@"fix-cellular 失败：找不到 PSAppDataUsagePolicyCache（SettingsCellular 私有框架未加载）");
+        return 4;
+    }
+
+    id cache = [cacheClass performSelector:NSSelectorFromString(@"sharedInstance")];
+    if (!cache) {
+        cache = [[cacheClass alloc] init];
+    }
+    if (!cache) {
+        RPVHelperLog(@"fix-cellular 失败：PSAppDataUsagePolicyCache 实例化失败");
+        return 5;
+    }
+
+    SEL setPolicy = NSSelectorFromString(@"setUsagePoliciesForBundle:cellular:wifi:");
+    if (![cache respondsToSelector:setPolicy]) {
+        RPVHelperLog(@"fix-cellular 失败：PSAppDataUsagePolicyCache 不支持 setUsagePoliciesForBundle:cellular:wifi:");
+        return 6;
+    }
+
+    // 参数：cellular/wifi 传 @(1)（= AlwaysAllow；Renet 反汇编实测传立即数 1）
+    typedef void (*SetPolicyIMP)(id, SEL, id, id, id);
+    SetPolicyIMP setPolicyIMP = (SetPolicyIMP)[cache methodForSelector:setPolicy];
+    NSNumber *alwaysAllow = @(1);
+    int okCount = 0;
+    for (NSString *bid in bundleIDs) {
+        @try {
+            setPolicyIMP(cache, setPolicy, bid, alwaysAllow, alwaysAllow);
+            okCount++;
+        } @catch (NSException *e) {
+            RPVHelperLog(@"fix-cellular: %@ 设置异常: %@", bid, e.reason);
+        }
+    }
+    RPVHelperLog(@"fix-cellular: 成功设置 %d/%lu 个应用", okCount, (unsigned long)bundleIDs.count);
+
+    // 持久化（flush / save 等私有方法存在则调用一次）
+    for (NSString *selName in @[@"flush", @"save", @"writeToDisk"]) {
+        SEL s = NSSelectorFromString(selName);
+        if ([cache respondsToSelector:s]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [cache performSelector:s];
+#pragma clang diagnostic pop
+            RPVHelperLog(@"fix-cellular: 已调用 %@ 持久化策略", selName);
+            break;
+        }
+    }
+
+    // 重启 SpringBoard 生效（root 直接 killall；先试 rootfs 路径再试 /var/jb）
+    RPVHelperLog(@"fix-cellular: 重启 SpringBoard 使策略生效");
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
+        execl("/var/jb/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
+        _exit(127);
+    }
+    if (pid > 0) {
+        waitpid(pid, NULL, 0);
+    }
+
+    RPVHelperLog(@"fix-cellular 完成");
+    return 0;
+}
+
 #pragma mark - 入口
 
 static void RPVHelperPrintUsage(void) {
@@ -300,7 +421,8 @@ static void RPVHelperPrintUsage(void) {
             "repro-helper —— ReSign 按需 root 助手\n"
             "用法:\n"
             "  repro-helper copy <源路径> <目标路径>\n"
-            "  repro-helper install-profile <描述文件路径>\n");
+            "  repro-helper install-profile <描述文件路径>\n"
+            "  repro-helper fix-cellular\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -344,6 +466,14 @@ int main(int argc, char *argv[]) {
                 return 64;
             }
             return RPVHelperInstallProvisioningProfile([NSString stringWithUTF8String:argv[2]]);
+        }
+
+        if ([command isEqualToString:@"fix-cellular"]) {
+            if (argc != 2) {
+                RPVHelperPrintUsage();
+                return 64;
+            }
+            return RPVHelperFixCellular();
         }
 
         RPVHelperLog(@"未知命令: %@", command);

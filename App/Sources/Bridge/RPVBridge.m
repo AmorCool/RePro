@@ -596,6 +596,32 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     [EEBackend setExtensionImportOptionsRemoveExtensions:remove useMainProfileForExtensions:useMain];
 }
 
+#pragma mark - 蜂窝数据修复（国行越狱联网）
+
+- (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *helperPath = RPVResolvedRootHelperPath();
+        if (helperPath.length == 0) {
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(NO, @"未找到 repro-helper（root 助手），无法执行修复");
+                });
+            }
+            return;
+        }
+
+        BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular"]);
+        NSString *message = ok
+            ? @"已重置全部应用的蜂窝/WiFi 数据策略为「始终允许」，SpringBoard 正在重启生效（界面会短暂重载）。"
+            : @"修复失败，请到「日志」页查看 repro-helper 输出详情。";
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(ok, message);
+            });
+        }
+    });
+}
+
 #pragma mark - RPVApplicationSigningProtocol
 
 - (void)applicationSigningDidStart {

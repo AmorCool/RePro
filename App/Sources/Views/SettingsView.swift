@@ -61,6 +61,10 @@ struct SettingsView: View {
     @State private var showingSignOutAlert = false
     @State private var showingCertificates = false
     @State private var zsignPath: String?
+    /// 蜂窝数据修复（国行越狱联网）：执行中标记 + 结果弹窗
+    @State private var isFixingCellular = false
+    @State private var fixCellularMessage: String?
+    @State private var showFixCellularAlert = false
 
     var body: some View {
         NavigationView {
@@ -68,6 +72,7 @@ struct SettingsView: View {
                 accountSection
                 autoResignSection
                 freeLimitSection
+                networkFixSection
                 blacklistSection
                 notificationSection
                 signingBackendSection
@@ -124,6 +129,11 @@ struct SettingsView: View {
                 Button("清理", role: .destructive) { clearDaemonLog() }
             } message: {
                 Text("确定要清空 reprorefresh_at.log 吗？此操作不可撤销。")
+            }
+            .alert("修复蜂窝数据", isPresented: $showFixCellularAlert) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(fixCellularMessage ?? "")
             }
             .sheet(isPresented: $showingTeamSheet) { teamSheet }
         }
@@ -334,6 +344,58 @@ struct SettingsView: View {
                 }
         } header: {
             Text("免费账号限制")
+        }
+    }
+
+    // MARK: - 蜂窝数据修复（国行越狱联网）
+
+    private var networkFixSection: some View {
+        Section {
+            Button {
+                fixCellularTapped()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.title3)
+                        .foregroundColor(.blue)
+                        .frame(width: 32)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("修复蜂窝数据（国行联网）")
+                            .font(.body)
+                            .foregroundColor(.primary)
+                        Text("越狱后国行设备无法使用蜂窝网络时，重置所有应用的蜂窝/WiFi 数据策略为「始终允许」，并重启 SpringBoard 生效。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    if isFixingCellular {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .disabled(isFixingCellular)
+        } header: {
+            Text("网络修复")
+        }
+    }
+
+    private func fixCellularTapped() {
+        guard !isFixingCellular else { return }
+        isFixingCellular = true
+        LogManager.shared.info("用户点击「修复蜂窝数据」，经 root helper 执行", source: "SettingsView")
+        RPVBridge.shared()?.fixCellularData { success, message in
+            isFixingCellular = false
+            fixCellularMessage = message ?? (success ? "修复完成" : "修复失败")
+            showFixCellularAlert = true
+            LogManager.shared.info(success ? "蜂窝数据修复成功" : "蜂窝数据修复失败: \(message ?? "")", source: "SettingsView")
         }
     }
 
