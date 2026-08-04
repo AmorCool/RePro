@@ -319,12 +319,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     /// 前台激活时自动修复：仅当「设备重启时间 > 上次修复时间」（重启越狱后授权丢失）。
+    /// v1.1.126：加 lastFix > 0 门槛——首次安装（从未修复过）不自动触发，
+    /// 避免 SpringBoard 重启打断首次登录；日志静默（用户要求隐藏修复联网日志）。
     private func autoFixCellularIfNeeded() {
         let boot = systemBootTime()
-        guard boot > 0, boot > lastFixCellularTime else { return }
-        LogManager.shared.info("检测到设备重启后未修复越狱联网 → 自动修复", source: "AppDelegate")
-        RPVBridge.sharedInstance().fixCellularData { success, _ in
-            LogManager.shared.info(success ? "自动修复越狱联网完成" : "自动修复越狱联网失败", source: "AppDelegate")
+        let lastFix = lastFixCellularTime
+        // 必须修复过（lastFix > 0）且设备重启晚于上次修复才自动补修
+        guard boot > 0, lastFix > 0, boot > lastFix else { return }
+        RPVBridge.sharedInstance().fixCellularData { _, _ in
+            // 🔇 静默：无日志、无提示
         }
     }
 

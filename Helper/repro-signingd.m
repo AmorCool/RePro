@@ -938,32 +938,36 @@ static NSString *s_resolveHelperPath(void) {
 }
 
 /// 开机后自动修复一次（后台线程执行，不阻塞 daemon 启动）。
+/// v1.1.126：①加「daemon 启动距 boottime < 5 分钟」条件——只有真正开机自启才触发，
+/// 安装 deb 后手动重启 daemon 不误触发（否则首次安装登录会被 SpringBoard 重启打断）；
+/// ②日志全部静默（用户要求隐藏修复联网日志）。
 static void s_autoFixCellularOnBoot(void) {
     time_t boot = s_boottime();
     if (boot == 0) {
-        s_log(@"[联网修复] 无法读取 boottime，跳过开机自动修复");
+        return; // 无法读取 boottime，跳过
+    }
+    // 仅当 daemon 是随系统开机启动（启动时刻距 boottime 5 分钟内）才自动修复。
+    // 场景：重启设备重新越狱 → 系统拉起 daemon → 授权丢失 → 自动修复。
+    // 场景：安装 deb / launchctl 手动重启 daemon → 不是开机 → 不触发。
+    time_t now = time(NULL);
+    if (now - boot > 300) {
         return;
     }
     time_t lastFix = s_lastFixCellularTime();
     if (lastFix >= boot) {
-        s_log(@"[联网修复] 上次修复(%ld)不早于开机(%ld)，无需重复执行", (long)lastFix, (long)boot);
-        return;
+        return; // 上次修复不早于开机，无需重复
     }
 
     NSString *helper = s_resolveHelperPath();
     if (!helper) {
-        s_log(@"[联网修复] 未找到 repro-helper，无法自动修复");
         return;
     }
-
-    s_log(@"[联网修复] 检测到设备重启(开机=%ld, 上次修复=%ld) → 自动修复越狱联网", (long)boot, (long)lastFix);
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // 复用 s_run_cmd 执行（rootfs daemon 直接跑 helper；传自身 bundleID 修复自身）
         NSString *cmd = [NSString stringWithFormat:@"'%@' fix-cellular '%@' 2>&1",
                          helper, kAppBundleID];
-        NSString *out = s_run_cmd(cmd);
-        s_log(@"[联网修复] 自动修复输出: %@", (out.length ? out : @"(无输出)"));
+        s_run_cmd(cmd); // 🔇 静默：丢弃输出
         // 无论成败都写时间戳，避免每次 daemon 重启都反复触发
         s_markFixCellularDone();
     });

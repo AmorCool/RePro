@@ -37,8 +37,11 @@
 
 /// NSLog 在 iOS 命令行工具里同时写 stderr 和系统日志，
 /// App 侧把 stderr 重定向到临时文件即可拿到完整诊断。
+/// v1.1.126：fix-cellular 命令开启 gHelperSilent 后全部静默（用户要求隐藏修复联网日志）。
+static BOOL gHelperSilent = NO;
 static void RPVHelperLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 static void RPVHelperLog(NSString *format, ...) {
+    if (gHelperSilent) return; // 🔇 静默模式：fix-cellular 不输出任何日志
     va_list arguments;
     va_start(arguments, format);
     NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
@@ -760,6 +763,8 @@ int main(int argc, char *argv[]) {
                 RPVHelperPrintUsage();
                 return 64;
             }
+            // v1.1.126：用户要求隐藏修复联网日志（不美观）→ 全程静默，只留退出码。
+            gHelperSilent = YES;
             // argv[2] = ReSign 自身 bundle id（App 侧传入）。roothide 下 ReSign 装在
             // jbroot Applications 目录，枚举在 namespace 里看不到自身 → 由 App 显式
             // 传入，helper 无条件加入修复列表并优先处理。

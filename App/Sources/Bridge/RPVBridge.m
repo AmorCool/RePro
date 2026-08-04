@@ -618,7 +618,7 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
         BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
         NSString *message = ok
             ? @"已重置全部应用（含 ReSign 自身）的蜂窝/WiFi 数据策略为「始终允许」，SpringBoard 正在重启生效（界面会短暂重载）。"
-            : @"修复失败，请到「日志」页查看 repro-helper 输出详情。";
+            : @"修复失败，请稍后重试。";
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(ok, message);

@@ -390,12 +390,10 @@ struct SettingsView: View {
     private func fixCellularTapped() {
         guard !isFixingCellular else { return }
         isFixingCellular = true
-        LogManager.shared.info("用户点击「修复越狱联网问题」，经 root helper 执行", source: "SettingsView")
         RPVBridge.sharedInstance().fixCellularData { success, message in
             isFixingCellular = false
             fixCellularMessage = message ?? (success ? "修复完成" : "修复失败")
             showFixCellularAlert = true
-            LogManager.shared.info(success ? "越狱联网修复成功" : "越狱联网修复失败: \(message ?? "")", source: "SettingsView")
         }
     }
 
@@ -711,8 +709,9 @@ struct SettingsView: View {
             // 首次网络失败：静默修复越狱联网（防抖 10 分钟）。修复重启 SpringBoard，
             // App 会被系统杀掉，后续重试无意义，直接结束本次登录流程。
             if retryCount == 0 && silentFixCellularOnNetworkError() {
-                LogManager.shared.info("Apple ID 登录网络异常 → 已静默触发越狱联网修复（SpringBoard 将重启，无提示）",
-                                       source: "SettingsView")
+                // 🔇 完全静默：无日志、无提示。置位结束登录状态，避免界面残留「正在登录」。
+                isLoggingIn = false
+                loginSucceeded = false
                 return
             }
             if retryCount < loginMaxRetries {
