@@ -491,6 +491,11 @@ struct AppRowView: View {
 }
 
 // MARK: - 其他应用行视图
+//
+// v1.1.113: 行结构与徽标样式统一为与「ReSign 签应用」(AppRowView) 一致：
+//   名称 / BundleID（独占一行）/ [有效期胶囊 + 证书·Apple ID 来源胶囊]。
+// 原「原始签名者 Team ID + 内联到期文字 + 来源胶囊」挤在一行且行内额外 16pt 左右内边距，
+// 文字易被徽标挤压截断（BundleID/TeamID 被遮挡），改为三行结构后不再互相挤压。
 
 struct OtherAppRowView: View {
     let app: InstalledApp
@@ -504,20 +509,14 @@ struct OtherAppRowView: View {
                 Text(app.displayName)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
+                Text(app.bundleIdentifier)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
 
-                // 原始签名者 Team ID
+                // 与 AppRowView 同款徽标：有效期 + 证书 / Apple ID 来源
                 HStack(spacing: 4) {
-                    Text(app.originalTeamID ?? "未知")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-
-                    if let daysLeft = app.daysUntilExpiry {
-                        Text("· \(formatExpiry(daysLeft))")
-                            .font(.caption)
-                            .foregroundColor(daysLeft < 0 ? .red : .secondary)
-                    }
-
+                    expiryBadge
                     signingSourcePill(app)
                 }
             }
@@ -534,8 +533,7 @@ struct OtherAppRowView: View {
                     .disabled(false)
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 16)
+        .padding(.vertical, 4)   // 与 AppRowView 一致，去掉额外水平内边距，避免行内容被挤压
         .contentShape(Rectangle())
     }
 
@@ -554,9 +552,32 @@ struct OtherAppRowView: View {
         }
     }
 
-    private func formatExpiry(_ days: Int) -> String {
-        if days < 0 { return "已过期" }
-        return "\(days) 天后过期"
+    /// 有效时间徽标（与 AppRowView.expiryBadge 同款）：已过期 / 临近过期 / 有效 / 无描述文件
+    @ViewBuilder
+    private var expiryBadge: some View {
+        if let daysLeft = app.daysUntilExpiry {
+            if daysLeft < 0 {
+                badge("已过期", color: .red)
+            } else if daysLeft <= 3 {
+                badge("\(daysLeft) 天后过期", color: .orange)
+            } else {
+                badge("有效 (\(daysLeft) 天)", color: .green)
+            }
+        } else if app.hasEmbeddedProvision {
+            badge("到期时间未知", color: .secondary)
+        } else {
+            badge("无描述文件", color: .secondary)
+        }
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundColor(color)
+            .cornerRadius(4)
     }
 }
 
