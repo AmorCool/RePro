@@ -16,8 +16,10 @@ struct SettingsView: View {
 
     // v1.1.128：低电量强制续签。键名必须与 repro-signingd.m 的 s_parseCfg() 读取的键一致。
     @AppStorage("forceResignLowPower") private var forceResignLowPower: Bool = false
-    /// 下次自动续签时间（signingd 持久化在 signingd-state.plist 的 nextFireDate），onAppear 刷新
+    /// 下次自动续签时间（signingd 持久化在 signingd-state.plist 的 nextFireDate）。
+    /// v1.1.129：详细 24 小时制 yyyy-MM-dd HH:mm:ss + 副行剩余倒计时，每 30 秒自动刷新
     @State private var nextResignTimeText: String = "—"
+    @State private var nextResignCountdownText: String = "等待 daemon 调度…"
 
     // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
@@ -268,12 +270,24 @@ struct SettingsView: View {
             Toggle("低电量强制续签", isOn: $forceResignLowPower)
 
             // v1.1.128：展示 daemon 持久化的下一次自动续签时间（signingd-state.plist）
-            HStack {
+            // v1.1.129：详细 24 小时制 + 副行倒计时，.task 每 30 秒自动刷新
+            HStack(alignment: .firstTextBaseline) {
                 Text("下次自动续签")
                 Spacer()
-                Text(nextResignTimeText)
-                    .foregroundColor(.secondary)
-                    .onAppear { refreshNextResignTime() }
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(nextResignTimeText)
+                        .foregroundColor(.secondary)
+                        .onAppear { refreshNextResignTime() }
+                    Text(nextResignCountdownText)
+                        .font(.caption2)
+                        .foregroundColor(.tertiary)
+                }
+                .task {
+                    while !Task.isCancelled {
+                        refreshNextResignTime()
+                        try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    }
+                }
             }
 
             // 展开式间隔选择
@@ -510,25 +524,30 @@ struct SettingsView: View {
     }
 
     /// 读取 repro-signingd 持久化的下次续签时间（signingd-state.plist 的 nextFireDate）。
-    /// 展示格式：今天 HH:mm / 明天 HH:mm / MM-dd HH:mm；读不到或已过期显示「—」。
+    /// v1.1.129：像原版 ReProvision（NSDateFormatter MediumStyle）一样显示完整日期时间，
+    /// 但强制 24 小时制（en_US_POSIX locale + 自定义格式，不受系统 12/24 小时设置影响），
+    /// 副行显示剩余倒计时；页面可见时每 30 秒自动刷新。
     private func refreshNextResignTime() {
         let statePath = "/var/mobile/Library/RePro/signingd-state.plist"
         guard let d = NSDictionary(contentsOfFile: statePath),
               let next = d["nextFireDate"] as? Date else {
             nextResignTimeText = "—"
+            nextResignCountdownText = "等待 daemon 调度…"
             return
         }
         let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "zh_CN")
-        fmt.dateFormat = "HH:mm"
-        let cal = Calendar.current
-        if cal.isDateInToday(next) {
-            nextResignTimeText = "今天 " + fmt.string(from: next)
-        } else if cal.isDateInTomorrow(next) {
-            nextResignTimeText = "明天 " + fmt.string(from: next)
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        nextResignTimeText = fmt.string(from: next)
+
+        let remain = next.timeIntervalSinceNow
+        if remain > 0 {
+            let totalSec = Int(remain)
+            let mins = totalSec / 60
+            let secs = totalSec % 60
+            nextResignCountdownText = mins > 0 ? "约 \(mins) 分 \(secs) 秒后触发" : "\(secs) 秒后触发"
         } else {
-            fmt.dateFormat = "MM-dd HH:mm"
-            nextResignTimeText = fmt.string(from: next)
+            nextResignCountdownText = "即将触发…"
         }
     }
 

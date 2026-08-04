@@ -893,6 +893,78 @@ static void s_initiateAndReschedule(void) {
           interval / 60.0, nextFire);
 }
 
+// ─── 续签失败 → daemon 修复联网 → 立即重试续签（v1.1.129）──────────────
+// 用户实测痛点：App 续签因网络权限丢失失败后，旧逻辑由 App 自己调 helper 修复，
+// helper killall SpringBoard 会把 App 杀掉，而 daemon 下一轮定时器要等一个完整
+// 检查间隔（最长 1 小时）才触发 —— 链路断裂（SpringBoard 重启也使 IOPM 系统级
+// 唤醒与 BKSProcessAssertion 失效，1 小时后的唤醒存在不确定性）。
+// 本方案：修复动作移交 daemon（rootfs LaunchDaemon，SpringBoard 重启不影响自身），
+// 修复完成后立即重新调度续签（10 秒后触发），续签自动接续，无需等一个完整间隔。
+
+/// 解析 repro-helper 的绝对路径（rootfs daemon 视角，三种越狱形态）。
+static NSString *s_resolveHelperPath(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    // RootHide：jbroot 在 /var/containers/Bundle/Application/.jbroot-*/usr/libexec
+    NSArray *appDirEntries = [fm contentsOfDirectoryAtPath:kBundleRoot error:nil];
+    for (NSString *entry in appDirEntries) {
+        if ([entry hasPrefix:@".jbroot-"]) {
+            NSString *p = [NSString stringWithFormat:@"%@/%@/usr/libexec/repro-helper",
+                           kBundleRoot, entry];
+            if ([fm isExecutableFileAtPath:p]) return p;
+        }
+    }
+    // rootless / rootful
+    for (NSString *p in @[@"/var/jb/usr/libexec/repro-helper",
+                          @"/usr/libexec/repro-helper"]) {
+        if ([fm isExecutableFileAtPath:p]) return p;
+    }
+    return nil;
+}
+
+/// 处理 App 的「续签网络失败 → 修复并立即重试」请求（后台线程执行，不阻塞 daemon）。
+static void s_handleFixCellularRequest(void) {
+    NSString *helper = s_resolveHelperPath();
+    if (!helper) {
+        s_log(@"[联网修复] 未找到 repro-helper，无法修复");
+        return;
+    }
+    NSString *selfBid = kAppBundleID;
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // 1) 等 App 退出（App 发请求后还会 notifySigningComplete 并 exit(0)）。
+        //    🔴 互斥检查必须放这里而不是主线程：请求到达时 App 的 signing-complete
+        //    还没发（gResignInProgress 仍 YES），此刻检查会误判「续签进行中」而跳过。
+        sleep(2);
+        time_t now = time(NULL);
+        if (gResignInProgress && (now - gResignStartTime) < 120) {
+            s_log(@"[联网修复] App 仍在续签，跳过修复请求（续签优先，修复可延后）");
+            return;
+        }
+
+        // 2) 删除 auto-resign-trigger：续签刚结束时 trigger 的 timestamp 在 180 秒内，
+        //    helper 入口的续签互斥检查会直接 exit 0 跳过修复 → 必须先清掉。
+        //    （trigger 本就是 daemon 自己写的，续签已结束，删除安全）
+        [[NSFileManager defaultManager] removeItemAtPath:kTriggerPath error:nil];
+
+        // 3) exec helper 修复（rootfs daemon 直接跑，killall SpringBoard 不影响自身）
+        NSString *cmd = [NSString stringWithFormat:@"'%@' fix-cellular '%@' 2>&1", helper, selfBid];
+        s_log(@"[联网修复] 执行 repro-helper fix-cellular …");
+        s_run_cmd(cmd);
+
+        // 4) 修复完成（helper 内部已 killall SpringBoard），等 SpringBoard/backboardd 就绪
+        s_log(@"[联网修复] 修复完成，等待 SpringBoard 重启就绪（5 秒）…");
+        sleep(5);
+
+        // 5) 立即重新调度续签：10 秒后触发（网络已修复，续签自动接续）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSDate *next = [NSDate dateWithTimeIntervalSinceNow:10];
+            s_setNextFireDate(next);
+            s_start_timer(10);
+            s_log(@"[联网修复] 已重新调度 — 10 秒后重试续签 (%@)", next);
+        });
+    });
+}
+
 // ─── 定时器管理 ─────────────────────────────────────────────────
 
 static void s_start_timer(NSTimeInterval sec) {
@@ -1345,6 +1417,13 @@ int main(int argc, char *argv[]) {
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
         dispatch_get_main_queue(), ^(int _){
         s_onSigningComplete();
+    });
+
+    // 续签因网络权限丢失失败 → daemon 修复联网 → 立即重试续签（v1.1.129）
+    int t4; notify_register_dispatch("com.reprovision.fix-cellular-request", &t4,
+        dispatch_get_main_queue(), ^(int _){
+        s_log(@"[联网修复] 收到 App 的 fix-cellular-request（续签网络失败）");
+        s_handleFixCellularRequest();
     });
 
     // ★ App 每完成一个应用的签名安装就发一次，daemon 立即解除 3 应用限制。

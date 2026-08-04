@@ -251,12 +251,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             // updateCurrentTeamIDWithCompletionHandler: 似乎已断开与互联网的连接」。
             if isDaemon && isNetworkishError(errorText) && !didRetryResignAfterFix {
                 didRetryResignAfterFix = true
-                LogManager.shared.warning("续签因网络异常失败 → 静默修复联网后重试续签", source: "AppDelegate")
-                // 修复会 killall SpringBoard，App 进程随之结束；重试由修复完成后
-                // SpringBoard 重启 + daemon 下一轮定时触发兜底，这里无需自己续签。
-                RPVBridge.sharedInstance().fixCellularData { _, _ in
-                    // 🔇 静默：修复后由 daemon 定时器自然触发下一轮续签
-                }
+                LogManager.shared.warning("续签因网络异常失败 → 已请求 daemon 修复联网并立即重试续签", source: "AppDelegate")
+                // 🔴 v1.1.129：修复动作移交 daemon（rootfs LaunchDaemon，SpringBoard 重启不影响它）。
+                // 旧逻辑 App 自己调 fixCellularData → helper killall SpringBoard 杀掉 App，
+                // 而 daemon 下一轮定时器要等一个完整检查间隔（最长 1 小时）才触发 → 链路断裂。
+                // daemon 收到请求后：等 App 退出 → exec repro-helper 修复 → 立即重新调度续签（10 秒后）。
+                let requestPath = "\(Self.ipcDir)/fix-cellular-request"
+                (["timestamp": Date().timeIntervalSince1970,
+                  "bundleID": Bundle.main.bundleIdentifier ?? "com.reprovision.repro",
+                  "triggeredBy": "resign-failed"] as NSDictionary)
+                    .write(toFile: requestPath, atomically: true)
+                RPVSigningdNotify.notifyFixCellularRequest()
             }
         }
 
