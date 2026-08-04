@@ -341,18 +341,27 @@ static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
         return 13;
     }
 
+    // 逐条调用，统计返回码分布（避免刷屏：只打印异常码，正常码汇总）
     int okCount = 0;
+    NSMutableDictionary<NSNumber *, NSNumber *> *retCount = [NSMutableDictionary dictionary];
     NSDictionary *allow = @{ @"kCTCellularUsagePolicyDataAllowed": @YES };
     for (NSString *bid in bundleIDs) {
         @try {
             int r = setPolicy(conn, bid, allow);
             okCount++;
-            if (r != 0 && r != 1) {
+            NSNumber *key = @(r);
+            retCount[key] = @([retCount[key] intValue] + 1);
+            // 只打印异常返回码（0=成功；2=常见"无策略条目/系统应用忽略"；其余才值得看）
+            if (r != 0 && r != 1 && r != 2) {
                 RPVHelperLog(@"fix-cellular(CT): %@ 返回 %d", bid, r);
             }
         } @catch (NSException *e) {
             RPVHelperLog(@"fix-cellular(CT): %@ 设置异常: %@", bid, e.reason);
         }
+    }
+    // 汇总返回码分布
+    for (NSNumber *key in [retCount.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        RPVHelperLog(@"fix-cellular(CT): 返回码 %@ 共 %@ 个", key, retCount[key]);
     }
     RPVHelperLog(@"fix-cellular(CT): 成功设置 %d/%lu 个应用", okCount,
                  (unsigned long)bundleIDs.count);
@@ -408,13 +417,21 @@ static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
         }
     }
 
-    // ── 方法3：扫 /Applications（系统 App 终极兜底）──
-    if (ids.count == 0) {
-        NSArray *dirs = [[NSFileManager defaultManager]
-            contentsOfDirectoryAtPath:@"/Applications" error:nil];
+    // ── 方法3：扫系统应用目录（始终执行，不短路）──
+    // 🔴 之前被 ids.count==0 短路：ReSign 自身装在 jbroot/Applications（rootless=/var/jb/Applications、
+    //    roothide=jbroot overlay 内的 /Applications），容器扫描扫不到它 → 永远无法修复自身！
+    //    故这里无条件追加，把系统应用与越狱工具自身（ReSign/Filza/TrollStore 等）都纳入。
+    NSArray<NSString *> *appDirs = @[
+        @"/Applications",              // roothide: jbroot overlay 内的 Applications（含 ReSign 自身）
+        @"/var/jb/Applications",       // rootless: jbroot 真实路径
+        @"/System/Applications",       // iOS 10+ 系统应用
+        @"/System/Applications/AppStore.app/../../../Applications", // 备用（一般无效，无害）
+    ];
+    for (NSString *base in appDirs) {
+        NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
         for (NSString *dir in dirs) {
             NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
-                [NSString stringWithFormat:@"/Applications/%@/Info.plist", dir]];
+                [NSString stringWithFormat:@"%@/%@/Info.plist", base, dir]];
             NSString *bid = info[@"CFBundleIdentifier"];
             if (bid.length && ![ids containsObject:bid])
                 [ids addObject:bid];
@@ -664,14 +681,18 @@ static int RPVHelperFixCellular(void) {
         return 3;
     }
 
-    // ── 主路径：CoreTelephony 私有 C 函数（全 iOS 版本通用，Renet/ZIK 均用）──
+    // ── 双路径都执行（不短路）──
+    // ①CoreTelephony C 函数：对用户应用（有策略条目的）有效，但系统应用(com.apple.*)与
+    //   越狱工具自身常被忽略（返回 2，无策略条目）。
+    // ②SettingsCellular setPolicies:completion:：设置 App 改「每个 App 蜂窝开关」用的正是它，
+    //   能覆盖系统应用；两者互补，缺一不可。
     int ctRet = RPVHelperFixCellularViaCTServer(bundleIDs);
     if (ctRet != 0) {
-        RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)，回退 SettingsCellular ObjC 路径", ctRet);
-        int objcRet = RPVHelperFixCellularViaSettingsCellular(bundleIDs);
-        if (objcRet != 0) {
-            RPVHelperLog(@"fix-cellular: SettingsCellular 路径也失败(code=%d)，仍重启 SpringBoard", objcRet);
-        }
+        RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)", ctRet);
+    }
+    int objcRet = RPVHelperFixCellularViaSettingsCellular(bundleIDs);
+    if (objcRet != 0) {
+        RPVHelperLog(@"fix-cellular: SettingsCellular 路径失败(code=%d)", objcRet);
     }
 
     RPVHelperRestartSpringBoard();
