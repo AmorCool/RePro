@@ -60,13 +60,10 @@ struct SettingsView: View {
     @State private var showAppleIDBefore = true
     @State private var loginMessage: String?
     @State private var loginSucceeded = false
-    /// 登录超时看门狗：网络卡住时自动解除“登录中”并触发重试，避免界面永久“卡住”。
+    /// 登录超时看门狗：网络卡住时自动解除“登录中”状态，避免界面永久“卡住”（不自动重试，仅恢复可点击）。
     @State private var loginAttempt: Int = 0
     @State private var loginTimeoutWorkItem: DispatchWorkItem?
     private let loginTimeout: TimeInterval = 30
-    /// 登录失败默认自动「强制重试」（不弹窗、不分类），带上限防止死循环
-    private let loginMaxRetries: Int = 2
-    @State private var loginRetryCount: Int = 0
 
     @State private var availableTeams: [DeveloperTeam] = []
     @State private var showingTeamSheet = false
@@ -687,11 +684,10 @@ struct SettingsView: View {
     // MARK: - 动作
 
     private func performLogin() {
-        loginRetryCount = 0
         attemptLogin()
     }
 
-    /// 一次登录尝试：带超时看门狗。登录失败默认自动「强制重试」（不弹窗、不分类错误）。
+    /// 一次登录尝试：带超时看门狗。登录失败后解除“登录中”状态、允许手动再次点击登录（按钮不再置灰）。
     /// 每次尝试用 loginAttempt 作为 epoch，旧的迟到回调会被忽略，避免重复处理。
     private func attemptLogin() {
         loginTimeoutWorkItem?.cancel()
@@ -753,22 +749,13 @@ struct SettingsView: View {
         }
     }
 
-    /// 登录失败统一处理：默认「强制重试」——失败即自动重试（不弹窗、不分类错误），
-    /// 达到上限后才停止并展示失败原因，避免无意义自动循环与死循环。
+    /// 登录失败统一处理：解除“登录中”状态、展示失败原因，并恢复“登录”按钮可点击
+    /// （isLoggingIn=false 使被禁用的按钮恢复，用户可自行再次点击），不自动重试、不弹窗。
     private func handleLoginFailure(reason: String) {
-        guard loginRetryCount < loginMaxRetries else {
-            isLoggingIn = false
-            loginSucceeded = false
-            loginMessage = "登录失败: \(reason)"
-            LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
-            return
-        }
-        loginRetryCount += 1
-        LogManager.shared.info("Apple ID 登录失败，自动重试（\(loginRetryCount)/\(loginMaxRetries)）: \(reason)", source: "SettingsView")
-        loginMessage = "登录失败，正在重试（\(loginRetryCount)/\(loginMaxRetries)）…"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
-            self.attemptLogin()
-        }
+        isLoggingIn = false
+        loginSucceeded = false
+        loginMessage = "登录失败: \(reason)"
+        LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
     }
 
     private func selectTeam(_ team: DeveloperTeam) {
