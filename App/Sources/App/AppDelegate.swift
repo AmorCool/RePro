@@ -130,6 +130,35 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ///  · 续签完成后，若 App 仍处在后台（用户没打开），才干净退出；
     ///    若用户中途打开（已转到前台），则保留进程、正常显示 UI。
     private func startDaemonResign() {
+        // 🔴 v1.1.147：续签冷却双保险 —— daemon 侧 s_fire 已有 24h 冷却（定时器路径连
+        // App 都不拉起）；这里兜底旧版 daemon：若本次拉起是「daemon-timer」定时器触发且
+        // 距上次续签不足 24 小时，直接回报跳过，避免免费账号「阈值=7=永远在到期窗口内」
+        // 导致的每 2 小时全量重签（zsign 内存暴涨 → Jetsam 5GB → 整机拖垮）。
+        // ⚠️ 冷却跳过时绝不能 notifySigningComplete：daemon 收到会更新 lastResignTime=now，
+        //    导致冷却被永久重置、续签永远不再发生。直接退出即可（daemon 的 gResignInProgress
+        //    120 秒后自动失效，不影响下次定时触发）。
+        // ⚠️ 仅「daemon-timer」定时器路径受冷却约束；手动 SIGHUP / --resign-now（triggeredBy
+        //    非 daemon-timer）是用户主动操作，不受冷却限制。
+        let triggerDict = NSDictionary(contentsOfFile: "\(Self.ipcDir)/auto-resign-trigger")
+        let triggeredBy = triggerDict?["triggeredBy"] as? String ?? ""
+        if triggeredBy == "daemon-timer" {
+            let lastResPath = "\(Self.ipcDir)/last-resign-result.plist"
+            if let lastRes = NSDictionary(contentsOfFile: lastResPath),
+               let lastTs = lastRes["lastResignTime"] as? Double,
+               lastTs > 0 {
+                let elapsed = Date().timeIntervalSince1970 - lastTs
+                if elapsed < 24 * 3600 {
+                    LogManager.shared.info(String(format: "距上次续签 %.1f 小时 < 24h，跳过本次续签（冷却期）", elapsed / 3600.0),
+                                           source: "AppDelegate")
+                    DaemonLogStop()
+                    if UIApplication.shared.applicationState == .background {
+                        exit(0)
+                    }
+                    return
+                }
+            }
+        }
+
         // 提示横幅：用户中途打开 App 时，明确告知这是 daemon 后台续签、无需操作
         ResignProgress.shared.show(
             title: "ReSign 后台自动续签",

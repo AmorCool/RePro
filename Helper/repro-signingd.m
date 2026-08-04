@@ -848,6 +848,20 @@ static void s_fire(void) {
         return;
     }
 
+    // 🔴 v1.1.147：续签冷却 —— 距上次续签不足 24 小时直接跳过（连 App 都不拉起）。
+    // 根因：免费 Apple ID 签名的 profile 有效期只有 7 天；若「提前续签阈值」也设成 7 天，
+    // 刚签完的应用剩余 7 天 ≤ 7 天窗口 → 永远在到期窗口内 → 定时器（默认 120 分钟）每次
+    // 触发都命中 → 每 2 小时全量重签 → zsign 内存暴涨（Jetsam 实测 daemon 5GB）拖垮整机。
+    // 用户要求「至少一天之后才续签」→ 冷却 24 小时；阈值与免费账号 7 天有效期的匹配
+    // （免费建议 2~3 天）由用户在设置页把握，这里兜底防止任何设置下的频繁重签。
+    NSDictionary *lastRes = [NSDictionary dictionaryWithContentsOfFile:kResultPath];
+    double lastTs = lastRes ? [lastRes[@"lastResignTime"] doubleValue] : 0;
+    if (lastTs > 0 && (time(NULL) - (time_t)lastTs) < 24 * 3600) {
+        s_log(@"距上次续签 %.1f 小时 < 24h，跳过本次触发（冷却期）",
+              (time(NULL) - (time_t)lastTs) / 3600.0);
+        return;
+    }
+
     // 记录续签开始
     gResignStartTime = time(NULL);
     gResignInProgress = YES;
