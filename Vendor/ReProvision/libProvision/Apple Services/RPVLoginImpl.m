@@ -520,6 +520,11 @@ static NSData *createAppTokensChecksum(NSData *sk, NSString *adsid, NSArray<NSSt
             ccsrp_client_set_noUsernameInX(srp_ctx, true);
             SRP_RNG(srp_ctx) = ccrng(NULL);
 
+            // 🔴 v1.1.154 内存泄漏修复：di_ctx / srp_ctx 是本函数 malloc 的 C 上下文，
+            // 旧版 19 个 return 路径全部没释放 → 每次 Apple ID 登录泄漏两块堆内存。
+            // 用 @try/@finally 统一在函数退出时释放（覆盖所有返回路径）。
+            @try {
+
             NSArray<NSString *> *ps = @[@"s2k", @"s2k_fo"];
             for (int i = 0; i < ps.count; i++) {
                 addStringToNegProt(di_info, di_ctx, ps[i].UTF8String);
@@ -828,6 +833,11 @@ static NSData *createAppTokensChecksum(NSData *sk, NSString *adsid, NSArray<NSSt
                 NSString *token = tokenDict[@"token"];
                 
                 completionHandler(nil, altDSID, token, nil);
+            }
+            } @finally {
+                // v1.1.154：无论成功失败/任何 return 路径，都释放 SRP 上下文
+                free(di_ctx);
+                free(srp_ctx);
             }
         }
     }];

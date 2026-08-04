@@ -343,7 +343,12 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
 
     CGImageRelease(finalMaskImage);
 
-    return [UIImage imageWithCGImage:masked];
+    // 🔴 v1.1.154 内存泄漏修复：masked 是 CGImageCreateWithMask 返回的 +1 CF 对象，
+    // 旧版直接 return 从不 CGImageRelease → 每次刷新应用列表渲染一个图标就泄漏一张掩码图
+    // （应用多时一次刷新可泄漏数 MB）。UIImage 内部已持有/复制所需数据，这里可以安全释放。
+    UIImage *maskedImage = [UIImage imageWithCGImage:masked];
+    CGImageRelease(masked);
+    return maskedImage;
 }
 
 - (NSData *)_loadFileWithFormat:(NSString *)fileFormat fromIPA:(NSURL *)url multipleCandiateChooser:(NSString * (^)(NSArray *candidates))candidateChooser {
