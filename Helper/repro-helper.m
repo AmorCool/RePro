@@ -338,7 +338,7 @@ static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
             NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
             for (NSString *dir in dirs) {
                 NSString *meta = [NSString stringWithFormat:
-                    "%@/%@/.com.apple.mobile_container_manager.metadata.plist", base, dir];
+                    @"%@/%@/.com.apple.mobile_container_manager.metadata.plist", base, dir];
                 NSString *bid = [NSDictionary dictionaryWithContentsOfFile:meta]
                                     [@"MCMMetadataIdentifier"];
                 if (bid.length && ![ids containsObject:bid])
