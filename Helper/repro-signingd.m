@@ -46,6 +46,7 @@
 #include <notify.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
+#include <sys/sysctl.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -883,6 +884,91 @@ static void s_initiateAndReschedule(void) {
           interval / 60.0, nextFire);
 }
 
+// ─── 开机自动修复越狱联网 ─────────────────────────────────────
+// 需求（v1.1.124）：重启设备重新越狱后，国行「允许使用数据」授权会重新丢失，
+// 插件/应用又断网。daemon 是 rootfs LaunchDaemon（开机自启），在这里检测
+// 「设备重启时间晚于上次修复时间」→ 自动 exec repro-helper fix-cellular 一次。
+// 共享时间戳文件 fix-cellular-last.plist（App 手动修复也会写），防抖避免重复。
+
+static NSString *const kFixCellularStampPath =
+    @"/var/mobile/Library/RePro/fix-cellular-last.plist";
+
+/// 设备开机时间（epoch 秒），失败返回 0。
+static time_t s_boottime(void) {
+    struct timeval boottime = {0};
+    size_t len = sizeof(boottime);
+    int mib[2] = { CTL_KERN, KERN_BOOTTIME };
+    if (sysctl(mib, 2, &boottime, &len, NULL, 0) == 0) {
+        return (time_t)boottime.tv_sec;
+    }
+    return 0;
+}
+
+/// 读取上次修复时间戳（epoch 秒），无则返回 0。
+static time_t s_lastFixCellularTime(void) {
+    NSDictionary *stamp = [NSDictionary dictionaryWithContentsOfFile:kFixCellularStampPath];
+    return stamp ? (time_t)[stamp[@"timestamp"] doubleValue] : 0;
+}
+
+/// 写修复时间戳（App 手动修复与 daemon 自动修复共用，防抖）。
+static void s_markFixCellularDone(void) {
+    NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
+    [stamp writeToFile:kFixCellularStampPath atomically:YES];
+    chown(kFixCellularStampPath.UTF8String, 501, 501);
+}
+
+/// 解析 repro-helper 的绝对路径（rootfs daemon 视角，三种越狱形态）。
+static NSString *s_resolveHelperPath(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    // RootHide：jbroot 在 /var/containers/Bundle/Application/.jbroot-*/usr/libexec
+    NSArray *appDirEntries = [fm contentsOfDirectoryAtPath:kBundleRoot error:nil];
+    for (NSString *entry in appDirEntries) {
+        if ([entry hasPrefix:@".jbroot-"]) {
+            NSString *p = [NSString stringWithFormat:@"%@/%@/usr/libexec/repro-helper",
+                           kBundleRoot, entry];
+            if ([fm isExecutableFileAtPath:p]) return p;
+        }
+    }
+    // rootless / rootful
+    for (NSString *p in @[@"/var/jb/usr/libexec/repro-helper",
+                          @"/usr/libexec/repro-helper"]) {
+        if ([fm isExecutableFileAtPath:p]) return p;
+    }
+    return nil;
+}
+
+/// 开机后自动修复一次（后台线程执行，不阻塞 daemon 启动）。
+static void s_autoFixCellularOnBoot(void) {
+    time_t boot = s_boottime();
+    if (boot == 0) {
+        s_log(@"[联网修复] 无法读取 boottime，跳过开机自动修复");
+        return;
+    }
+    time_t lastFix = s_lastFixCellularTime();
+    if (lastFix >= boot) {
+        s_log(@"[联网修复] 上次修复(%ld)不早于开机(%ld)，无需重复执行", (long)lastFix, (long)boot);
+        return;
+    }
+
+    NSString *helper = s_resolveHelperPath();
+    if (!helper) {
+        s_log(@"[联网修复] 未找到 repro-helper，无法自动修复");
+        return;
+    }
+
+    s_log(@"[联网修复] 检测到设备重启(开机=%ld, 上次修复=%ld) → 自动修复越狱联网", (long)boot, (long)lastFix);
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // 复用 s_run_cmd 执行（rootfs daemon 直接跑 helper；传自身 bundleID 修复自身）
+        NSString *cmd = [NSString stringWithFormat:@"'%@' fix-cellular '%@' 2>&1",
+                         helper, kAppBundleID];
+        NSString *out = s_run_cmd(cmd);
+        s_log(@"[联网修复] 自动修复输出: %@", (out.length ? out : @"(无输出)"));
+        // 无论成败都写时间戳，避免每次 daemon 重启都反复触发
+        s_markFixCellularDone();
+    });
+}
+
 // ─── 定时器管理 ─────────────────────────────────────────────────
 
 static void s_start_timer(NSTimeInterval sec) {
@@ -1314,6 +1400,10 @@ int main(int argc, char *argv[]) {
 
     // 注册系统通知监听
     s_setupNotifyPosts();
+
+    // v1.1.124：开机自动修复越狱联网（重启越狱后国行授权丢失）
+    // 放这里而非 s_startSigningTimer 里，避免与续签调度混在一起。
+    s_autoFixCellularOnBoot();
 
     // 启动定时器
     // ⚠️ v1.1.66 修复：旧版在 s_startSigningTimer() 之外，又无条件在启动 5 秒后

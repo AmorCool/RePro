@@ -61,7 +61,7 @@ struct SettingsView: View {
     @State private var showingSignOutAlert = false
     @State private var showingCertificates = false
     @State private var zsignPath: String?
-    /// 蜂窝数据修复（国行越狱联网）：执行中标记 + 结果弹窗
+    /// 越狱联网修复（国行蜂窝/WiFi 权限重置）：执行中标记 + 结果弹窗
     @State private var isFixingCellular = false
     @State private var fixCellularMessage: String?
     @State private var showFixCellularAlert = false
@@ -130,7 +130,7 @@ struct SettingsView: View {
             } message: {
                 Text("确定要清空 reprorefresh_at.log 吗？此操作不可撤销。")
             }
-            .alert("修复蜂窝数据", isPresented: $showFixCellularAlert) {
+            .alert("修复越狱联网问题", isPresented: $showFixCellularAlert) {
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text(fixCellularMessage ?? "")
@@ -347,7 +347,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 蜂窝数据修复（国行越狱联网）
+    // MARK: - 越狱联网修复（国行蜂窝/WiFi 权限重置）
 
     private var networkFixSection: some View {
         Section {
@@ -361,10 +361,10 @@ struct SettingsView: View {
                         .frame(width: 32)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("修复蜂窝数据（国行联网）")
+                        Text("修复越狱联网问题")
                             .font(.body)
                             .foregroundColor(.primary)
-                        Text("越狱后国行设备无法使用蜂窝网络时，重置所有应用的蜂窝/WiFi 数据策略为「始终允许」，并重启 SpringBoard 生效。")
+                        Text("越狱后部分插件及应用无法联网（国行「允许使用数据」授权丢失）时，重置所有应用的蜂窝/WiFi 数据策略为「始终允许」，并重启 SpringBoard 生效。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -383,19 +383,19 @@ struct SettingsView: View {
             }
             .disabled(isFixingCellular)
         } header: {
-            Text("网络修复")
+            Text("联网修复")
         }
     }
 
     private func fixCellularTapped() {
         guard !isFixingCellular else { return }
         isFixingCellular = true
-        LogManager.shared.info("用户点击「修复蜂窝数据」，经 root helper 执行", source: "SettingsView")
+        LogManager.shared.info("用户点击「修复越狱联网问题」，经 root helper 执行", source: "SettingsView")
         RPVBridge.sharedInstance().fixCellularData { success, message in
             isFixingCellular = false
             fixCellularMessage = message ?? (success ? "修复完成" : "修复失败")
             showFixCellularAlert = true
-            LogManager.shared.info(success ? "蜂窝数据修复成功" : "蜂窝数据修复失败: \(message ?? "")", source: "SettingsView")
+            LogManager.shared.info(success ? "越狱联网修复成功" : "越狱联网修复失败: \(message ?? "")", source: "SettingsView")
         }
     }
 

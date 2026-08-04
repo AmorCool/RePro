@@ -282,10 +282,50 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 这里只是前台激活时的额外保险。
         RPVBridge.migrateKeychainAccessibility()
 
+        // v1.1.124：前台激活时若设备重启过且未修复过 → 自动修复越狱联网
+        // （daemon 开机已自动修一次，这里是用户手动打开 App 时的兜底，共享时间戳防抖）
+        autoFixCellularIfNeeded()
+
         // daemon 静默续签正在进行时，不要重复触发前台续签
         if daemonResignInProgress { return }
         if checkDaemonTrigger() { doAutoResign() }
         else { tryAutoResign() }
+    }
+
+    // MARK: - 自动修复越狱联网（v1.1.124）
+
+    /// 设备开机时间（epoch 秒），失败返回 0。
+    private func systemBootTime() -> TimeInterval {
+        var mib = [CTL_KERN, KERN_BOOTTIME]
+        var boottime = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctl(&mib, 2, &boottime, &size, nil, 0) == 0 else { return 0 }
+        return TimeInterval(boottime.tv_sec)
+    }
+
+    /// 上次修复时间戳（与 signingd 共享 plist，防抖）。
+    private var lastFixCellularTime: TimeInterval {
+        let p = "\(Self.ipcDir)/fix-cellular-last.plist"
+        guard let d = NSDictionary(contentsOfFile: p),
+              let ts = d["timestamp"] as? Double else { return 0 }
+        return ts
+    }
+
+    /// 写修复时间戳。
+    private func markFixCellularDone() {
+        let p = "\(Self.ipcDir)/fix-cellular-last.plist"
+        (["timestamp": Date().timeIntervalSince1970] as NSDictionary)
+            .write(toFile: p, atomically: true)
+    }
+
+    /// 前台激活时自动修复：仅当「设备重启时间 > 上次修复时间」（重启越狱后授权丢失）。
+    private func autoFixCellularIfNeeded() {
+        let boot = systemBootTime()
+        guard boot > 0, boot > lastFixCellularTime else { return }
+        LogManager.shared.info("检测到设备重启后未修复越狱联网 → 自动修复", source: "AppDelegate")
+        RPVBridge.sharedInstance().fixCellularData { success, _ in
+            LogManager.shared.info(success ? "自动修复越狱联网完成" : "自动修复越狱联网失败", source: "AppDelegate")
+        }
     }
 
     // MARK: - 触发检测

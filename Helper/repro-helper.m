@@ -366,6 +366,11 @@ static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
     RPVHelperLog(@"fix-cellular(CT): 成功设置 %d/%lu 个应用", okCount,
                  (unsigned long)bundleIDs.count);
 
+    // v1.1.124：写共享修复时间戳（与 signingd 开机自动修复共用防抖文件）。
+    // 手动/自动修复成功后，下次设备重启前不再重复触发。
+    NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
+    [stamp writeToFile:@"/var/mobile/Library/RePro/fix-cellular-last.plist" atomically:YES];
+
     if (conn) CFRelease(conn);
     dlclose(ctHandle);
     return 0;
