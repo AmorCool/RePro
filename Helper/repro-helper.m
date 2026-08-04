@@ -396,20 +396,75 @@ static int RPVHelperFixCellular(void) {
         return 5;
     }
 
-    SEL setPolicy = NSSelectorFromString(@"setUsagePoliciesForBundle:cellular:wifi:");
-    if (![cache respondsToSelector:setPolicy]) {
-        RPVHelperLog(@"fix-cellular 失败：PSAppDataUsagePolicyCache 不支持 setUsagePoliciesForBundle:cellular:wifi:");
+    // 运行时自省：dump 类全部实例方法，自动匹配策略设置方法。
+    // roothide/jbroot 的 SettingsCellular 框架版本可能不同，选择器名与参数签名会变，
+    // 不能硬编码单一选择器名。
+    SEL setPolicy = NULL;
+
+    // 第一轮：尝试已知候选选择器名
+    NSArray<NSString *> *candidates = @[
+        @"setUsagePoliciesForBundle:cellular:wifi:",
+        @"setUsagePolicyForBundle:cellular:wifi:",
+        @"setUsagePoliciesForBundle:cellularPolicy:wifiPolicy:",
+        @"setUsagePolicies:forBundle:",
+        @"setUsagePolicy:forBundle:",
+        @"setCellularDataUsagePolicy:forBundle:",
+        @"setAppCellularDataUsagePolicy:forBundleID:",
+        @"_setUsagePoliciesForBundle:cellular:wifi:",
+    ];
+    for (NSString *selName in candidates) {
+        SEL s = NSSelectorFromString(selName);
+        if ([cache respondsToSelector:s]) {
+            setPolicy = s;
+            RPVHelperLog(@"fix-cellular: 命中候选选择器 %@", selName);
+            break;
+        }
+    }
+
+    // 第二轮：均未命中 → dump 全部实例方法，输出日志辅助诊断
+    if (!setPolicy) {
+        RPVHelperLog(@"fix-cellular: 硬编码候选均未命中，dump PSAppDataUsagePolicyCache 全部实例方法：");
+        unsigned int mc = 0;
+        Method *methods = class_copyMethodList(cacheClass, &mc);
+        for (unsigned int i = 0; i < mc; i++) {
+            const char *selName = sel_getName(method_getName(methods[i]));
+            RPVHelperLog(@"  %s", selName);
+            // 自动匹配：以 "set" 开头且包含 Usage/usage/Policy/policy
+            if (!setPolicy && strncmp(selName, "set", 3) == 0 &&
+                (strstr(selName, "Usage") || strstr(selName, "usage") ||
+                 strstr(selName, "Policy") || strstr(selName, "policy"))) {
+                setPolicy = method_getName(methods[i]);
+                RPVHelperLog(@"fix-cellular: 自动匹配到 %s", selName);
+            }
+        }
+        free(methods);
+    }
+
+    if (!setPolicy) {
+        RPVHelperLog(@"fix-cellular 失败：PSAppDataUsagePolicyCache 无可用策略设置方法（见上方 dump）");
         return 6;
     }
 
-    // 参数：cellular/wifi 传 @(1)（= AlwaysAllow；Renet 反汇编实测传立即数 1）
-    typedef void (*SetPolicyIMP)(id, SEL, id, id, id);
-    SetPolicyIMP setPolicyIMP = (SetPolicyIMP)[cache methodForSelector:setPolicy];
+    // NSInvocation 适配任意参数数量（roothide 框架签名可能不同）
+    NSMethodSignature *sig = [cache methodSignatureForSelector:setPolicy];
+    if (!sig) {
+        RPVHelperLog(@"fix-cellular 失败：无法获取 %s 的方法签名", sel_getName(setPolicy));
+        return 7;
+    }
+
     NSNumber *alwaysAllow = @(1);
     int okCount = 0;
     for (NSString *bid in bundleIDs) {
         @try {
-            setPolicyIMP(cache, setPolicy, bid, alwaysAllow, alwaysAllow);
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setTarget:cache];
+            [inv setSelector:setPolicy];
+            NSUInteger nArgs = [sig numberOfArguments]; // 0=target 1=selector 2+=actual
+            if (nArgs > 2) [inv setArgument:&bid atIndex:2];
+            if (nArgs > 3) [inv setArgument:&alwaysAllow atIndex:3];
+            if (nArgs > 4) [inv setArgument:&alwaysAllow atIndex:4];
+            [inv retainArguments];
+            [inv invoke];
             okCount++;
         } @catch (NSException *e) {
             RPVHelperLog(@"fix-cellular: %@ 设置异常: %@", bid, e.reason);
