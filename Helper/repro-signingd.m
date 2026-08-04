@@ -178,43 +178,6 @@ static int s_run_cmd_status(NSString *cmd) {
     return -1;
 }
 
-/// v1.1.133：探测网络是否真正可用（修复后验证，避免「误报修复成功」死循环）。
-/// v1.1.134：改多方法探测，任一成功即网络通——旧实现只 curl https://captive.apple.com，
-/// 在越狱 rootfs daemon 环境极易误判：rootfs curl 可能缺 CA 证书（TLS 握手失败）、
-/// captive.apple.com 国内可达性不稳定、daemon 精简 PATH 里 curl 可能不存在
-/// → 明明修好了也被判「没修好」→ 停止重试（用户反馈「修复了还是没用」）。
-/// 方法：①HTTPS captive.apple.com  ②HTTP baidu（国内必达，不依赖 CA）  ③ICMP ping 223.5.5.5
-static BOOL s_networkAvailable(void) {
-    NSString *https = s_run_cmd(@"curl -s -m 4 -o /dev/null -w '%{http_code}' "
-                                @"https://captive.apple.com/hotspot-detect.html 2>/dev/null || echo 000");
-    if (https.length >= 3 && ([https hasPrefix:@"200"] || [https hasPrefix:@"302"] || [https hasPrefix:@"204"])) {
-        return YES;
-    }
-    NSString *http = s_run_cmd(@"curl -s -m 4 -o /dev/null -w '%{http_code}' "
-                               @"http://www.baidu.com 2>/dev/null || echo 000");
-    if (http.length >= 3 && [http hasPrefix:@"200"]) {
-        return YES;
-    }
-    NSString *ping = s_run_cmd(@"ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 && echo OK || echo FAIL");
-    if ([ping hasPrefix:@"OK"]) {
-        return YES;
-    }
-    return NO;
-}
-
-/// v1.1.133：等待网络恢复，最多 maxTries 次（每次间隔 10 秒）。
-static BOOL s_waitForNetwork(int maxTries) {
-    for (int i = 0; i < maxTries; i++) {
-        if (i > 0) sleep(10);
-        if (s_networkAvailable()) {
-            s_log(@"[联网修复] 网络探测通过（第 %d 次，HTTPS/HTTP/ping 任一命中）", i + 1);
-            return YES;
-        }
-        s_log(@"[联网修复] 网络探测第 %d 次未通过（HTTPS/HTTP/ping 均失败），等待…", i + 1);
-    }
-    return NO;
-}
-
 /// 判断某个命令行工具是否在当前 PATH 可达（popen 用 /bin/sh，PATH 来自 launchd 环境）
 static BOOL s_tool_exists(NSString *name) {
     NSString *out = s_run_cmd([NSString stringWithFormat:
@@ -999,14 +962,19 @@ static NSString *s_resolveHelperPath(void) {
 /// 🔴 v1.1.133 全局：修复是否正在执行（去重，防止 notify/signing-complete/文件轮询
 /// 三路触发导致 helper 执行两次、killall SpringBoard 两次）与连续失败计数。
 static BOOL gFixCellularRunning = NO;
-static int  gFixCellularFailCount = 0;
+/// v1.1.135：自动修复「滑动窗口」计数——记录每次自动修复的时间戳，
+/// 10 分钟内 ≥3 次仍失败 → 停止自动修复并回退到正常调度（防死循环刷 SpringBoard）。
+/// 真正「修复是否成功」的判据是 App 下一次续签能否联网，而非 daemon 自身的网络探测
+/// （rootfs namespace 下 curl/ping 探测极不可靠，会误判「没修好」→ 用户感知「修了没用」）。
+static NSMutableArray<NSNumber *> *gFixAttempts = nil;
 
 /// 处理 App 的「续签网络失败 → 修复并立即重试」请求（后台线程执行，不阻塞 daemon）。
-/// v1.1.133 重构（用户要求）：
+/// v1.1.133 重构（用户要求）+ v1.1.135 修正：
 ///  · 独立调用 fix-inter（修复联网 + 重启 SpringBoard 专用命令）
 ///  · 去重：gFixCellularRunning 互斥，三路触发只执行一次
-///  · 拿 helper 真实退出码 + 网络探测验证——**不再误报修复成功**
-///  · 网络未恢复 → 不 10 秒死循环：连续 3 次失败后停止自动重试（等正常调度）
+///  · 修复后固定等待网络栈沉淀，直接重试续签——**成败由 App 下一次续签实际联网判定**
+///    （不再用 daemon 自身 curl/ping 探测，rootfs 下极不可靠会误判「没修好」）
+///  · 滑动窗口限流：10 分钟内 ≥3 次自动修复仍失败 → 停止自动修复、回退正常调度
 static void s_handleFixCellularRequest(void) {
     if (gFixCellularRunning) {
         s_log(@"[联网修复] 修复已在执行，跳过重复请求");
@@ -1055,28 +1023,35 @@ static void s_handleFixCellularRequest(void) {
         s_log(@"[联网修复] 等待 SpringBoard 重启就绪（5 秒）…");
         sleep(5);
 
-        // 5) 🔴 网络验证——修复是否「真正恢复网络」，不再误报成功。
-        //    网络通了 → 10 秒后重试续签；没通 → 拉长间隔，连续 3 次失败停止自动重试
-        //    （避免一直 killall SpringBoard + 10 秒循环刷屏「似乎已断开互联网的连接」）。
-        //    v1.1.134：多方法探测（HTTPS/HTTP/ping）+ 窗口放宽到 4 次（最多 40 秒，
-        //    CommCenter 策略生效 + SpringBoard 重启后网络栈恢复需要时间）。
-        BOOL netOK = s_waitForNetwork(4);   // 最多 4 次，间隔 10 秒
+        // 5) 🔴 v1.1.135 重构：不再用 daemon 自身网络探测判定成败
+        //    （rootfs namespace 下 curl/ping 探测极不可靠，会误判「没修好」→
+        //    延迟/放弃重试，用户感知「修了没用」）。
+        //    改为：固定等待网络栈沉淀（共 ~20 秒：5 秒 SB + 15 秒网络），然后直接重试续签，
+        //    由 App 下一次续签的实际联网结果作为唯一判据。
+        //    🔴 滑动窗口限流：10 分钟内 ≥3 次自动修复仍失败 → 停止自动修复、回退正常调度，
+        //    避免一直 killall SpringBoard 刷屏且毫无进展。
+        s_log(@"[联网修复] 等待网络栈恢复（15 秒）…");
+        sleep(15);
+
+        if (!gFixAttempts) gFixAttempts = [NSMutableArray new];
+        [gFixAttempts addObject:@((long)time(NULL))];
+        // 仅保留最近 10 分钟内的修复记录
+        time_t cutoff = time(NULL) - 600;
+        NSMutableArray<NSNumber *> *kept = [NSMutableArray new];
+        for (NSNumber *t in gFixAttempts) {
+            if (t.longValue >= cutoff) [kept addObject:t];
+        }
+        gFixAttempts = kept;
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (netOK) {
-                gFixCellularFailCount = 0;
-                s_reschedule(10);
-                s_log(@"[联网修复] 网络已恢复 → 10 秒后重试续签");
+            if (gFixAttempts.count >= 3) {
+                s_log(@"[联网修复] 10 分钟内已自动修复 %lu 次仍失败 → 停止自动修复（回退正常调度，请手动检查网络/在设置中点「修复越狱联网问题」）",
+                      (unsigned long)gFixAttempts.count);
+                sd_config c = s_cfg();
+                s_reschedule((NSTimeInterval)c.minutes * 60.0);
             } else {
-                gFixCellularFailCount++;
-                if (gFixCellularFailCount >= 3) {
-                    s_log(@"[联网修复] 连续 %d 次修复后网络仍未恢复 → 停止自动重试（等下一轮正常调度）",
-                          gFixCellularFailCount);
-                    sd_config c = s_cfg();
-                    s_reschedule((NSTimeInterval)c.minutes * 60.0);
-                } else {
-                    s_log(@"[联网修复] 网络尚未恢复（第 %d 次）→ 10 分钟后重试一次", gFixCellularFailCount);
-                    s_reschedule(600);
-                }
+                s_log(@"[联网修复] 已应用修复策略，15 秒后重试续签（由 App 实际联网验证成败）");
+                s_reschedule(15);
             }
             gFixCellularRunning = NO;
         });
