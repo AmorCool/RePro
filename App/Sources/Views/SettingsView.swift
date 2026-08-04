@@ -264,7 +264,10 @@ struct SettingsView: View {
     private var autoResignSection: some View {
         Section {
             Toggle("启用自动重签", isOn: $autoResign)
-            Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...7)
+            // v1.1.148: 上限从 7 改为 6 —— 免费 Apple ID 的 profile 有效期只有 7 天，
+            // 若允许「提前 7 天」= 刚签完就永远在到期窗口内 → 冷却一过（24h）就再次全量重签，
+            // 表现为「每隔一两天又续签」。上限 6 天 + 24h 冷却 = 免费账号最多每天签一次。
+            Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...6)
 
             // v1.1.128：低电量强制续签（原版 ReProvision 默认低电量跳过；开启后不跳过）
             Toggle("低电量强制续签", isOn: $forceResignLowPower)
@@ -303,6 +306,16 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+            }
+            // v1.1.148: 解释「检查间隔」的含义，避免与「续签频率」混淆：
+            // 它只是 daemon 每过多久「看一眼有没有到期应用」，本身不产生续签动作；
+            // 真正决定续签频率的是「提前重签天数」（到期窗口）+ 续签后 24 小时冷却。
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                    .foregroundColor(.secondary)
+                Text("检查间隔 = daemon 每隔多久检查一次到期情况，不是续签频率。续签受「提前重签天数」与「续签后 24 小时冷却」双重约束：即使检查间隔设为 1 分钟，距上次续签不足 24 小时也不会触发。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             if showIntervalPicker {
@@ -344,6 +357,8 @@ struct SettingsView: View {
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
                 Text("repro-signingd 守护进程以 root 权限定时检查并触发续签。全部日志写入 <jbroot>/var/log/reprorefresh_at.log（daemon + App 共同维护）。")
+                // v1.1.148: 把续签频率的完整逻辑讲清楚，用户无需翻代码就能理解
+                Text("续签频率 = 提前重签天数（到期窗口）+ 续签后 24 小时冷却。免费 Apple ID 的签名有效期只有 7 天，建议提前 2~3 天重签；上限 6 天，避免「签完还在窗口内」导致频繁全量重签。")
 
                 HStack {
                     Text("日志大小：")

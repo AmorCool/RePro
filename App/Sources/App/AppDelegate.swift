@@ -26,6 +26,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private static let ipcDir = "/var/mobile/Library/RePro"
 
+    /// v1.1.148: 续签冷却（与 daemon 的 kResignCooldown 一致）= 续签完成后至少间隔 1 天。
+    /// 基准是「续签完成时间」：daemon 的 s_onSigningComplete 把 lastResignTime 写成完成时刻。
+    private static let resignCooldown: TimeInterval = 24 * 3600
+
+    /// v1.1.148: 提前重签天数上限（与 daemon 的 kMaxThresholdDays 一致）= 最多提前 6 天。
+    /// 免费 profile 有效期 7 天，7 = 永远在窗口内 → 冷却一过就全量重签。
+    private static let maxThresholdDays = 6
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
@@ -147,7 +155,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                let lastTs = lastRes["lastResignTime"] as? Double,
                lastTs > 0 {
                 let elapsed = Date().timeIntervalSince1970 - lastTs
-                if elapsed < 24 * 3600 {
+                if elapsed < Self.resignCooldown {
                     LogManager.shared.info(String(format: "距上次续签 %.1f 小时 < 24h，跳过本次续签（冷却期）", elapsed / 3600.0),
                                            source: "AppDelegate")
                     DaemonLogStop()
@@ -184,7 +192,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let d = UserDefaults.standard
-            let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
+            // v1.1.148: clamp 提前重签天数上限（防旧版本残留的 7 或手动改过的 UserDefaults）
+            let threshold = min(d.object(forKey: "resignThreshold") as? Int ?? 2, Self.maxThresholdDays)
 
             // 锁屏/刚唤醒（锁屏界面尚未解锁）时 SAMKeychain 可能暂时读不到密码，导致 isSignedIn 为假。
             // 重试最多 3 次（每次间隔 5 秒）兜底；但真正的修复在 v1.1.90：

@@ -77,6 +77,18 @@ static NSString *const kBundleRoot = @"/var/containers/Bundle/Application";
 static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
 static const NSInteger  kFallbackDays    = 2;
 
+// 🔴 v1.1.148 续签冷却（用户要求：续签完成后至少间隔 1 天才能再次续签）。
+// 基准是「续签完成时间」：daemon 在 s_onSigningComplete 里把 lastResignTime 写成
+// 完成时刻（不是开始时刻），App 与 daemon 两侧都以此为冷却起点。
+static const NSTimeInterval kResignCooldown = 24 * 3600;
+
+// 🔴 v1.1.148 提前重签阈值上限（用户要求：最多只能提前 6 天）。
+// 根因：免费 Apple ID 的 profile 有效期只有 7 天，若阈值允许 7 天，
+// 刚签完的应用剩余 7 天 ≤ 7 天窗口 → 永远在到期窗口内 → 每次触发都全量重签。
+// 上限 6 天保证「签完 → 至少第 2 天起才可能再次命中窗口」，配合 24h 冷却，
+// 免费账号实际续签频率被约束为「最多每天一次」。
+static const NSInteger  kMaxThresholdDays = 6;
+
 static FILE     *gLogFile   = NULL;
 static NSTimer  *gTimer     = nil;
 static time_t    gLastFire  = 0;
@@ -288,6 +300,9 @@ static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
     NSInteger dy = rawDy  ? [rawDy  integerValue] : kFallbackDays;
     if (m  < 1) m  = kFallbackMinutes;
     if (dy < 1) dy = kFallbackDays;
+    // v1.1.148：兜底 clamp 提前重签天数上限（防旧配置残留 7 或手改 plist 塞进更大值；
+    // 7 天 = 免费账号 7 天有效期下永远在到期窗口内 → 每 24h 全量重签 → zsign 内存暴涨）
+    if (dy > kMaxThresholdDays) dy = kMaxThresholdDays;
 
     out->minutes = m;
     out->days    = dy;
@@ -848,15 +863,16 @@ static void s_fire(void) {
         return;
     }
 
-    // 🔴 v1.1.147：续签冷却 —— 距上次续签不足 24 小时直接跳过（连 App 都不拉起）。
+    // 🔴 v1.1.147+：续签冷却 —— 距上次续签完成不足 24 小时直接跳过（连 App 都不拉起）。
     // 根因：免费 Apple ID 签名的 profile 有效期只有 7 天；若「提前续签阈值」也设成 7 天，
     // 刚签完的应用剩余 7 天 ≤ 7 天窗口 → 永远在到期窗口内 → 定时器（默认 120 分钟）每次
     // 触发都命中 → 每 2 小时全量重签 → zsign 内存暴涨（Jetsam 实测 daemon 5GB）拖垮整机。
-    // 用户要求「至少一天之后才续签」→ 冷却 24 小时；阈值与免费账号 7 天有效期的匹配
-    // （免费建议 2~3 天）由用户在设置页把握，这里兜底防止任何设置下的频繁重签。
+    // v1.1.148 用户要求「至少间隔一天，以续签后的时间为基准」→ 冷却 24 小时；
+    // 同时「提前重签天数」上限收紧到 6 天（kMaxThresholdDays），从源头杜绝 7 天窗口
+    // 造成的「永远在窗口内」配置（见 s_parseCfg 的 clamp）。
     NSDictionary *lastRes = [NSDictionary dictionaryWithContentsOfFile:kResultPath];
     double lastTs = lastRes ? [lastRes[@"lastResignTime"] doubleValue] : 0;
-    if (lastTs > 0 && (time(NULL) - (time_t)lastTs) < 24 * 3600) {
+    if (lastTs > 0 && (time(NULL) - (time_t)lastTs) < kResignCooldown) {
         s_log(@"距上次续签 %.1f 小时 < 24h，跳过本次触发（冷却期）",
               (time(NULL) - (time_t)lastTs) / 3600.0);
         return;

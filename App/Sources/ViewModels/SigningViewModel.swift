@@ -315,7 +315,8 @@ final class SigningViewModel: ObservableObject {
 
     /// 重签所有临近过期的应用。阈值取设置页里的「提前 N 天重签」。
     func resignAllExpiring() {
-        let threshold = UserDefaults.standard.object(forKey: "resignThreshold") as? Int ?? 2
+        // v1.1.148: clamp 提前重签天数上限（与 daemon kMaxThresholdDays 一致，最多 6 天）
+        let threshold = min(UserDefaults.standard.object(forKey: "resignThreshold") as? Int ?? 2, 6)
         guard beginWork("正在批量重签…") else { return }
 
         LogManager.shared.info("开始批量重签（阈值 \(threshold) 天）", source: "SigningViewModel")
