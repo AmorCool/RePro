@@ -61,6 +61,8 @@ static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-tr
 static NSString *const kStatePath   = @"/var/mobile/Library/RePro/signingd-state.plist";
 static NSString *const kResultPath  = @"/var/mobile/Library/RePro/last-resign-result.plist";
 static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
+// v1.1.129：App 续签因网络失败时写的修复请求文件（notify 丢失时文件轮询兜底）
+static NSString *const kFixCellularReqPath = @"/var/mobile/Library/RePro/fix-cellular-request";
 // ⚠️ v1.1.69 关键修复：此前此处写成 @"jp.soh.reprovision"，但 App 真实的
 // CFBundleIdentifier（SpringBoard 注册 ID）= "com.reprovision.repro"（见 pbxproj
 // PRODUCT_BUNDLE_IDENTIFIER 与 deb 内 Info.plist）。SBS 用 BundleID 查 App，
@@ -950,6 +952,12 @@ static void s_handleFixCellularRequest(void) {
         //    🔴 互斥检查必须放这里而不是主线程：请求到达时 App 的 signing-complete
         //    还没发（gResignInProgress 仍 YES），此刻检查会误判「续签进行中」而跳过。
         sleep(2);
+        // v1.1.131：main queue 可能因 3 应用绕过等任务拥堵导致 signing-complete 通知
+        // 延迟处理（gResignInProgress 悬挂），多等几轮（最长 15 秒）而不是直接跳过。
+        for (int i = 0; i < 3 && gResignInProgress &&
+                (time(NULL) - gResignStartTime) < 120; i++) {
+            sleep(3);
+        }
         time_t now = time(NULL);
         if (gResignInProgress && (now - gResignStartTime) < 120) {
             s_log(@"[联网修复] App 仍在续签，跳过修复请求（续签优先，修复可延后）");
@@ -1252,6 +1260,14 @@ static void s_onSigningComplete(void) {
     // 续签重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
     // 通过合并计时器，2 秒后执行一次（让 installd 收尾，避免刚删又被写回）。
     s_requestBypass(@"续签完成");
+
+    // 🔴 v1.1.131：修复请求文件兜底——App 续签因网络失败时写的 fix-cellular-request，
+    // 若「com.reprovision.fix-cellular-request」notify 在 RootHide 下丢失，
+    // 每次续签结束（signing-complete）时检查补上，保证修复一定会执行。
+    if ([[NSFileManager defaultManager] fileExistsAtPath:kFixCellularReqPath]) {
+        s_log(@"[联网修复] 续签结束发现待处理的修复请求（notify 兜底）→ 执行修复");
+        s_consumeFixCellularRequestIfAny();
+    }
 }
 
 // ─── 3 应用绕过：合并计时器 ────────────────────────────────────
@@ -1268,7 +1284,15 @@ static void s_requestBypass(NSString *reason) {
         dispatch_source_set_event_handler(s_bypassTimer, ^{
             dispatch_source_cancel(s_bypassTimer);
             s_bypassTimer = NULL;
-            s_bypass3AppLimitIfEnabled(s_bypassReason);
+            NSString *bypassReason = s_bypassReason;
+            // 🔴 v1.1.131：3 应用绕过枚举很重（遍历全部应用容器递归扫 xattr，
+            // 实测约几十秒），在 main queue 同步跑会堵死 daemon 主线程 →
+            // 续签定时器（「5 秒后立即执行」从不触发，#1 永远是 SIGHUP）与
+            // fix-cellular-request 修复请求（App 已发但 daemon 不执行、一直报
+            // 联不上网）全部排队瘫痪。移后台线程执行，main queue 只做轻量调度。
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                s_bypass3AppLimitIfEnabled(bypassReason);
+            });
         });
         dispatch_resume(s_bypassTimer);
     }
