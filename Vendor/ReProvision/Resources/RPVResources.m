@@ -217,6 +217,18 @@ static NSString *kProvisioningCachePath = @"/var/mobile/Library/RePro/provisioni
         return;
     }
 
+    // 🔴 v1.1.164：60 秒去重窗口。migrate 是幂等但**每次执行都删后重建 Keychain 项**
+    // + 写缓存文件；用户在「前台打开→上滑退出」循环里，applicationDidBecomeActive
+    // 每次激活都会触发一次 → 反复切换 = 反复 delete+add，中间态窗口被反复打开。
+    // 若恰好在「已 delete 未 add」瞬间被用户划掉杀后台，密码项丢失（缓存文件可兜底，
+    // 但没必要制造风险）。迁移只需成功一次，60s 内跳过后续重复执行。
+    static NSTimeInterval lastMigrate = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastMigrate < 60) {
+        return;
+    }
+    lastMigrate = now;
+
     // ---- 1. 迁移 Apple ID 密码项 ----
     NSString *username = [self getUsername];
     NSString *teamID = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedTeamID"];
