@@ -133,9 +133,13 @@ final class SigningViewModel: ObservableObject {
                 switch result {
                 case .success(let apps):
                     // 保留正在签名的 UI 状态，避免刷新时进度条被清掉
-                    let signing = Dictionary(uniqueKeysWithValues:
+                    // 🔴 v1.1.163：uniqueKeysWithValues 遇到重复 bundleIdentifier（杀进程
+                    // 残留的半安装应用偶发）会 fatalError 崩溃 → 改 uniquingKeysWith 保留
+                    // 第一个，重复键只是进度取早期值，绝不崩。
+                    let signing = Dictionary(
                         self.allInstalled.filter { $0.isSigning }
-                            .map { ($0.bundleIdentifier, $0.signingProgress) })
+                            .map { ($0.bundleIdentifier, $0.signingProgress) },
+                        uniquingKeysWith: { first, _ in first })
                     self.allInstalled = apps.map { app in
                         var app = app
                         if let progress = signing[app.bundleIdentifier] {
@@ -167,10 +171,11 @@ final class SigningViewModel: ObservableObject {
                 }
                 switch result {
                 case .success(let apps):
-                    // 保留正在签名的 UI 状态
-                    let signing = Dictionary(uniqueKeysWithValues:
+                    // 保留正在签名的 UI 状态（v1.1.163：uniquingKeysWith 防重复 key 崩溃）
+                    let signing = Dictionary(
                         self.allOther.filter { $0.isSigning }
-                            .map { ($0.bundleIdentifier, $0.signingProgress) })
+                            .map { ($0.bundleIdentifier, $0.signingProgress) },
+                        uniquingKeysWith: { first, _ in first })
                     self.allOther = apps.map { app in
                         var app = app
                         if let progress = signing[app.bundleIdentifier] {

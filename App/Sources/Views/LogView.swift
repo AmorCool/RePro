@@ -132,11 +132,13 @@ struct LogView: View {
     }
 
     // MARK: 日志列表（纯列表，不含搜索/筛选）
+    // 🔴 v1.1.163：旧版 List(filteredLogs.indices) + filteredLogs[index] —— 日志
+    // @Published 更新触发重算时，List 渲染中途 filteredLogs 变化（新日志 append /
+    // 切换筛选），下标可能越界 → 「Index out of range」fatalError 崩溃。LogEntry
+    // 是 Identifiable，直接数据驱动，杜绝下标访问。
     private var logList: some View {
-        List(filteredLogs.indices, id: \.self) { index in
-            let entry = filteredLogs[index]
+        List(filteredLogs) { entry in
             LogEntryRow(entry: entry)
-                .id(index)
                 .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 16))
                 .listRowBackground(Color.clear)
         }

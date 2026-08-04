@@ -40,6 +40,16 @@
 @property (nonatomic, readwrite) BOOL undertakingResignPipeline;
 @property (nonatomic, readwrite) UIBackgroundTaskIdentifier currentBackgroundTaskIdentifier;
 
+/// 🔴 v1.1.163：并行 install 完成计数 + complete 一次性标志。
+/// 原版用「!undertakingResignPipeline」当完成门：多 app 批量签名时，最后一个 app
+/// 签名完成（_resignApplication 末尾）就把 pipeline 置 NO，此后**任何一个** install
+/// 完成（含倒数第二个 app 的异步 install）都会误判为流水线结束 → 提前 endBackgroundTask
+/// + 提前 applicationSigningCompleteWithError:nil → 上层（AppDelegate）立即写冷却、
+/// 回报 daemon、后台路径 exit(0) → 后面 app 的 install 被进程退出打断，没装上。
+/// 现在改为 install 计数归零 + pipeline 结束才 complete，且只通知一次。
+@property (nonatomic, readwrite) NSInteger installCount;
+@property (nonatomic, readwrite) BOOL pipelineCompleteNotified;
+
 @property (nonatomic, strong) NSMutableArray *observers;
 
 @end
@@ -83,7 +93,9 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 
 - (void)removeSigningUpdatesObserver:(id<RPVApplicationSigningProtocol>)observer {
     [self.observers removeObject:observer];
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    // 🔴 v1.1.163：旧版这里还调了 removeObserver:self —— 会把 self 注册的
+    // 「appShouldBeRemoved」通知监听也一并删掉（语义 bug）。observers 数组移除
+    // 已足够，通知监听保持原样。
 }
 
 - (void)_resignApplicationsArray:(NSArray *)applications withTeamID:(NSString *)teamID username:(NSString *)username password:(NSString *)password {
@@ -92,15 +104,27 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
             [observer applicationSigningDidStart];
         }
 
-        if (self.undertakingResignPipeline) {
+        // 🔴 v1.1.163：进入闸门加 @synchronized 保护 —— daemon 后台拉起续签与用户前台
+        // 手动重签可能并发进入本方法（各自在全局队列的不同线程）。旧版 check-then-set
+        // 非原子：两个流水线同时通过检查 → 双写 installQueue + 多线程 removeObjectAtIndex
+        // → 「__NSArrayM mutated while being enumerated」崩溃（用户「杀后台再打开闪退」
+        // 的代码侧根因之一）。加锁后第二个流水线在闸门处拿 AlreadyUndertaking 退出。
+        BOOL alreadyRunning = NO;
+        @synchronized (self) {
+            if (self.undertakingResignPipeline) {
+                alreadyRunning = YES;
+            } else {
+                self.undertakingResignPipeline = YES;
+            }
+        }
+
+        if (alreadyRunning) {
             NSError *error = [self _errorFromString:@"Already undertaking the re-sign pipeline!" errorCode:RPVErrorAlreadyUndertakingPipeline];
 
             for (id<RPVApplicationSigningProtocol> observer in [self.observers reverseObjectEnumerator]) {
                 [observer applicationSigningCompleteWithError:error];
             }
             return;
-        } else {
-            self.undertakingResignPipeline = YES;
         }
 
         //////////////////////////////////////////////////////////////////////////////////////
@@ -111,6 +135,11 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 
         // Update install queue with new applications list
         self.installQueue = [applications mutableCopy];
+        // v1.1.163：重置并行 install 计数与 complete 一次性标志（新流水线）
+        @synchronized (self) {
+            self.installCount = 0;
+            self.pipelineCompleteNotified = NO;
+        }
 
         //////////////////////////////////////////////////////////////////////////////////////
         // 2. Initiate signing for applications if applicable.
@@ -118,7 +147,7 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 
         // If no signing needed, just exit.
         if (self.installQueue.count == 0) {
-            self.undertakingResignPipeline = NO;
+            @synchronized (self) { self.undertakingResignPipeline = NO; }
             NSError *error = [self _errorFromString:@"No applications need re-signing" errorCode:RPVErrorNoSigningRequired];
             for (id<RPVApplicationSigningProtocol> observer in [self.observers reverseObjectEnumerator]) {
                 [observer applicationSigningCompleteWithError:error];
@@ -127,14 +156,24 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
         }
 
         // Move to a background task!
+        // 🔴 v1.1.163：beginBackgroundTask 文档要求【主线程】调用（iOS 17 上非主线程
+        // 调用可能抛异常）。本方法跑在全局队列，用 dispatch_sync 切主线程执行；
+        // 主线程只跑 RunLoop，不会等待本全局队列任务完成，无死锁风险。
         UIApplication *application = [UIApplication sharedApplication];
-        UIBackgroundTaskIdentifier __block bgTask = [application beginBackgroundTaskWithName:@"ReProvision Application Signing" expirationHandler:^{
-            // Clean up any unfinished task business by marking where you
-            // stopped or ending the task outright.
-
-            [application endBackgroundTask:bgTask];
-            bgTask = UIBackgroundTaskInvalid;
-        }];
+        __block UIBackgroundTaskIdentifier bgTask = UIBackgroundTaskInvalid;
+        void (^beginTask)(void) = ^{
+            bgTask = [application beginBackgroundTaskWithName:@"ReProvision Application Signing" expirationHandler:^{
+                // Clean up any unfinished task business by marking where you
+                // stopped or ending the task outright.
+                [application endBackgroundTask:bgTask];
+                bgTask = UIBackgroundTaskInvalid;
+            }];
+        };
+        if ([NSThread isMainThread]) {
+            beginTask();
+        } else {
+            dispatch_sync(dispatch_get_main_queue(), beginTask);
+        }
 
         self.currentBackgroundTaskIdentifier = bgTask;
 
@@ -481,6 +520,9 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     // progress under (the original, pre-signing id), so the progress bar reaches
     // 100% instead of getting stuck at 60%.
     if ([displayBundleIdentifier length] == 0) displayBundleIdentifier = bundleIdentifier;
+    // v1.1.163：进入 install 时 +1（失败重试会先 -1 再递归，见下方），
+    // 完成/失败时 -1 并检查是否全部 install 结束。
+    @synchronized (self) { self.installCount++; }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSError *error;
         NSDictionary *options = @{ @"CFBundleIdentifier": bundleIdentifier, @"AllowInstallLocalProvisioned": [NSNumber numberWithBool:YES] };
@@ -515,6 +557,8 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
                     }
 
                     NSLog(@"*** Uninstalled application, trying again.");
+                    // v1.1.163：重试是「替代」本次 install 而非新增 → 先 -1 再递归
+                    @synchronized (self) { self.installCount--; }
                     [self _installIpaAtPath:[ipaPath stringByReplacingOccurrencesOfString:@".ipa" withString:@"2.ipa"] withBundleIdentifier:bundleIdentifier displayBundleIdentifier:displayBundleIdentifier];
 
                     return;
@@ -568,8 +612,21 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
             }
         }
 
-        // If this was the last application, notify the completionHandler of success
-        if (!self.undertakingResignPipeline) {
+        // 所有 install 都完成后（计数归零 + 流水线已结束）才通知 complete，且只发一次。
+        // 🔴 v1.1.163：原逻辑只查 !undertakingResignPipeline —— 多 app 时倒数第二个的
+        // 异步 install 先完成会误触发 complete，导致进程提前退出、后续 install 被打断。
+        // 详见 _installIpaAtPath 顶部注释与 @interface 属性说明。
+        @synchronized (self) { self.installCount--; }
+        BOOL shouldComplete = NO;
+        @synchronized (self) {
+            if (!self.pipelineCompleteNotified &&
+                self.installCount == 0 &&
+                !self.undertakingResignPipeline) {
+                self.pipelineCompleteNotified = YES;
+                shouldComplete = YES;
+            }
+        }
+        if (shouldComplete) {
             // End the background task!
             [[UIApplication sharedApplication] endBackgroundTask:self.currentBackgroundTaskIdentifier];
             self.currentBackgroundTaskIdentifier = UIBackgroundTaskInvalid;

@@ -217,8 +217,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 RPVSigningdNotify.notifySigningComplete()
                 LogManager.shared.info("══════ 静默续签结束（未登录），已回报 daemon ══════", source: "AppDelegate")
                 DaemonLogStop()
-                Thread.sleep(forTimeInterval: 0.5)     // 后台线程 sleep，不影响主线程
-                exit(0)
+                // 🔴 v1.1.163：退出前二次确认仍处于后台（用户可能已在重试期间打开 App）。
+                Thread.sleep(forTimeInterval: 0.5)
+                if UIApplication.shared.applicationState == .background {
+                    exit(0)
+                }
                 return
             }
 
@@ -305,13 +308,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         // daemon 后台拉起且用户全程未打开 → 干净退出，释放 daemon 侧的 BKS 断言
         if UIApplication.shared.applicationState == .background {
-            // 🔴 v1.1.162：sleep + exit 移到后台线程。旧版在主线程 Thread.sleep(1.5s)
-            // —— 主线程阻塞是 ExcUserFault 看门狗的诱因之一（虽 1.5s 单次不会触发，
-            // 但配合网络抖动/锁屏 Keychain 卡顿可能叠加超时）。sleep 的目的只是
-            // 留出本地通知提交窗口（usernoted 异步 XPC），后台线程 sleep 同样有效。
+            // 🔴 v1.1.163 修复：sleep + exit 移到后台线程，但 exit 前必须**二次确认
+            // 仍是后台**。v1.1.162 只移了线程、没加二次确认 → 用户在 1.5s 窗口内
+            // 打开 App 后，exit(0) 照样执行，把**前台进程**直接杀掉 = 用户看到的
+            // 「打开 App → 秒退/闪退」。二次确认后只有确认仍在后台才退出；
+            // 用户已打开则保留进程正常使用。
             DispatchQueue.global(qos: .utility).async {
                 Thread.sleep(forTimeInterval: 1.5)
-                exit(0)
+                if UIApplication.shared.applicationState == .background {
+                    exit(0)
+                }
             }
             return
         }
