@@ -624,6 +624,14 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         NSString *certPath = context[@"certPath"];
         NSArray *profiles = context[@"profiles"];
 
+        // 逆序 -m：确保宿主 profile 排在第一个。zsign 对「没有任何 -m 匹配」的嵌套 bundle
+        // （如 id 与宿主无关的 framework）取第一个 -m 的 entitlements 来签（zhlynn/zsign@d6e929c
+        // src/bundle.cpp:449-477，rbegin 循环结束时 m_pSignAsset 停留在第一个 -m）。framework
+        // 没有自己的 App ID，签名 application-identifier 复用宿主 app id 是被宿主 embedded
+        // profile 授权的（Relaxin 的 CydiaSubstrate.framework / RelaxinEngine.framework 即如此，
+        // 实机安装正常）。
+        profiles = [[profiles reverseObjectEnumerator] allObjects];
+
         if (keyPath.length == 0 || certPath.length == 0 || profiles.count == 0) {
             [self _cleanupTempFilesInContext:context];
             completionHandler([self _errorFromString:@"Signing credentials were not obtained during provisioning."]);
@@ -711,12 +719,22 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         RZFixFrameworkBundles(path);
 
         NSError *signError = nil;
+        // -e 只传给「单 profile」场景（无扩展）——此时 -e=宿主自己的 app id，与 profile 一致，无害。
+        // 多 profile（含扩展）时绝不传 -e：zsign 会把同一个 -e 应用到所有 bundle
+        // （src/archo.cpp:342: SlotBuildEntitlements(IsExecute() ? pSignAsset->m_strEntitleData : ...)，
+        // 而每个 ZSignAsset 的 m_strEntitleData 都来自同一个 strEntitleFile），导致扩展的代码签名
+        // application-identifier = 宿主的 id，而扩展自己嵌入的 profile（匹配到的 -m）是扩展自己的
+        // id → installd 校验扩展时签名 app-id 不被其 profile 授权 → 0xe8008017（Via.app 实测，
+        // 对比 Relaxin 无扩展同参数安装正常）。
+        // 不传 -e 时每个 bundle 用「自己匹配到的 -m」的 entitlements：扩展得到自己的 app-id ✓；
+        // framework 无匹配则回退第一个 -m（=宿主，见上）得到宿主 app-id ✓，与 Relaxin 行为一致。
+        NSString *entitlementsToPass = (profiles.count > 1) ? nil : rootEntitlementsPath;
         RZSignResult *result = [[RZSignRunner sharedRunner] signBundleAtPath:path
                                                                   outputPath:nil
                                                              certificatePath:certPath
                                                                      keyPath:keyPath
                                                            provisioningPaths:profiles
-                                                            entitlementsPath:rootEntitlementsPath
+                                                            entitlementsPath:entitlementsToPass
                                                                    useSHA256:YES
                                                                        error:&signError];
 
@@ -802,23 +820,18 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         }
     }
 
-    // 内嵌 framework 处理：防止 installd 报 0xe8008017（A signed resource has been added/modified/deleted）。
+    // 内嵌 framework 处理：唯一化 CFBundleIdentifier，防止 installd 报 code=57 DuplicateIdentifier。
     //
-    // 根因（已精确定位到 zsign zhlynn/zsign @d6e929c 的 src/bundle.cpp:449-477）：
+    // 背景（已精确定位到 zsign zhlynn/zsign @d6e929c 的 src/bundle.cpp:449-477）：
     //   zsign 用 `endsWith(profile.application-identifier, bundle.CFBundleIdentifier)` 把每个 -m 描述文件
-    //   匹配到 bundle。许多第三方 / 越狱类 IPA（如 Via 的 Wormhole.framework）的 framework CFBundleIdentifier
-    //   是独立域名（如 com.tuyafeng.wormhole.Wormhole），不以宿主 app id 结尾 → 没有任何 -m 匹配 → zsign
-    //   不把任何 profile 写进该 framework → 其签名 `application-identifier`（来自 -e，= 宿主 app id
-    //   L7KYGKFQ5N.com.tuyafeng.122.L7KYGKFQ5N）无法被 embedded profile 覆盖 → installd 拒绝整个 .app。
-    //   这正是「别人用普通 IPA 装带 framework 的 App 也报 0xe8008017」的通用根因，与扩展无关。
+    //   匹配到 bundle，无匹配则回退第一个 -m 的 entitlements 签名该 bundle。v1.1.110 曾把 framework id
+    //   直接改成「宿主最终 id」以命中宿主 -m，结果撞了 installd 预检 code=57（父与子同 id）。
     //
-    // 修复：把 framework 的 CFBundleIdentifier 重写为「宿主最终 id」（如 com.tuyafeng.122.L7KYGKFQ5N，
-    //   含 team 后缀，与宿主实际签名 final id 一致），使 `endsWith(宿主profile.application-identifier,
-    //   framework.CFBundleIdentifier)` 为真 → zsign 会把宿主的 profile 写进该 framework，其签名
-    //   application-identifier 也被该 profile 覆盖 → installd 校验通过。framework 本就是宿主 app id 共享的
-    //   嵌套 bundle（Xcode 里 framework 复用宿主 App 的 provisioning），这里不额外注册 App ID、不烧配额。
-    //   只对宿主（isExtension==NO）做一次，避免递归重复。扩展内嵌的 framework 较罕见，其 profile 匹配
-    //   逻辑相同但取扩展的 host id，暂不覆盖（观察到的主场景是宿主级 Frameworks/）。
+    // 正确做法：framework 不注册自己的 App ID，签名 application-identifier 复用宿主 app id
+    // （无 -m 命中 → 回退第一个 -m=宿主 asset，已被宿主 embedded profile 授权；Relaxin 的
+    // CydiaSubstrate.framework / RelaxinEngine.framework 实测同机制安装正常）。这里只把 framework id
+    // 唯一化（宿主base.fwName），与宿主/扩展/其他 framework 都不重复，避免 code=57。
+    // 只对宿主（isExtension==NO）做一次，避免递归重复。
     if (!isExtension) {
         NSString *frameworkDir = [path stringByAppendingPathComponent:@"Frameworks"];
         NSArray *fwList = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:frameworkDir error:nil];
@@ -828,9 +841,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
             NSString *fwInfoPath = [fwPath stringByAppendingPathComponent:@"Info.plist"];
             NSMutableDictionary *fwInfo = [NSMutableDictionary dictionaryWithContentsOfFile:fwInfoPath];
             if (fwInfo) {
-                // 宿主最终 id（剥离已存在的 team 后缀再追加）——与下方 App 自身重写逻辑一致，保证与
-                // 宿主最终签名 application-identifier 的"非 team 前缀段"一致，从而让 zsign 的
-                // `endsWith(宿主profile.application-identifier, framework.CFBundleIdentifier)` 命中。
+                // 宿主最终 id 与 base（剥离已存在的 team 后缀）——与下方 App 自身重写逻辑一致。
                 NSMutableDictionary *hostInfo = [NSMutableDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]];
                 NSString *hostId = hostInfo[@"CFBundleIdentifier"] ?: @"";
                 NSString *teamSuffix = [NSString stringWithFormat:@".%@", teamId];
@@ -838,15 +849,17 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
                 while ([hostBase hasSuffix:teamSuffix]) {
                     hostBase = [hostBase substringToIndex:hostBase.length - teamSuffix.length];
                 }
-                NSString *hostFinalId = [hostBase stringByAppendingString:teamSuffix];
-                // framework 复用宿主 app id（= hostFinalId，含 team 后缀）。宿主 profile 的
-                // application-identifier = TEAMID.hostFinalId，以 hostFinalId 结尾 → zsign endsWith 命中，
-                // 会把宿主 profile 写进该 framework，其签名应用 id 也被宿主 profile 覆盖 → installd 通过。
+                // framework 不注册自己的 App ID，签名时复用宿主 app id（zsign 无 -m 命中则回退第一个
+                // -m=宿主 asset）。CFBundleIdentifier 写成「宿主base.fwName」：唯一（多 framework 不重名）、
+                // 与宿主/扩展都不重复（避免 installd code=57 DuplicateIdentifier）、且不参与任何 -m 匹配
+                //（保持与 Relaxin 一样的"宿主 app id 签名"行为）。
+                NSString *fwName = [fwDir stringByDeletingPathExtension];
+                NSString *newFwId = [NSString stringWithFormat:@"%@.%@", hostBase, fwName];
                 NSString *oldFwId = [fwInfo objectForKey:@"CFBundleIdentifier"] ?: @"";
-                if (![oldFwId isEqualToString:hostFinalId]) {
-                    NSLog(@"[ReSign] framework CFBundleIdentifier 不命中宿主 profile，改写: %@ -> %@（使 zsign 用宿主 -m 命中，防 0xe8008017）",
-                          oldFwId, hostFinalId);
-                    [fwInfo setObject:hostFinalId forKey:@"CFBundleIdentifier"];
+                if (![oldFwId isEqualToString:newFwId]) {
+                    NSLog(@"[ReSign] framework CFBundleIdentifier 改写: %@ -> %@（唯一化，防 code=57 重名；签名复用宿主 app id）",
+                          oldFwId, newFwId);
+                    [fwInfo setObject:newFwId forKey:@"CFBundleIdentifier"];
                     [fwInfo writeToFile:fwInfoPath atomically:YES];
                 }
             }
