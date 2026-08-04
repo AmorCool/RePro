@@ -652,25 +652,35 @@ static int RPVHelperFixCellularViaSettingsCellular(NSArray<NSString *> *bundleID
     return 0;
 }
 
-static int RPVHelperFixCellular(void) {
+static int RPVHelperFixCellular(NSString *selfBid) {
     RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
 
-    NSArray<NSString *> *bundleIDs = RPVHelperEnumerateBundleIDs();
+    NSMutableArray<NSString *> *bundleIDs = [NSMutableArray arrayWithArray:RPVHelperEnumerateBundleIDs()];
+
+    // 🔴 自身修复：App 侧显式传入的 bundle id 无条件加入列表并优先处理。
+    //    roothide 下 ReSign 装在 jbroot Applications 目录，枚举在 namespace 里
+    //    看不到自身（v1.1.122 实测 246 个里没有 com.reprovision.repro）。
+    if (selfBid.length > 0) {
+        BOOL alreadyIn = [bundleIDs containsObject:selfBid];
+        RPVHelperLog(@"fix-cellular: 自身 %@ 枚举到=%d（App 显式传入，无条件加入并优先）",
+                     selfBid, alreadyIn);
+        [bundleIDs removeObject:selfBid];
+        [bundleIDs insertObject:selfBid atIndex:0]; // 放最前，CT 路径第一个设置
+    }
+
     RPVHelperLog(@"fix-cellular: 共 %lu 个应用", (unsigned long)bundleIDs.count);
     if (bundleIDs.count == 0) {
         RPVHelperLog(@"fix-cellular 失败：枚举不到任何应用");
         return 3;
     }
 
-    // ── 四路径都执行（不短路）──
-    // ①CoreTelephony C 函数：对用户应用（有策略条目的）有效，但系统应用(com.apple.*)与
-    //   越狱工具自身常被忽略（返回 2，无策略条目）。
-    // ②SettingsCellular setPolicies:completion:：设置 App 改「每个 App 蜂窝开关」用的正是它，
-    //   能覆盖系统应用。
-    // ③AppWirelessDataUsageManager（Preferences.framework）：Renet/Undecimus iOS 11 官方方案，
-    //   setAppWirelessDataOption:@(3)（WLAN与蜂窝全允许）。
-    // ④删除 networkextension 缓存 + 重启 CommCenter：国行「允许使用数据」授权的终极手段，
-    //   系统应用/App Store/越狱工具自身全部重新评估，root 删文件无需 entitlement。
+    // ── 三路径都执行（不短路）──
+    // ①CoreTelephony C 函数：主路径，v1.1.120 补 fine-grained entitlement 后
+    //   246/246 返回码 0（CommCenter 接受），用户实测开关可恢复。
+    // ②SettingsCellular setPolicies:completion:：v1.1.122 起只探查不调用（参数需
+    //   带 bundleId 的策略对象，字典会崩 -[__NSFrozenDictionaryM bundleId]）。
+    // ③AppWirelessDataUsageManager（Preferences.framework）：Renet/Undecimus iOS 11
+    //   官方方案，setAppWirelessDataOption:@(3)；iOS 17 已移除该类则自动跳过。
     int ctRet = RPVHelperFixCellularViaCTServer(bundleIDs);
     if (ctRet != 0) {
         RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)", ctRet);
@@ -694,7 +704,7 @@ static void RPVHelperPrintUsage(void) {
             "用法:\n"
             "  repro-helper copy <源路径> <目标路径>\n"
             "  repro-helper install-profile <描述文件路径>\n"
-            "  repro-helper fix-cellular\n");
+            "  repro-helper fix-cellular [自身bundleID]\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -741,11 +751,15 @@ int main(int argc, char *argv[]) {
         }
 
         if ([command isEqualToString:@"fix-cellular"]) {
-            if (argc != 2) {
+            if (argc < 2 || argc > 3) {
                 RPVHelperPrintUsage();
                 return 64;
             }
-            return RPVHelperFixCellular();
+            // argv[2] = ReSign 自身 bundle id（App 侧传入）。roothide 下 ReSign 装在
+            // jbroot Applications 目录，枚举在 namespace 里看不到自身 → 由 App 显式
+            // 传入，helper 无条件加入修复列表并优先处理。
+            NSString *selfBid = (argc == 3) ? [NSString stringWithUTF8String:argv[2]] : nil;
+            return RPVHelperFixCellular(selfBid);
         }
 
         RPVHelperLog(@"未知命令: %@", command);
