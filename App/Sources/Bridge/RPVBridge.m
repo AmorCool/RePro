@@ -598,9 +598,9 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 
 #pragma mark - 越狱联网修复（国行蜂窝/WiFi 权限重置，手动入口）
 
-/// 设置里「修复越狱联网问题」按钮调用：同步拉起 repro-helper fix-cellular（CoreTelephony 路径），
-/// 重置所有第三方应用蜂窝/WiFi 数据策略为「始终允许」并刷新偏好缓存（killall cfprefsd）生效。
-/// 仅手动触发，无 daemon 自动循环（避免之前 daemon 空转 killall SpringBoard 拖死系统）。
+/// 设置里「修复当前插件联网」按钮调用：同步拉起 repro-helper fix-cellular（CoreTelephony 路径），
+/// 只把当前插件（ReSign）自身的蜂窝/WiFi 数据策略重置为「始终允许」，刷新偏好缓存（killall cfprefsd）生效。
+/// 仅手动触发，无 daemon 自动循环。
 - (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *helperPath = RPVResolvedRootHelperPath();
@@ -613,14 +613,12 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
             return;
         }
 
-        // 把 ReSign 自身的 bundle id 传给 helper：roothide 下 ReSign 装在 jbroot
-        // Applications 目录，枚举扫 /Applications 时在 namespace 里可能看不到自身
-        // （v1.1.122 实测：246 个应用里没有 com.reprovision.repro），导致无法修复自身。
-        // helper 会把该 id 无条件加入修复列表并优先处理。
+        // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
+        // （不再枚举批量处理，避免对系统守护调 CoreTelephony 私有 API 污染 CT 状态）。
         NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.reprovision.repro";
         BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
         NSString *message = ok
-            ? @"已重置全部应用的蜂窝/WiFi 数据策略为「始终允许」。偏好缓存已刷新（cfprefsd），请稍等几秒后打开「设置 → 蜂窝网络」查看效果。"
+            ? @"已修复当前插件 ReSign 的蜂窝/WiFi 数据策略为「始终允许」。偏好缓存已刷新（cfprefsd），请稍等几秒后打开「设置 → 蜂窝网络」查看效果。"
             : @"修复失败，请稍后重试。";
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{

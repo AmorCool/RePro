@@ -301,23 +301,23 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 
 // 原理（重新逆向 cn.tinyapps.Renet v1.2.2 + ZIKCellularAuthorization 实测）：
 // 国行越狱后蜂窝失效 = iOS 的 App 蜂窝/WiFi 数据使用策略被重置。
-// Renet 反汇编确认历史 API（我们只用最底层通用的 CoreTelephony C 函数）：
-//   iOS 11/12（v1.1.143 已移除该路径：PSAppDataUsagePolicyCache 在 iOS16/roothide 实例化即崩溃，且 v1.1.122 起只探查不设置、对修复无贡献）
-//   🔴 底层通用：CoreTelephony 私有 C 函数
-//       _CTServerConnectionCreateOnTargetQueue / _CTServerConnectionSetCellularUsagePolicy
-//       —— Settings 里每个 App 的蜂窝开关底层就是它，全 iOS 版本存在。
-//   Renet 的 __LINKEDIT 也导入了 _CTServerConnectionSetCellularUsagePolicy。
-// 本 helper 路径：①CoreTelephony C 函数（主，全版本通用，仅处理非系统应用）
-// ②AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案，@try/@catch 兜底）。
+// 底层通用：CoreTelephony 私有 C 函数
+//     _CTServerConnectionCreateOnTargetQueue / _CTServerConnectionSetCellularUsagePolicy
+//     —— Settings 里每个 App 的蜂窝开关底层就是它，全 iOS 版本存在。
 // 在 root helper 里做：无需 App entitlements，root 权限直接调私有框架。
+// 🔴 v1.1.146：只修复当前插件（ReSign）自身——批量对全部应用/系统守护调该私有
+//    函数会污染 CoreTelephony 内部状态、在 roothide 下引发 XPC 拦截 fault
+//    （修复联网→前后台切换→杀后台→冷启动 EXC_GUARD 闪退）。
 
 typedef CFTypeRef (*CTServerConnectionCreateIMP)(CFAllocatorRef, NSString *,
                                                  dispatch_queue_t, void *);
 typedef int (*CTServerConnectionSetPolicyIMP)(CFTypeRef, NSString *, NSDictionary *);
 
-/// 主路径：CoreTelephony 私有 C 函数（全 iOS 版本通用）
+/// 主路径：CoreTelephony 私有 C 函数（全 iOS 版本通用），只修复单个 bundle id。
 /// 参考 ZIKCellularAuthorization 实测：字典固定 @{@"kCTCellularUsagePolicyDataAllowed": @YES}
-static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
+static int RPVHelperFixCellularViaCTServer(NSString *bid) {
+    if (bid.length == 0) return 14;
+
     void *ctHandle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony",
                             RTLD_NOW);
     if (!ctHandle) {
@@ -344,173 +344,25 @@ static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
         return 13;
     }
 
-    // 逐条调用，统计返回码分布（避免刷屏：只打印异常码，正常码汇总）
-    int okCount = 0;
-    NSMutableDictionary<NSNumber *, NSNumber *> *retCount = [NSMutableDictionary dictionary];
+    // 只对当前插件自身设置蜂窝策略（0=成功；2=无策略条目/系统应用忽略）
     NSDictionary *allow = @{ @"kCTCellularUsagePolicyDataAllowed": @YES };
-    for (NSString *bid in bundleIDs) {
-        @try {
-            int r = setPolicy(conn, bid, allow);
-            okCount++;
-            NSNumber *key = @(r);
-            retCount[key] = @([retCount[key] intValue] + 1);
-            // 只打印异常返回码（0=成功；2=常见"无策略条目/系统应用忽略"；其余才值得看）
-            if (r != 0 && r != 1 && r != 2) {
-                RPVHelperLog(@"fix-cellular(CT): %@ 返回 %d", bid, r);
-            }
-        } @catch (NSException *e) {
-            RPVHelperLog(@"fix-cellular(CT): %@ 设置异常: %@", bid, e.reason);
-        }
+    int r = -1;
+    @try {
+        r = setPolicy(conn, bid, allow);
+    } @catch (NSException *e) {
+        RPVHelperLog(@"fix-cellular(CT): %@ 设置异常: %@", bid, e.reason);
     }
-    // 汇总返回码分布
-    for (NSNumber *key in [retCount.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        RPVHelperLog(@"fix-cellular(CT): 返回码 %@ 共 %@ 个", key, retCount[key]);
-    }
-    RPVHelperLog(@"fix-cellular(CT): 成功设置 %d/%lu 个应用", okCount,
-                 (unsigned long)bundleIDs.count);
+    RPVHelperLog(@"fix-cellular(CT): %@ 返回 %d（0=成功）", bid, r);
+
+    if (conn) CFRelease(conn);
+    dlclose(ctHandle);
 
     // v1.1.124：写共享修复时间戳（与 signingd 开机自动修复共用防抖文件）。
     // 手动/自动修复成功后，下次设备重启前不再重复触发。
     NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
     [stamp writeToFile:@"/var/mobile/Library/RePro/fix-cellular-last.plist" atomically:YES];
 
-    if (conn) CFRelease(conn);
-    dlclose(ctHandle);
     return 0;
-}
-
-/// 另一条 Renet 路径：AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案）。
-/// Undecimus issue #1112：setAppWirelessDataOption:@(3)（3=WLAN与蜂窝全允许）+
-/// setAppCellularDataEnabled:@(1)。iOS 17 若类仍在则有效，否则跳过。
-static void RPVHelperFixCellularViaAppWirelessDataUsageManager(NSArray<NSString *> *bundleIDs) {
-    void *prefsHandle = dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences",
-                               RTLD_NOW);
-    Class mgr = NSClassFromString(@"AppWirelessDataUsageManager");
-    if (!mgr && prefsHandle) {
-        mgr = NSClassFromString(@"AppWirelessDataUsageManager");
-    }
-    if (!mgr) {
-        RPVHelperLog(@"fix-cellular(awdum): AppWirelessDataUsageManager 不存在（iOS 17 可能已移除），跳过");
-        return;
-    }
-
-    SEL setWireless = NSSelectorFromString(@"setAppWirelessDataOption:forBundleIdentifier:completionHandler:");
-    SEL setCellular = NSSelectorFromString(@"setAppCellularDataEnabled:forBundleIdentifier:completionHandler:");
-    if (![mgr respondsToSelector:setWireless] || ![mgr respondsToSelector:setCellular]) {
-        RPVHelperLog(@"fix-cellular(awdum): 方法缺失 setWireless=%d setCellular=%d",
-                     [mgr respondsToSelector:setWireless], [mgr respondsToSelector:setCellular]);
-        return;
-    }
-
-    NSNumber *optionAll = @(3);  // 3 = WLAN 与蜂窝（全允许）
-    NSNumber *enabled = @(1);    // 1 = 蜂窝启用
-    int okWireless = 0, okCellular = 0;
-    for (NSString *bid in bundleIDs) {
-        @try {
-            // 类方法：AppWirelessDataUsageManager 是类方法调用
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:
-                [mgr methodSignatureForSelector:setWireless]];
-            [inv setTarget:mgr];
-            [inv setSelector:setWireless];
-            [inv setArgument:&optionAll atIndex:2];
-            [inv setArgument:&bid atIndex:3];
-            dispatch_block_t done = ^{};
-            [inv setArgument:&done atIndex:4];
-            [inv retainArguments];
-            [inv invoke];
-            okWireless++;
-        } @catch (NSException *e) {
-            RPVHelperLog(@"fix-cellular(awdum): %@ wireless 异常: %@", bid, e.reason);
-        }
-        @try {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:
-                [mgr methodSignatureForSelector:setCellular]];
-            [inv setTarget:mgr];
-            [inv setSelector:setCellular];
-            [inv setArgument:&enabled atIndex:2];
-            [inv setArgument:&bid atIndex:3];
-            dispatch_block_t done = ^{};
-            [inv setArgument:&done atIndex:4];
-            [inv retainArguments];
-            [inv invoke];
-            okCellular++;
-        } @catch (NSException *e) {
-            RPVHelperLog(@"fix-cellular(awdum): %@ cellular 异常: %@", bid, e.reason);
-        }
-    }
-    RPVHelperLog(@"fix-cellular(awdum): setAppWirelessDataOption %d/%lu, setAppCellularDataEnabled %d/%lu",
-                 okWireless, (unsigned long)bundleIDs.count,
-                 okCellular, (unsigned long)bundleIDs.count);
-}
-
-/// 枚举已安装应用 bundle id：多路径尝试安装记录 + 容器 metadata 兜底 + /Applications 兜底。
-/// 注意：iOS 15+ com.apple.mobile.installation.plist 已不存在；容器真实路径是
-/// /var/containers/Bundle/Application（小写 containers，无 mobile 段）。
-static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
-    NSMutableArray<NSString *> *ids = [NSMutableArray array];
-
-    // ── 方法1：系统安装记录 plist（各版本路径逐一尝试）──
-    NSArray<NSString *> *plistPaths = @[
-        @"/private/var/mobile/Library/Caches/com.apple.mobile.installation.plist",
-        @"/var/mobile/Library/Caches/com.apple.mobile.installation.plist",
-        @"/var/Library/Caches/com.apple.mobile.installation.plist",
-    ];
-    for (NSString *pp in plistPaths) {
-        NSDictionary *install = [NSDictionary dictionaryWithContentsOfFile:pp];
-        if (!install) continue;
-        for (NSString *section in @[@"User", @"System"]) {
-            NSDictionary *apps = install[section];
-            for (NSString *bid in apps) {
-                if (bid.length && ![ids containsObject:bid])
-                    [ids addObject:bid];
-            }
-        }
-        if (ids.count > 0) break; // 命中即止
-    }
-
-    // ── 方法2：扫容器目录 .com.apple.mobile_container_manager.metadata.plist ──
-    if (ids.count == 0) {
-        NSArray<NSString *> *bases = @[
-            @"/var/containers/Bundle/Application",       // 标准 iOS 路径（正确）
-            @"/var/mobile/Containers/Bundle/Application", // 某些 JB 环境可能存在
-            @"/private/var/containers/Bundle/Application",
-        ];
-        for (NSString *base in bases) {
-            NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
-            for (NSString *dir in dirs) {
-                NSString *meta = [NSString stringWithFormat:
-                    @"%@/%@/.com.apple.mobile_container_manager.metadata.plist", base, dir];
-                NSString *bid = [NSDictionary dictionaryWithContentsOfFile:meta]
-                                    [@"MCMMetadataIdentifier"];
-                if (bid.length && ![ids containsObject:bid])
-                    [ids addObject:bid];
-            }
-            if (ids.count > 0) break;
-        }
-    }
-
-    // ── 方法3：扫系统应用目录（始终执行，不短路）──
-    // 🔴 之前被 ids.count==0 短路：ReSign 自身装在 jbroot/Applications（rootless=/var/jb/Applications、
-    //    roothide=jbroot overlay 内的 /Applications），容器扫描扫不到它 → 永远无法修复自身！
-    //    故这里无条件追加，把系统应用与越狱工具自身（ReSign/Filza/TrollStore 等）都纳入。
-    NSArray<NSString *> *appDirs = @[
-        @"/Applications",              // roothide: jbroot overlay 内的 Applications（含 ReSign 自身）
-        @"/var/jb/Applications",       // rootless: jbroot 真实路径
-        @"/System/Applications",       // iOS 10+ 系统应用
-        @"/System/Applications/AppStore.app/../../../Applications", // 备用（一般无效，无害）
-    ];
-    for (NSString *base in appDirs) {
-        NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
-        for (NSString *dir in dirs) {
-            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
-                [NSString stringWithFormat:@"%@/%@/Info.plist", base, dir]];
-            NSString *bid = info[@"CFBundleIdentifier"];
-            if (bid.length && ![ids containsObject:bid])
-                [ids addObject:bid];
-        }
-    }
-
-    return ids;
 }
 
 /// 温和刷新偏好缓存（killall cfprefsd），使设置 UI 立即反映刚写入的策略。
@@ -533,62 +385,24 @@ static void RPVHelperFlushPreferences(void) {
 
 
 static int RPVHelperFixCellular(NSString *selfBid) {
-    RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
-
-    NSMutableArray<NSString *> *allIDs = [NSMutableArray arrayWithArray:RPVHelperEnumerateBundleIDs()];
-
-    // 🔴 自身修复：App 侧显式传入的 bundle id 无条件加入列表并优先处理。
-    //    roothide 下 ReSign 装在 jbroot Applications 目录，枚举在 namespace 里
-    //    看不到自身（v1.1.122 实测 246 个里没有 com.reprovision.repro）。
-    if (selfBid.length > 0) {
-        BOOL alreadyIn = [allIDs containsObject:selfBid];
-        RPVHelperLog(@"fix-cellular: 自身 %@ 枚举到=%d（App 显式传入，无条件加入并优先）",
-                     selfBid, alreadyIn);
-        [allIDs removeObject:selfBid];
-        [allIDs insertObject:selfBid atIndex:0]; // 放最前，CT 路径第一个设置
-    }
-
-    // 🔴 v1.1.145：过滤 com.apple.* 系统守护/应用。
-    // _CTServerConnectionSetCellularUsagePolicy 是对系统守护进程设置蜂窝策略的
-    // 私有 C 函数调用——越狱环境（尤其 roothide systemhook）下逐条对数百个系统
-    // daemon 调该函数会污染 CoreTelephony 内部状态、引发 roothide XPC 拦截 fault，
-    // 表现为「修复联网后前后台切换几次→杀后台→冷启动即 EXC_GUARD 闪退」。
-    // 修复只需针对越狱/旁加载应用（它们才是国行蜂窝权限丢失的受害者），系统应用
-    // 走设置→蜂窝网络即可管理。
-    NSMutableArray<NSString *> *bundleIDs = [NSMutableArray array];
-    NSUInteger skippedApple = 0;
-    for (NSString *bid in allIDs) {
-        if ([bid hasPrefix:@"com.apple."]) {
-            skippedApple++;
-        } else {
-            [bundleIDs addObject:bid];
-        }
-    }
-    RPVHelperLog(@"fix-cellular: 枚举 %lu 个（含 %lu 个 com.apple.* 已跳过），实际处理 %lu 个",
-                 (unsigned long)allIDs.count, (unsigned long)skippedApple,
-                 (unsigned long)bundleIDs.count);
-
-    if (bundleIDs.count == 0) {
-        RPVHelperLog(@"fix-cellular 失败：枚举不到任何非系统应用");
+    // 🔴 v1.1.146：只修复当前插件自身（App 侧传入 bundle id），不再枚举/批量修复其他应用。
+    // 批量对系统守护/应用调 CoreTelephony 私有 C 函数会污染 CT 内部状态、在 roothide 下
+    // 引发 XPC 拦截 fault（修复联网→前后台切换→杀后台→冷启动 EXC_GUARD 闪退）。
+    // 其他应用如需修复，请到系统「设置 → 蜂窝网络」手动开启。
+    if (selfBid.length == 0) {
+        RPVHelperLog(@"fix-cellular 失败：未传入当前插件 bundle id");
         return 3;
     }
+    RPVHelperLog(@"fix-cellular 开始：修复当前插件 %@ 的蜂窝/WiFi 数据策略", selfBid);
 
-    // ── 两路径都执行（不短路）──
-    // ①CoreTelephony C 函数：主路径，v1.1.120 补 fine-grained entitlement 后
-    //   246/246 返回码 0（CommCenter 接受），用户实测开关可恢复。修复主力。
-    // ②AppWirelessDataUsageManager（Preferences.framework）：Renet/Undecimus iOS 11
-    //   官方方案，setAppWirelessDataOption:@(3)；iOS 17 已移除该类则自动跳过。
-    //   🔴 v1.1.143 删除 PSAppDataUsagePolicyCache（SettingsCellular）路径：该私有类在
-    //   iOS 16/roothide 下实例化即崩溃（SIGABRT→内核 panic），且 v1.1.122 起只探查不设置
-    //   策略、对修复无贡献，故整段移除。修复主力始终是 CoreTelephony C 函数路径。
-    int ctRet = RPVHelperFixCellularViaCTServer(bundleIDs);
+    int ctRet = RPVHelperFixCellularViaCTServer(selfBid);
     if (ctRet != 0) {
         RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)", ctRet);
+        return ctRet;
     }
-    RPVHelperFixCellularViaAppWirelessDataUsageManager(bundleIDs);
 
     RPVHelperFlushPreferences();
-    RPVHelperLog(@"fix-cellular 完成");
+    RPVHelperLog(@"fix-cellular 完成（%@）", selfBid);
     return 0;
 }
 
@@ -599,7 +413,8 @@ static void RPVHelperPrintUsage(void) {
             "repro-helper —— ReSign 按需 root 助手\n"
             "用法:\n"
             "  repro-helper copy <源路径> <目标路径>\n"
-            "  repro-helper install-profile <描述文件路径>\n");
+            "  repro-helper install-profile <描述文件路径>\n"
+            "  repro-helper fix-cellular <当前插件 bundle id>\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -645,10 +460,11 @@ int main(int argc, char *argv[]) {
             return RPVHelperInstallProvisioningProfile([NSString stringWithUTF8String:argv[2]]);
         }
 
-        // fix-cellular = App「设置」里「修复越狱联网问题」手动入口（仅手动，无 daemon 自动循环）。
-        // 重置全部应用蜂窝/WiFi 数据策略为「始终允许」并刷新偏好缓存（killall cfprefsd）生效。
+        // fix-cellular = App「设置」里「修复当前插件联网」手动入口（仅手动，无 daemon 自动循环）。
+        // v1.1.146：只把当前插件（ReSign）自身送进 CoreTelephony 私有 API 修复，
+        // 刷新偏好缓存（killall cfprefsd）生效。不再批量处理其他应用。
         if ([command isEqualToString:@"fix-cellular"]) {
-            if (argc < 2 || argc > 3) {
+            if (argc != 3) {   // fix-cellular <当前插件 bundle id>
                 RPVHelperPrintUsage();
                 return 64;
             }
@@ -668,10 +484,8 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            // argv[2] = ReSign 自身 bundle id（App 侧传入）。roothide 下 ReSign 装在
-            // jbroot Applications 目录，枚举在 namespace 里看不到自身 → 由 App 显式
-            // 传入，helper 无条件加入修复列表并优先处理。
-            NSString *selfBid = (argc == 3) ? [NSString stringWithUTF8String:argv[2]] : nil;
+            // argv[2] = 当前插件自身 bundle id（App 侧传入，v1.1.146 必传）
+            NSString *selfBid = [NSString stringWithUTF8String:argv[2]];
             return RPVHelperFixCellular(selfBid);
         }
 

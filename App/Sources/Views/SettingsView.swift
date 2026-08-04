@@ -138,7 +138,7 @@ struct SettingsView: View {
             } message: {
                 Text("确定要清空 reprorefresh_at.log 吗？此操作不可撤销。")
             }
-            .alert("修复越狱联网问题", isPresented: $showFixCellularAlert) {
+            .alert("修复当前插件联网问题", isPresented: $showFixCellularAlert) {
                 Button("好", role: .cancel) {}
             } message: {
                 Text(fixCellularMessage)
@@ -379,7 +379,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 越狱联网修复（国行蜂窝/WiFi 权限重置）
+    // MARK: - 联网修复（国行蜂窝/WiFi 权限重置，只修复当前插件自身）
 
     private var networkFixSection: some View {
         Section {
@@ -393,10 +393,10 @@ struct SettingsView: View {
                         .frame(width: 32)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("修复越狱联网问题")
+                        Text("修复当前插件联网问题")
                             .font(.body)
                             .foregroundColor(.primary)
-                        Text("越狱后部分插件及应用无法联网（国行「允许使用数据」授权丢失）时，重置所有第三方应用的蜂窝/WiFi 数据策略为「始终允许」并刷新偏好缓存（cfprefsd）生效。系统应用请通过「设置 → 蜂窝网络」手动管理。")
+                        Text("当本插件无法联网（国行「允许使用数据」授权丢失）时，把 ReSign 自身的蜂窝/WiFi 数据策略重置为「始终允许」并刷新偏好缓存（cfprefsd）生效。其他应用请通过「设置 → 蜂窝网络」手动管理。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

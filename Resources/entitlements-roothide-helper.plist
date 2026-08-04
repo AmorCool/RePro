@@ -39,7 +39,7 @@
 	<key>com.apple.managedconfiguration.profiled-access</key>
 	<true/>
 
-	<!-- 修复越狱联网（fix-cellular）：CoreTelephony 私有 C 函数需要 fine-grained 授权，
+	<!-- 修复当前插件联网（fix-cellular）：CoreTelephony 私有 C 函数需要 fine-grained 授权，
 	     否则 _CTServerConnectionSetCellularUsagePolicy 全返回 2（CommCenter XPC 拒绝），
 	     246/246 应用策略无法写入。补上后返回 0，用户实测开关可恢复联网。 -->
 	<key>com.apple.CommCenter.fine-grained</key>
