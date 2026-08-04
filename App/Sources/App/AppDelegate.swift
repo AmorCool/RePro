@@ -32,10 +32,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// 又触发一次前台续签（重复签名）。
     private var daemonResignInProgress = false
 
-    /// v1.1.128：续签因网络异常失败后是否已触发过「修复联网→重试」。
-    /// 单次续签会话内只修一次，避免修复后仍失败造成循环。
-    private var didRetryResignAfterFix = false
-
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
@@ -244,25 +240,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             errorText = e.localizedDescription
             LogManager.shared.warning("续签失败: \(errorText)", source: "AppDelegate")
             writeResignReport(result: "failed", detail: errorText, elapsed: elapsed, trigger: trigger)
-
-            // 🔴 v1.1.128 核心逻辑重构：续签因网络权限丢失失败 → 静默修复联网 →
-            // 修复完成后再触发一次续签（仅自动续签时）。日志实据：
-            // 「拉取证书列表失败…似乎已断开与互联网的连接」「续签失败:
-            // updateCurrentTeamIDWithCompletionHandler: 似乎已断开与互联网的连接」。
-            if isDaemon && isNetworkishError(errorText) && !didRetryResignAfterFix {
-                didRetryResignAfterFix = true
-                LogManager.shared.warning("续签因网络异常失败 → 已请求 daemon 修复联网并立即重试续签", source: "AppDelegate")
-                // 🔴 v1.1.129：修复动作移交 daemon（rootfs LaunchDaemon，SpringBoard 重启不影响它）。
-                // 旧逻辑 App 自己调 fixCellularData → helper killall SpringBoard 杀掉 App，
-                // 而 daemon 下一轮定时器要等一个完整检查间隔（最长 1 小时）才触发 → 链路断裂。
-                // daemon 收到请求后：等 App 退出 → exec repro-helper 修复 → 立即重新调度续签（10 秒后）。
-                let requestPath = "\(Self.ipcDir)/fix-cellular-request"
-                (["timestamp": Date().timeIntervalSince1970,
-                  "bundleID": Bundle.main.bundleIdentifier ?? "com.reprovision.repro",
-                  "triggeredBy": "resign-failed"] as NSDictionary)
-                    .write(toFile: requestPath, atomically: true)
-                RPVSigningdNotify.notifyFixCellularRequest()
-            }
         }
 
         // 续签完成通知：daemon 路径无论成败都通知；前台路径仅在失败时补一条总览
@@ -309,19 +286,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if daemonResignInProgress { return }
         if checkDaemonTrigger() { doAutoResign() }
         else { tryAutoResign() }
-    }
-
-    // MARK: - 续签失败触发「修复联网→重试」（v1.1.128 核心逻辑重构）
-
-    /// 判定续签失败是否为网络类错误（蜂窝权限丢失 → -1009「似乎已断开与互联网的连接」）。
-    /// 是则走「静默修复联网 → daemon 下一轮续签」闭环，不打扰用户。
-    private func isNetworkishError(_ text: String) -> Bool {
-        let lower = text.lowercased()
-        return lower.contains("互联网") || lower.contains("网络") || lower.contains("network")
-            || lower.contains("connection") || lower.contains("连接") || lower.contains("离线")
-            || lower.contains("offline") || lower.contains("nsurlerrordomain")
-            || lower.contains("-1009") || lower.contains("dns")
-            || lower.contains("timed out") || lower.contains("timeout")
     }
 
     // MARK: - 触发检测
@@ -378,8 +342,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             // daemon 的 s_bypassEnabled() 会按 CFPreferences → 本 plist → 容器偏好 三级回退，
             // 这里同步一份，保证 RootHide 下 cfprefsd 跨 namespace 读不到时仍能生效。
             "bypassFreeAppLimit": d.object(forKey: "bypassFreeAppLimit") as? Bool ?? false,
-            // v1.1.128：低电量强制续签（daemon s_parseCfg 读同 key）
-            "forceResignLowPower": d.object(forKey: "forceResignLowPower") as? Bool ?? false,
         ]
         let fm = FileManager.default
         if !fm.fileExists(atPath: Self.ipcDir) {

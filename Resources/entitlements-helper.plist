@@ -34,17 +34,5 @@
          调 MC 时 managingProfileIdentifier 传 nil，profile 落进本地库。本 helper 与之对齐。 -->
     <key>com.apple.managedconfiguration.profiled-access</key>
     <true/>
-
-    <!-- fix-cellular：写 CommCenter 的 App 蜂窝数据策略（国行「允许使用数据」授权）。
-         缺这些 CommCenter XPC 会校验失败：CT 函数全返回 2、setPolicies:completion: 静默无效。
-         参考 Undecimus issue #1112 与 Renet 的 embedded.mobileprovision。 -->
-    <key>com.apple.CommCenter.fine-grained</key>
-    <array>
-        <string>cellular-plan</string>
-        <string>data-usage</string>
-        <string>data-allowed</string>
-        <string>data-allowed-write</string>
-        <string>preferences-write</string>
-    </array>
 </dict>
 </plist>

@@ -72,13 +72,6 @@
     notify_post("com.reprovision.signing-complete");
 }
 
-+ (void)notifyFixCellularRequest {
-    uint32_t status = notify_post("com.reprovision.fix-cellular-request");
-    if (status != 0) {
-        NSLog(@"[ReSign] 请求 daemon 修复联网失败: notify_post 0x%x", status);
-    }
-}
-
 + (void)notifyBypass3AppRequest {
     BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"bypassFreeAppLimit"];
     if (!enabled) {

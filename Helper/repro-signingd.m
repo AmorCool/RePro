@@ -46,7 +46,6 @@
 #include <notify.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
-#include <sys/sysctl.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -61,8 +60,6 @@ static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-tr
 static NSString *const kStatePath   = @"/var/mobile/Library/RePro/signingd-state.plist";
 static NSString *const kResultPath  = @"/var/mobile/Library/RePro/last-resign-result.plist";
 static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
-// v1.1.129：App 续签因网络失败时写的修复请求文件（notify 丢失时文件轮询兜底）
-static NSString *const kFixCellularReqPath = @"/var/mobile/Library/RePro/fix-cellular-request";
 // ⚠️ v1.1.69 关键修复：此前此处写成 @"jp.soh.reprovision"，但 App 真实的
 // CFBundleIdentifier（SpringBoard 注册 ID）= "com.reprovision.repro"（见 pbxproj
 // PRODUCT_BUNDLE_IDENTIFIER 与 deb 内 Info.plist）。SBS 用 BundleID 查 App，
@@ -81,10 +78,7 @@ static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
 static const NSInteger  kFallbackDays    = 2;
 
 static FILE     *gLogFile   = NULL;
-// 🔴 v1.1.130：NSTimer 依赖 runloop，在越狱/RootHide daemon 环境实测从不触发
-// （两份日志「5 秒后立即执行」都无续签日志，#1 永远是 SIGHUP）→ 换 GCD dispatch timer，
-// 与 SIGHUP/notify（dispatch source）同一机制，SIGHUP 能工作证明 GCD 主队列可靠。
-static dispatch_source_t gTimerSrc = nil;
+static NSTimer  *gTimer     = nil;
 static time_t    gLastFire  = 0;
 static BOOL      gUpdateQueuedForUnlock = NO;
 static int gLockStateToken = 0;
@@ -163,19 +157,6 @@ static NSString *s_run_cmd(NSString *cmd) {
     pclose(pipe);
     NSString *out = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     return (out.length ? out : nil);
-}
-
-/// v1.1.133：运行命令并取退出码（helper 全程静默无 stdout，只能靠退出码判定成败）。
-static int s_run_cmd_status(NSString *cmd) {
-    NSString *full = [cmd stringByAppendingString:@"; echo __RPV_EXIT__:$?"];
-    NSString *out = s_run_cmd(full);
-    NSRange r = [out rangeOfString:@"__RPV_EXIT__:"];
-    if (r.location != NSNotFound) {
-        NSString *code = [out substringFromIndex:r.location + r.length];
-        code = [code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        return code.intValue;
-    }
-    return -1;
 }
 
 /// 判断某个命令行工具是否在当前 PATH 可达（popen 用 /bin/sh，PATH 来自 launchd 环境）
@@ -290,12 +271,7 @@ static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
 //   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
 //   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
-typedef struct {
-    BOOL enabled;
-    NSInteger minutes;
-    NSInteger days;
-    BOOL forceResignLowPower;   // v1.1.128：低电量强制续签（默认 NO=低电量跳过）
-} sd_config;
+typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; } sd_config;
 
 /// 本次实际生效的配置来源（--status 会打印，方便一眼确认有没有读到 App 的设置）
 static NSString *gCfgSource = @"未读取";
@@ -316,9 +292,6 @@ static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
     out->minutes = m;
     out->days    = dy;
     out->enabled = rawEn ? [rawEn boolValue] : YES;
-    // v1.1.128：低电量强制续签开关（App 设置「低电量强制续签」，默认关=低电量跳过）
-    id rawLow = d[@"forceResignLowPower"];
-    out->forceResignLowPower = rawLow ? [rawLow boolValue] : NO;
     return YES;
 }
 
@@ -476,14 +449,6 @@ static NSInteger s_bypass3AppLimit(NSString *reason) {
 static void s_bypass3AppLimitIfEnabled(NSString *reason) {
     if (!s_bypassEnabled()) {
         s_log(@"3应用绕过[%@]: 设置未开启，跳过", reason);
-        return;
-    }
-    // 🔴 v1.1.133：网络未修复（fix-cellular-request 请求文件仍存在且新鲜）→ 跳过。
-    // 3 应用绕过是重活（枚举全部容器扫 xattr），且应在「真正修复好联网、续签成功」后
-    // 才做——App 侧 bypass 请求可能在修复期间到达，这里门控兜底。
-    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:kFixCellularReqPath];
-    if (req) {
-        s_log(@"3应用绕过[%@]: 存在未处理的联网修复请求 → 跳过（待修复后签名成功再做）", reason);
         return;
     }
     s_bypass3AppLimit(reason);
@@ -872,23 +837,12 @@ static BOOL s_launchAppInBackground(void) {
 
 // ─── 触发 ────────────────────────────────────────────────────────
 
-static BOOL s_consumeFixCellularRequestIfAny(void);   // v1.1.130 前置声明
-
 static void s_fire(void) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"自动续签已关闭，跳过"); return; }
 
-    // 🔴 v1.1.130：续签前先处理待修复请求（文件轮询兜底，不依赖 notify——
-    // App 续签失败时写的 fix-cellular-request，若 notify 通知丢失也能补上）。
-    // 有请求 → 修复流程接管（内部 10 秒后重调度续签），本次续签让位。
-    if (s_consumeFixCellularRequestIfAny()) {
-        s_log(@"续签让位于联网修复（修复完成后自动重试续签）");
-        return;
-    }
-
-    // v1.1.128：低电量默认跳过续签；「低电量强制续签」开启后不跳过
-    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
-        s_log(@"低电量模式，跳过续签（设置「低电量强制续签」可强制）");
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
+        s_log(@"低电量模式，跳过续签");
         return;
     }
 
@@ -914,166 +868,29 @@ static void s_fire(void) {
     }
 }
 
-/// 重算 nextFireDate 并重设定时器（任何续签触发路径后调用，保证设置页时间准确）。
-static void s_reschedule(NSTimeInterval sec) {
-    NSDate *next = [[NSDate date] dateByAddingTimeInterval:sec];
-    s_setNextFireDate(next);
-    s_start_timer(sec);
-    s_log(@"已重新调度 — %.0f 秒后触发 (%@)", sec, next);
-}
-
 /// 执行一次完整的重签周期，然后重新设定时器
 static void s_initiateAndReschedule(void) {
     s_fire();
 
     sd_config c = s_cfg();
     NSTimeInterval interval = (NSTimeInterval)c.minutes * 60.0;
-    s_reschedule(interval);
-}
 
-// ─── 续签失败 → daemon 修复联网 → 立即重试续签（v1.1.129）──────────────
-// 用户实测痛点：App 续签因网络权限丢失失败后，旧逻辑由 App 自己调 helper 修复，
-// helper killall SpringBoard 会把 App 杀掉，而 daemon 下一轮定时器要等一个完整
-// 检查间隔（最长 1 小时）才触发 —— 链路断裂（SpringBoard 重启也使 IOPM 系统级
-// 唤醒与 BKSProcessAssertion 失效，1 小时后的唤醒存在不确定性）。
-// 本方案：修复动作移交 daemon（rootfs LaunchDaemon，SpringBoard 重启不影响自身），
-// 修复完成后立即重新调度续签（10 秒后触发），续签自动接续，无需等一个完整间隔。
+    NSDate *nextFire = [[NSDate date] dateByAddingTimeInterval:interval];
+    s_setNextFireDate(nextFire);
 
-/// 解析 repro-helper 的绝对路径（rootfs daemon 视角，三种越狱形态）。
-static NSString *s_resolveHelperPath(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    // RootHide：jbroot 在 /var/containers/Bundle/Application/.jbroot-*/usr/libexec
-    NSArray *appDirEntries = [fm contentsOfDirectoryAtPath:kBundleRoot error:nil];
-    for (NSString *entry in appDirEntries) {
-        if ([entry hasPrefix:@".jbroot-"]) {
-            NSString *p = [NSString stringWithFormat:@"%@/%@/usr/libexec/repro-helper",
-                           kBundleRoot, entry];
-            if ([fm isExecutableFileAtPath:p]) return p;
-        }
-    }
-    // rootless / rootful
-    for (NSString *p in @[@"/var/jb/usr/libexec/repro-helper",
-                          @"/usr/libexec/repro-helper"]) {
-        if ([fm isExecutableFileAtPath:p]) return p;
-    }
-    return nil;
-}
-
-/// 🔴 v1.1.133 全局：修复是否正在执行（去重，防止 notify/signing-complete/文件轮询
-/// 三路触发导致 helper 执行两次、killall SpringBoard 两次）与连续失败计数。
-static BOOL gFixCellularRunning = NO;
-/// v1.1.135：自动修复「滑动窗口」计数——记录每次自动修复的时间戳，
-/// 10 分钟内 ≥3 次仍失败 → 停止自动修复并回退到正常调度（防死循环刷 SpringBoard）。
-/// 真正「修复是否成功」的判据是 App 下一次续签能否联网，而非 daemon 自身的网络探测
-/// （rootfs namespace 下 curl/ping 探测极不可靠，会误判「没修好」→ 用户感知「修了没用」）。
-static NSMutableArray<NSNumber *> *gFixAttempts = nil;
-
-/// 处理 App 的「续签网络失败 → 修复并立即重试」请求（后台线程执行，不阻塞 daemon）。
-/// v1.1.133 重构（用户要求）+ v1.1.135 修正：
-///  · 独立调用 fix-inter（修复联网 + 重启 SpringBoard 专用命令）
-///  · 去重：gFixCellularRunning 互斥，三路触发只执行一次
-///  · 修复后固定等待网络栈沉淀，直接重试续签——**成败由 App 下一次续签实际联网判定**
-///    （不再用 daemon 自身 curl/ping 探测，rootfs 下极不可靠会误判「没修好」）
-///  · 滑动窗口限流：10 分钟内 ≥3 次自动修复仍失败 → 停止自动修复、回退正常调度
-static void s_handleFixCellularRequest(void) {
-    if (gFixCellularRunning) {
-        s_log(@"[联网修复] 修复已在执行，跳过重复请求");
-        return;
-    }
-    NSString *helper = s_resolveHelperPath();
-    if (!helper) {
-        s_log(@"[联网修复] 未找到 repro-helper，无法修复");
-        return;
-    }
-    NSString *selfBid = kAppBundleID;
-    gFixCellularRunning = YES;
-
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // 1) 等 App 退出（App 发请求后还会 notifySigningComplete 并 exit(0)）。
-        //    🔴 互斥检查必须放这里而不是主线程：请求到达时 App 的 signing-complete
-        //    还没发（gResignInProgress 仍 YES），此刻检查会误判「续签进行中」而跳过。
-        sleep(2);
-        // v1.1.131：main queue 可能因 3 应用绕过等任务拥堵导致 signing-complete 通知
-        // 延迟处理（gResignInProgress 悬挂），多等几轮（最长 15 秒）而不是直接跳过。
-        for (int i = 0; i < 3 && gResignInProgress &&
-                (time(NULL) - gResignStartTime) < 120; i++) {
-            sleep(3);
-        }
-        time_t now = time(NULL);
-        if (gResignInProgress && (now - gResignStartTime) < 120) {
-            s_log(@"[联网修复] App 仍在续签，跳过修复请求（续签优先，修复可延后）");
-            gFixCellularRunning = NO;
-            return;
-        }
-
-        // 2) 删除 auto-resign-trigger：续签刚结束时 trigger 的 timestamp 在 180 秒内，
-        //    helper 入口的续签互斥检查会直接 exit 0 跳过修复 → 必须先清掉。
-        //    （trigger 本就是 daemon 自己写的，续签已结束，删除安全）
-        [[NSFileManager defaultManager] removeItemAtPath:kTriggerPath error:nil];
-
-        // 3) 执行 fix-inter（修复联网 + 重启 SpringBoard 专用命令），拿真实退出码。
-        //    v1.1.133：不用 fix-cellular（那是 App 手动入口）；helper 全程静默，
-        //    成败只看退出码（0=CT 路径成功，非 0=失败）。
-        NSString *cmd = [NSString stringWithFormat:@"'%@' fix-inter '%@' 2>&1", helper, selfBid];
-        s_log(@"[联网修复] 执行 repro-helper fix-inter …");
-        int fixCode = s_run_cmd_status(cmd);
-        s_log(@"[联网修复] fix-inter 退出码=%d（0=策略设置成功）", fixCode);
-
-        // 4) helper 内部已 killall SpringBoard，等 SpringBoard/backboardd 就绪
-        s_log(@"[联网修复] 等待 SpringBoard 重启就绪（5 秒）…");
-        sleep(5);
-
-        // 5) 🔴 v1.1.135 重构：不再用 daemon 自身网络探测判定成败
-        //    （rootfs namespace 下 curl/ping 探测极不可靠，会误判「没修好」→
-        //    延迟/放弃重试，用户感知「修了没用」）。
-        //    改为：固定等待网络栈沉淀（共 ~20 秒：5 秒 SB + 15 秒网络），然后直接重试续签，
-        //    由 App 下一次续签的实际联网结果作为唯一判据。
-        //    🔴 滑动窗口限流：10 分钟内 ≥3 次自动修复仍失败 → 停止自动修复、回退正常调度，
-        //    避免一直 killall SpringBoard 刷屏且毫无进展。
-        s_log(@"[联网修复] 等待网络栈恢复（15 秒）…");
-        sleep(15);
-
-        if (!gFixAttempts) gFixAttempts = [NSMutableArray new];
-        [gFixAttempts addObject:@((long)time(NULL))];
-        // 仅保留最近 10 分钟内的修复记录
-        time_t cutoff = time(NULL) - 600;
-        NSMutableArray<NSNumber *> *kept = [NSMutableArray new];
-        for (NSNumber *t in gFixAttempts) {
-            if (t.longValue >= cutoff) [kept addObject:t];
-        }
-        gFixAttempts = kept;
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (gFixAttempts.count >= 3) {
-                s_log(@"[联网修复] 10 分钟内已自动修复 %lu 次仍失败 → 停止自动修复（回退正常调度，请手动检查网络/在设置中点「修复越狱联网问题」）",
-                      (unsigned long)gFixAttempts.count);
-                sd_config c = s_cfg();
-                s_reschedule((NSTimeInterval)c.minutes * 60.0);
-            } else {
-                s_log(@"[联网修复] 已应用修复策略，15 秒后重试续签（由 App 实际联网验证成败）");
-                s_reschedule(15);
-            }
-            gFixCellularRunning = NO;
-        });
-    });
+    s_start_timer(interval);
+    s_log(@"已重新调度 — 下次触发 %.0f 分钟后 (%@)",
+          interval / 60.0, nextFire);
 }
 
 // ─── 定时器管理 ─────────────────────────────────────────────────
 
 static void s_start_timer(NSTimeInterval sec) {
-    // v1.1.130：NSTimer → GCD dispatch_source timer（见 gTimerSrc 注释）
-    if (gTimerSrc) { dispatch_source_cancel(gTimerSrc); gTimerSrc = nil; }
-    dispatch_source_t src =
-        dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    gTimerSrc = src;
-    dispatch_source_set_timer(src,
-        dispatch_time(DISPATCH_TIME_NOW, (uint64_t)(sec * NSEC_PER_SEC)),
-        DISPATCH_TIME_FOREVER, (uint64_t)(2 * NSEC_PER_SEC)); // 一次性触发 + 2 秒宽松
-    dispatch_source_set_event_handler(src, ^{
+    [gTimer invalidate];
+    gTimer = [NSTimer scheduledTimerWithTimeInterval:sec repeats:NO block:^(NSTimer *t) {
         time_t n = time(NULL); if (n - gLastFire < 30) return; gLastFire = n;
         s_initiateAndReschedule();
-    });
-    dispatch_resume(src);
+    }];
     s_log(@"定时器已设定 — %.0f 秒后触发", sec);
 }
 
@@ -1183,14 +1000,8 @@ static dispatch_queue_t  gSignalQueue = nil;
 static void s_manualResign(NSString *reason) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"[%@] 自动续签已关闭，忽略本次触发", reason); return; }
-    // v1.1.130：续签前处理待修复请求（文件轮询兜底，修复流程接管后 10 秒重试续签）
-    if (s_consumeFixCellularRequestIfAny()) {
-        s_log(@"[%@] 续签让位于联网修复（修复完成后自动重试续签）", reason);
-        return;
-    }
-    // v1.1.128：低电量默认跳过续签；「低电量强制续签」开启后不跳过
-    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
-        s_log(@"[%@] 低电量模式，忽略本次触发（设置「低电量强制续签」可强制）", reason);
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
+        s_log(@"[%@] 低电量模式，忽略本次触发", reason);
         return;
     }
     if (gResignInProgress && (time(NULL) - gResignStartTime) < 120) {
@@ -1216,31 +1027,6 @@ static void s_manualResign(NSString *reason) {
 
     s_log(@"[%@] 唤醒流程结束 — 接下来应出现 App 侧日志（[AppDelegate] / [BridgeClient]）", reason);
     s_log(@"[%@] 若 30 秒内没有 App 侧日志，说明 App 没被拉起，请用 --status 查看诊断", reason);
-
-    // 🔴 v1.1.130：手动触发（SIGHUP / --resign-now）后也重算 nextFireDate 并重设定时器。
-    // 旧逻辑这里不重调度 → nextFireDate 停留在旧值（设置页显示过去时间），
-    // 且定时器未重置，下一次自动续签依赖旧的剩余间隔，行为不确定。
-    sd_config c2 = s_cfg();
-    NSTimeInterval interval = (NSTimeInterval)c2.minutes * 60.0;
-    s_reschedule(interval);
-}
-
-/// 🔴 v1.1.130：续签前检查 fix-cellular-request 请求文件（15 分钟内新鲜）。
-/// App 续签失败时写该文件并 notify daemon；notify 在 RootHide 下可能丢失，
-/// 这里文件轮询兜底——任何续签触发（定时器/解锁/亮屏/SIGHUP）都会先修再签。
-static BOOL s_consumeFixCellularRequestIfAny(void) {
-    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:kFixCellularReqPath];
-    if (!req) return NO;
-    NSTimeInterval ts = [req[@"timestamp"] doubleValue];
-    if (ts <= 0 || (time(NULL) - (time_t)ts) > 900) {
-        // 过期/非法请求：清掉，不处理
-        [[NSFileManager defaultManager] removeItemAtPath:kFixCellularReqPath error:nil];
-        return NO;
-    }
-    [[NSFileManager defaultManager] removeItemAtPath:kFixCellularReqPath error:nil];
-    s_log(@"[联网修复] 检测到待处理的修复请求（文件轮询兜底）→ 先修复再续签");
-    s_handleFixCellularRequest();   // 🔴 内部有 gFixCellularRunning 去重，三路触发只执行一次
-    return YES;
 }
 
 static void s_gracefulExit(int sig) {
@@ -1328,23 +1114,9 @@ static void s_onSigningComplete(void) {
     [result writeToFile:kResultPath atomically:YES];
     chown(kResultPath.UTF8String, 501, 501);
 
-    // 续签成功重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
+    // 续签重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
     // 通过合并计时器，2 秒后执行一次（让 installd 收尾，避免刚删又被写回）。
-    // 🔴 v1.1.133：只有续签**成功**才做 3 应用绕过——续签因网络失败时根本没签名，
-    // 做绕过是白费重活（且绕过执行前还会再查 fix-cellular-request 文件门控）。
-    if ([gLastResignStatus isEqualToString:@"成功"]) {
-        s_requestBypass(@"续签完成");
-    } else {
-        s_log(@"续签结果非成功 → 跳过 3 应用绕过（待修复联网后签名成功再做）");
-    }
-
-    // 🔴 v1.1.131：修复请求文件兜底——App 续签因网络失败时写的 fix-cellular-request，
-    // 若「com.reprovision.fix-cellular-request」notify 在 RootHide 下丢失，
-    // 每次续签结束（signing-complete）时检查补上，保证修复一定会执行。
-    if ([[NSFileManager defaultManager] fileExistsAtPath:kFixCellularReqPath]) {
-        s_log(@"[联网修复] 续签结束发现待处理的修复请求（notify 兜底）→ 执行修复");
-        s_consumeFixCellularRequestIfAny();
-    }
+    s_requestBypass(@"续签完成");
 }
 
 // ─── 3 应用绕过：合并计时器 ────────────────────────────────────
@@ -1361,15 +1133,7 @@ static void s_requestBypass(NSString *reason) {
         dispatch_source_set_event_handler(s_bypassTimer, ^{
             dispatch_source_cancel(s_bypassTimer);
             s_bypassTimer = NULL;
-            NSString *bypassReason = s_bypassReason;
-            // 🔴 v1.1.131：3 应用绕过枚举很重（遍历全部应用容器递归扫 xattr，
-            // 实测约几十秒），在 main queue 同步跑会堵死 daemon 主线程 →
-            // 续签定时器（「5 秒后立即执行」从不触发，#1 永远是 SIGHUP）与
-            // fix-cellular-request 修复请求（App 已发但 daemon 不执行、一直报
-            // 联不上网）全部排队瘫痪。移后台线程执行，main queue 只做轻量调度。
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                s_bypass3AppLimitIfEnabled(bypassReason);
-            });
+            s_bypass3AppLimitIfEnabled(s_bypassReason);
         });
         dispatch_resume(s_bypassTimer);
     }
@@ -1572,13 +1336,6 @@ int main(int argc, char *argv[]) {
         s_onSigningComplete();
     });
 
-    // 续签因网络权限丢失失败 → daemon 修复联网 → 立即重试续签（v1.1.129）
-    int t4; notify_register_dispatch("com.reprovision.fix-cellular-request", &t4,
-        dispatch_get_main_queue(), ^(int _){
-        s_log(@"[联网修复] 收到 App 的 fix-cellular-request（续签网络失败）");
-        s_handleFixCellularRequest();
-    });
-
     // ★ App 每完成一个应用的签名安装就发一次，daemon 立即解除 3 应用限制。
     //   前台手动签名 / IPA 导入安装 / 其它应用签名 / 后台续签 全部走这条通道。
     //   2 秒延迟让 installd 把 xattr 写完再删，避免竞态。
@@ -1592,9 +1349,6 @@ int main(int argc, char *argv[]) {
     s_requestBypass(@"daemon 启动");
 
     s_log(@"进入主循环（等待定时器/SIGHUP/解锁/亮屏触发）");
-    // 🔴 v1.1.130：改 dispatch_main() 跑 GCD 主队列。旧版 [[NSRunLoop mainRunLoop] run]
-    // 在越狱/RootHide daemon 环境下 NSTimer 从不触发（实测日志 5 秒定时器无动作），
-    // GCD 主队列事件（dispatch timer / notify_register_dispatch / 信号 source）才可靠。
-    dispatch_main();
+    [[NSRunLoop mainRunLoop] run];
     return 0;
 }

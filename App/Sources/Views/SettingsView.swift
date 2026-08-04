@@ -14,13 +14,6 @@ struct SettingsView: View {
     // 键名必须与 repro-signingd.m 的 s_bypassEnabled() 读取的键一致。
     @AppStorage("bypassFreeAppLimit") private var bypassFreeAppLimit: Bool = false
 
-    // v1.1.128：低电量强制续签。键名必须与 repro-signingd.m 的 s_parseCfg() 读取的键一致。
-    @AppStorage("forceResignLowPower") private var forceResignLowPower: Bool = false
-    /// 下次自动续签时间（signingd 持久化在 signingd-state.plist 的 nextFireDate）。
-    /// v1.1.129：详细 24 小时制 yyyy-MM-dd HH:mm:ss + 副行剩余倒计时，每 30 秒自动刷新
-    @State private var nextResignTimeText: String = "—"
-    @State private var nextResignCountdownText: String = "等待 daemon 调度…"
-
     // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
     @AppStorage("notificationsDebug") private var notificationsDebug: Bool = false
@@ -68,10 +61,6 @@ struct SettingsView: View {
     @State private var showingSignOutAlert = false
     @State private var showingCertificates = false
     @State private var zsignPath: String?
-    /// 越狱联网修复（国行蜂窝/WiFi 权限重置）：执行中标记 + 结果弹窗
-    @State private var isFixingCellular = false
-    @State private var fixCellularMessage: String?
-    @State private var showFixCellularAlert = false
 
     var body: some View {
         NavigationView {
@@ -79,7 +68,6 @@ struct SettingsView: View {
                 accountSection
                 autoResignSection
                 freeLimitSection
-                networkFixSection
                 blacklistSection
                 notificationSection
                 signingBackendSection
@@ -98,7 +86,6 @@ struct SettingsView: View {
             .onChange(of: autoResign) { _ in needsConfigSync = true }
             .onChange(of: checkIntervalMin) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
-            .onChange(of: forceResignLowPower) { _ in needsConfigSync = true }
             .onChange(of: account.isSignedIn) { signedIn in
                 // 退出登录后，重置登录前输入框（带已保存凭据预填）与显示开关
                 if !signedIn {
@@ -137,11 +124,6 @@ struct SettingsView: View {
                 Button("清理", role: .destructive) { clearDaemonLog() }
             } message: {
                 Text("确定要清空 reprorefresh_at.log 吗？此操作不可撤销。")
-            }
-            .alert("修复越狱联网问题", isPresented: $showFixCellularAlert) {
-                Button("知道了", role: .cancel) {}
-            } message: {
-                Text(fixCellularMessage ?? "")
             }
             .sheet(isPresented: $showingTeamSheet) { teamSheet }
         }
@@ -266,30 +248,6 @@ struct SettingsView: View {
             Toggle("启用自动重签", isOn: $autoResign)
             Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...7)
 
-            // v1.1.128：低电量强制续签（原版 ReProvision 默认低电量跳过；开启后不跳过）
-            Toggle("低电量强制续签", isOn: $forceResignLowPower)
-
-            // v1.1.128：展示 daemon 持久化的下一次自动续签时间（signingd-state.plist）
-            // v1.1.129：详细 24 小时制 + 副行倒计时，.task 每 30 秒自动刷新
-            HStack(alignment: .firstTextBaseline) {
-                Text("下次自动续签")
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(nextResignTimeText)
-                        .foregroundColor(.secondary)
-                        .onAppear { refreshNextResignTime() }
-                    Text(nextResignCountdownText)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .task {
-                    while !Task.isCancelled {
-                        refreshNextResignTime()
-                        try? await Task.sleep(nanoseconds: 30_000_000_000)
-                    }
-                }
-            }
-
             // 展开式间隔选择
             Button {
                 withAnimation { showIntervalPicker.toggle() }
@@ -376,56 +334,6 @@ struct SettingsView: View {
                 }
         } header: {
             Text("免费账号限制")
-        }
-    }
-
-    // MARK: - 越狱联网修复（国行蜂窝/WiFi 权限重置）
-
-    private var networkFixSection: some View {
-        Section {
-            Button {
-                fixCellularTapped()
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.title3)
-                        .foregroundColor(.blue)
-                        .frame(width: 32)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("修复越狱联网问题")
-                            .font(.body)
-                            .foregroundColor(.primary)
-                        Text("越狱后部分插件及应用无法联网（国行「允许使用数据」授权丢失）时，重置所有应用的蜂窝/WiFi 数据策略为「始终允许」，并重启 SpringBoard 生效。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Spacer()
-
-                    if isFixingCellular {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                    } else {
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .disabled(isFixingCellular)
-        } header: {
-            Text("联网修复")
-        }
-    }
-
-    private func fixCellularTapped() {
-        guard !isFixingCellular else { return }
-        isFixingCellular = true
-        RPVBridge.sharedInstance().fixCellularData { success, message in
-            isFixingCellular = false
-            fixCellularMessage = message ?? (success ? "修复完成" : "修复失败")
-            showFixCellularAlert = true
         }
     }
 
@@ -521,37 +429,6 @@ struct SettingsView: View {
         if hours == 0 { return "\(mins) 分钟" }
         if mins == 0 { return "\(hours) 小时" }
         return "\(hours) 小时 \(mins) 分钟"
-    }
-
-    /// 读取 repro-signingd 持久化的下次续签时间（signingd-state.plist 的 nextFireDate）。
-    /// v1.1.129：像原版 ReProvision（NSDateFormatter MediumStyle）一样显示完整日期时间，
-    /// 但强制 24 小时制（en_US_POSIX locale + 自定义格式，不受系统 12/24 小时设置影响），
-    /// 副行显示剩余倒计时；页面可见时每 30 秒自动刷新。
-    private func refreshNextResignTime() {
-        let statePath = "/var/mobile/Library/RePro/signingd-state.plist"
-        guard let d = NSDictionary(contentsOfFile: statePath),
-              let next = d["nextFireDate"] as? Date else {
-            nextResignTimeText = "—"
-            nextResignCountdownText = "等待 daemon 调度…"
-            return
-        }
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
-
-        let remain = next.timeIntervalSinceNow
-        if remain > 0 {
-            nextResignTimeText = fmt.string(from: next)
-            let totalSec = Int(remain)
-            let mins = totalSec / 60
-            let secs = totalSec % 60
-            nextResignCountdownText = mins > 0 ? "约 \(mins) 分 \(secs) 秒后触发" : "\(secs) 秒后触发"
-        } else {
-            // v1.1.130：过期/已触发后不再显示过去的完整时间（易误读），
-            // 显示「等待 daemon 调度…」——daemon 启动时会按过期处理并立即续签
-            nextResignTimeText = "等待 daemon 调度…"
-            nextResignCountdownText = "即将触发…"
-        }
     }
 
     // MARK: - 签名后端
@@ -756,8 +633,6 @@ struct SettingsView: View {
 
     /// 登录失败统一处理：网络/超时类错误自动重试（最多 loginMaxRetries 次）；
     /// 账号/密码类错误直接报错，不重试以免死循环。
-    /// v1.1.125：首次网络/超时失败时**静默执行越狱联网修复**（无任何提示、10 分钟防抖）。
-    /// 修复会重启 SpringBoard 使蜂窝策略生效 → App 进程随之结束，用户重新打开即可。
     private func handleLoginFailure(reason: String, retryCount: Int) {
         let lower = reason.lowercased()
         let isNetworkish = reason.contains("超时") || reason.contains("timeout") || reason.contains("timed out")
@@ -768,54 +643,18 @@ struct SettingsView: View {
         let isCredential = reason.contains("密码") || lower.contains("incorrect")
             || reason.contains("不正确") || reason.contains("app-specific")
             || reason.contains("验证") || reason.contains("2fa")
-        if isNetworkish && !isCredential {
-            // 首次网络失败：静默修复越狱联网（防抖 10 分钟）。修复重启 SpringBoard，
-            // App 会被系统杀掉，后续重试无意义，直接结束本次登录流程。
-            if retryCount == 0 && silentFixCellularOnNetworkError() {
-                // 🔇 完全静默：无日志、无提示。置位结束登录状态，避免界面残留「正在登录」。
-                isLoggingIn = false
-                loginSucceeded = false
-                return
+        if isNetworkish && !isCredential && retryCount < loginMaxRetries {
+            let next = retryCount + 1
+            LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+                self.attemptLogin(retryCount: next)
             }
-            if retryCount < loginMaxRetries {
-                let next = retryCount + 1
-                LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
-                    self.attemptLogin(retryCount: next)
-                }
-                return
-            }
+            return
         }
         isLoggingIn = false
         loginSucceeded = false
         loginMessage = "登录失败: \(reason)"
         LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
-    }
-
-    /// 静默执行越狱联网修复（无任何 UI 提示）。返回是否真的触发了修复。
-    /// 防抖：10 分钟内不重复触发（避免登录失败就反复重启 SpringBoard）。
-    /// v1.1.127：🔴 续签互斥——daemon 静默续签进行中则跳过（killall SpringBoard
-    /// 会杀掉正在后台签名的 App）。跳过时不写防抖时间戳，下次登录失败仍可触发。
-    private func silentFixCellularOnNetworkError() -> Bool {
-        // 🔴 续签互斥：daemon 续签进行中（trigger 文件 180 秒内）→ 不修复
-        let triggerPath = "/var/mobile/Library/RePro/auto-resign-trigger"
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: triggerPath),
-           let mtime = attrs[.modificationDate] as? Date,
-           Date().timeIntervalSince(mtime) < 180 {
-            return false
-        }
-
-        let d = UserDefaults.standard
-        let now = Date().timeIntervalSince1970
-        let last = d.double(forKey: "lastSilentFixCellularTime")
-        guard now - last > 600 else { return false }
-        d.set(now, forKey: "lastSilentFixCellularTime")
-
-        // 静默执行：无弹窗、无 ProgressView、无完成回调 UI
-        RPVBridge.sharedInstance().fixCellularData { _, _ in
-            // 修复会 killall SpringBoard，App 进程随之结束；这里不需要任何 UI 处理
-        }
-        return true
     }
 
     private func selectTeam(_ team: DeveloperTeam) {

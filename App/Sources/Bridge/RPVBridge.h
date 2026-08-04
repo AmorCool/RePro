@@ -215,14 +215,6 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
                        useMainProfileForExtensions:(BOOL)useMain
     NS_SWIFT_NAME(setExtensionImportOptions(removeExtensions:useMainProfile:));
 
-#pragma mark 蜂窝数据修复（国行越狱联网）
-
-/// 修复国行越狱后蜂窝数据无法上网：经 root helper（repro-helper fix-cellular）
-/// 遍历已安装应用，把每个应用的蜂窝/WiFi 数据策略重置为「始终允许」，并重启
-/// SpringBoard 生效（UI 会短暂重载）。回调在主队列。
-- (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion
-    NS_SWIFT_NAME(fixCellularData(completion:));
-
 #pragma mark 环境体检
 
 /// 采集运行环境快照（磁盘 IO 在后台队列，回调在主队列）

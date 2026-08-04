@@ -198,8 +198,7 @@ jobs:
 
       - name: Build signing daemon (repro-signingd)
         # repro-signingd 是后台定时续签守护进程。由 launchd 在系统启动时
-        # 拉起（RunAtLoad + KeepAlive），用 GCD dispatch timer 定时检查是否需要续签
-        # （v1.1.130 起，原 NSTimer 在越狱 daemon 环境实测不触发），
+        # 拉起（RunAtLoad + KeepAlive），用 NSTimer 定时检查是否需要续签，
         # 通过 notify_post + 共享文件通知 App 执行自动续签。
         run: |
           set -e

@@ -22,12 +22,6 @@ NS_ASSUME_NONNULL_BEGIN
 /// daemon 侧仍会再判断一次设置开关（bypassFreeAppLimit），关着就不动。
 + (void)notifyBypass3AppRequest;
 
-/// 续签因网络权限丢失失败 → 请求 repro-signingd 执行「修复越狱联网并立即重试续签」。
-/// 修复动作必须由 daemon（rootfs LaunchDaemon）做：App 自己调 helper 的话，
-/// killall SpringBoard 会杀掉 App，而 daemon 下一轮定时器要等一个完整检查间隔才触发，
-/// 链路断裂（v1.1.129）。
-+ (void)notifyFixCellularRequest;
-
 @end
 
 NS_ASSUME_NONNULL_END
