@@ -2,7 +2,7 @@ Package: jp.soh.reprovision
 Name: ReSign
 Description: Re-signing tool for iOS jailbreak(iOS17+)
 Depends: firmware (>= 13.0), zip, unzip
-Version: 1.1.154~release
+Version: 1.1.155~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm

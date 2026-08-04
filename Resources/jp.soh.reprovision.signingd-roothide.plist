@@ -17,8 +17,14 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
-	<key>KeepAlive</key>
-	<true/>
+	<!-- v1.1.155 短命化：去掉 KeepAlive，改由 StartCalendarInterval 每 5 分钟拉起一次。
+	     见 Resources/jp.soh.reprovision.signingd.plist 注释（iOS 17 "inefficient"
+	     SIGKILL 杀循环 → 短命进程绕开 + RootHide 常驻泄漏无累积机会）。 -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Minute</key>
+		<integer>5</integer>
+	</dict>
 	<!-- v1.1.150 方案B：崩溃后至少间隔 30 秒才允许再次拉起。
 	     防「崩溃→立即拉起→再崩溃」循环反复执行 launchd 注入逻辑
 	     （roothide launchdhook 每次拉起都会在 launchd 里跑一轮）。 -->

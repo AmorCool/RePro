@@ -18,26 +18,27 @@
 //    已新增 Resources/entitlements-signingd{,-roothide}.plist 并接入 CI。
 //
 //  核心能力：
-//    1. 定时器自动续签（可配置间隔，默认 2 小时）
-//    2. 屏幕解锁触发（锁屏期间到期 → 解锁时立即执行）
-//    3. 屏幕亮起触发（即将到期 ≤5s → 立即执行）
-//    4. 低电量模式跳过
-//    5. nextFireDate 持久化（daemon 重启后不丢失调度状态）
-//    6. --resign-now 手动触发（同步执行，等待完成）
-//    7. SIGHUP 信号触发续签（不退出 daemon）
-//    8. 主动唤醒 App 到后台执行静默续签
-//    9. ★ BKSProcessAssertion 保活（防止 App 被系统挂起）
-//   10. ★ IOPMSchedulePowerEvent 系统级唤醒（锁屏时也能准时触发）
-//   11. v1.1.95 解除免费账号「同一设备最多 3 个自签应用」限制
+//    1. 🔴 v1.1.155 起「短命模式」：launchd StartCalendarInterval 每 5 分钟拉起一次，
+//       每次启动立即做一轮到期检查 → 需要续签则唤醒 App 并等待其完成 → 退出。
+//       进程不再 KeepAlive 常驻 → 绕开 iOS 17 launchd "inefficient" SIGKILL 杀循环，
+//       也让 RootHide XPC 拦截器的常驻泄漏彻底没有累积机会（一石二鸟）。
+//    2. 到期检查：读 App 配置（间隔/阈值/开关）+ 24h 冷却（last-resign-result.plist）
+//    3. 低电量模式跳过
+//    4. --resign-now 手动触发（同步执行，等待完成）★ 手动触发的推荐方式
+//    5. SIGHUP 信号触发续签（仅进程存活期间有效，短命模式不保证）
+//    6. 主动唤醒 App 到后台执行静默续签
+//    7. ★ BKSProcessAssertion 保活（等待 App 完成期间防止被系统挂起）
+//    8. v1.1.95 解除免费账号「同一设备最多 3 个自签应用」限制
 //          （删除 .app 目录上的 com.apple.installd.validatedByFreeProfile 扩展属性，
 //           参考 rooootdev/Lara；每次签名/续签完成后自动执行，需在 App 设置里开启）
 //
 //  架构说明（与 test2 reprovisiond 一致）：
 //    Daemon 本身不执行签名操作（签名需要 zsign + 凭证访问 + 网络请求）。
-//    Daemon 的角色是「调度器 + 唤醒器 + 保活管理者」：
-//      定时器/解锁/亮屏/SIGHUP → 写 trigger 标记 → SBSLaunchApplication 唤醒 App 到后台
+//    Daemon 的角色是「短命调度器 + 唤醒器 + 保活管理者」：
+//      launchd 定时拉起 → 冷却检查 → 写 trigger 标记 → SBSLaunchApplication 唤醒 App 到后台
 //      → BKSProcessAssertion 防止 App 被挂起 → App 执行 silentResignAndExit → exit(0)
-//    用户全程无需手动打开 App。
+//      → App 完成时 notify("com.reprovision.signing-complete") → daemon 写 lastResignTime → 退出
+//    用户全程无需手动打开 App；设备深睡错过调度会在唤醒后由 launchd 立即补执行。
 //
 //  日志: fopen/fprintf 同步写入 <jbroot>/var/log/reprorefresh_at.log
 //  日志文件被删除后会自动检测并重新创建（fstat nlink 检查）
@@ -58,7 +59,6 @@
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
 static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
 static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";
-static NSString *const kStatePath   = @"/var/mobile/Library/RePro/signingd-state.plist";
 static NSString *const kResultPath  = @"/var/mobile/Library/RePro/last-resign-result.plist";
 static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
 // ⚠️ v1.1.69 关键修复：此前此处写成 @"jp.soh.reprovision"，但 App 真实的
@@ -92,16 +92,8 @@ static const NSInteger  kMaxThresholdDays = 6;
 
 static FILE     *gLogFile   = NULL;
 static NSString *sLogPath   = nil;   // v1.1.152：实际写入的文件路径（调试/--status 用）
-static NSTimer  *gTimer     = nil;
-static time_t    gLastFire  = 0;
-static BOOL      gUpdateQueuedForUnlock = NO;
-static int gLockStateToken = 0;
-static int gBacklightToken = 0;
-
-// ─── 续签状态跟踪 ────────────────────────────────────────────
-// 用于判断续签是否真的成功：记录每次续签的开始/结束时间和状态
-static time_t     gResignStartTime = 0;       // 本次续签开始时间
-static BOOL       gResignInProgress = NO;     // 是否有续签正在进行
+static time_t    gResignStartTime = 0;       // 本次续签开始时间
+static BOOL      gResignInProgress = NO;     // 是否有续签正在进行
 
 // ─── 内存看门狗（v1.1.150+：RootHide 拦截器泄漏自救，方案A）────────────────
 // 背景：RootHide 的 systemhook/XPC 拦截器在常驻进程里持续泄漏内存，本 daemon
@@ -579,26 +571,7 @@ static void s_bypass3AppLimitIfEnabled(NSString *reason) {
     s_bypass3AppLimit(reason);
 }
 
-// ─── 状态持久化（nextFireDate） ──────────────────────────────────
-
-static NSDate *s_getNextFireDate(void) {
-    NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:kStatePath];
-    if (!state) return nil;
-    return state[@"nextFireDate"];
-}
-
-static void s_setNextFireDate(NSDate *date) {
-    if (!date) return;
-    [@{@"nextFireDate": date} writeToFile:kStatePath atomically:YES];
-    chown(kStatePath.UTF8String, 501, 501);
-}
-
-static void s_clearNextFireDate(void) {
-    [[NSFileManager defaultManager] removeItemAtPath:kStatePath error:nil];
-}
-
 // 前向声明
-static void s_start_timer(NSTimeInterval sec);
 static void s_requestBypass(NSString *reason);
 
 // ─── 唤醒 App 到后台执行静默续签（含保活 + 系统唤醒） ────────
@@ -961,14 +934,16 @@ static BOOL s_launchAppInBackground(void) {
 }
 
 // ─── 触发 ────────────────────────────────────────────────────────
+// v1.1.155 起返回 BOOL：YES=已真正触发续签（调用方需等待 App 完成）；
+// NO=本轮跳过（开关关闭/低电量/24h 冷却中），调用方应立即退出。
 
-static void s_fire(void) {
+static BOOL s_fire(void) {
     sd_config c = s_cfg();
-    if (!c.enabled) { s_log(@"自动续签已关闭，跳过"); return; }
+    if (!c.enabled) { s_log(@"自动续签已关闭，跳过"); return NO; }
 
     if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
         s_log(@"低电量模式，跳过续签");
-        return;
+        return NO;
     }
 
     // 🔴 v1.1.147+：续签冷却 —— 距上次续签完成不足 24 小时直接跳过（连 App 都不拉起）。
@@ -983,7 +958,7 @@ static void s_fire(void) {
     if (lastTs > 0 && (time(NULL) - (time_t)lastTs) < kResignCooldown) {
         s_log(@"距上次续签 %.1f 小时 < 24h，跳过本次触发（冷却期）",
               (time(NULL) - (time_t)lastTs) / 3600.0);
-        return;
+        return NO;
     }
 
     // 记录续签开始
@@ -1006,122 +981,7 @@ static void s_fire(void) {
         notify_post("com.reprovision.schedule-resign");
         s_log(@"触发续签 — 阈值 %ld 天（降级为 notify_post）", (long)c.days);
     }
-}
-
-/// 执行一次完整的重签周期，然后重新设定时器
-static void s_initiateAndReschedule(void) {
-    s_fire();
-
-    sd_config c = s_cfg();
-    NSTimeInterval interval = (NSTimeInterval)c.minutes * 60.0;
-
-    NSDate *nextFire = [[NSDate date] dateByAddingTimeInterval:interval];
-    s_setNextFireDate(nextFire);
-
-    s_start_timer(interval);
-    s_log(@"已重新调度 — 下次触发 %.0f 分钟后 (%@)",
-          interval / 60.0, nextFire);
-}
-
-// ─── 定时器管理 ─────────────────────────────────────────────────
-
-static void s_start_timer(NSTimeInterval sec) {
-    [gTimer invalidate];
-    gTimer = [NSTimer scheduledTimerWithTimeInterval:sec repeats:NO block:^(NSTimer *t) {
-        time_t n = time(NULL); if (n - gLastFire < 30) return; gLastFire = n;
-        s_initiateAndReschedule();
-    }];
-    s_log(@"定时器已设定 — %.0f 秒后触发", sec);
-}
-
-static void s_startSigningTimer(void) {
-    NSDate *savedNextFire = s_getNextFireDate();
-    NSTimeInterval defaultInterval = (NSTimeInterval)s_cfg().minutes * 60.0;
-    NSTimeInterval interval = defaultInterval;
-
-    if (savedNextFire) {
-        interval = [savedNextFire timeIntervalSinceNow];
-        if (interval < 0) {
-            s_log(@"保存的触发时间已过期，5 秒后立即执行");
-            interval = 5;
-        } else {
-            s_log(@"从持久化恢复 — %.0f 秒后触发 (%@)", interval, savedNextFire);
-        }
-    } else {
-        // v1.1.64：首次启动也要把 nextFireDate 落盘。
-        // 旧版这里不写，导致「亮屏」回调读不到 nextFireDate，
-        // 每次点亮屏幕都把定时器重置成完整的一个间隔 →
-        // 如果间隔设得比较长，用户频繁亮屏就永远等不到触发。
-        NSDate *next = [NSDate dateWithTimeIntervalSinceNow:interval];
-        s_setNextFireDate(next);
-        s_log(@"首次调度 — %.0f 分钟后触发 (%@)", interval / 60.0, next);
-    }
-
-    s_start_timer(interval);
-}
-
-// ─── 屏幕解锁 / 亮屏检测 ────────────────────────────────────────
-
-static void sb_didUIUnlockNotification(void) {
-    s_log(@"设备解锁");
-
-    if (gUpdateQueuedForUnlock) {
-        gUpdateQueuedForUnlock = NO;
-        s_log(@"锁屏期间有到期任务 → 立即执行续签");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            s_initiateAndReschedule();
-        });
-    }
-}
-
-static void bb_backlightChanged(int state) {
-    if (state > 0) {
-        s_log(@"屏幕亮起");
-
-        NSDate *nextFire = s_getNextFireDate();
-        if (nextFire) {
-            NSTimeInterval remaining = [nextFire timeIntervalSinceNow];
-            if (remaining <= 5) {
-                s_log(@"即将到期 (%.0fs remaining) → 立即触发", remaining);
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    s_initiateAndReschedule();
-                });
-                return;
-            }
-            s_log(@"未到期 — 重设剩余 %.0f 秒", remaining);
-            s_start_timer(remaining);
-        } else {
-            s_startSigningTimer();
-        }
-    } else {
-        // v1.1.64 修复：旧版在这里 invalidate 掉定时器「省电」，
-        // 但 IOPM 系统级唤醒在越狱环境下经常失败（见 s_scheduleSystemWake），
-        // 一旦唤醒没排上，锁屏期间就彻底没有任何触发源，
-        // 必须等用户主动点亮屏幕才会重新调度 —— 这跟「脱离 App 自动续签」的目标直接冲突。
-        // 现在熄屏保留定时器：设备浅睡时它照样能到点触发，深睡则在唤醒后立刻补触发。
-        NSDate *next = s_getNextFireDate();
-        s_log(@"屏幕熄灭 — 定时器继续保留 (下次触发 %@)", next ?: @"未记录");
-    }
-}
-
-static void s_setupNotifyPosts(void) {
-    notify_register_dispatch("com.apple.springboard.lockstate", &gLockStateToken,
-        dispatch_get_main_queue(), ^(int token) {
-        uint64_t state = 0;
-        notify_get_state(token, &state);
-        if (state == 0) { sb_didUIUnlockNotification(); }
-    });
-
-    notify_register_dispatch("com.apple.backboardd.backlight.changed", &gBacklightToken,
-        dispatch_get_main_queue(), ^(int token) {
-        uint64_t state = 0;
-        notify_get_state(token, &state);
-        bb_backlightChanged((int)state);
-    });
-
-    s_log(@"已注册屏幕解锁/背光监听");
+    return YES;
 }
 
 // ─── 信号处理 ─────────────────────────────────────────────────────
@@ -1257,6 +1117,12 @@ static void s_onSigningComplete(void) {
     // 续签重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
     // 通过合并计时器，2 秒后执行一次（让 installd 收尾，避免刚删又被写回）。
     s_requestBypass(@"续签完成");
+
+    // 🔴 v1.1.155 短命模式：收到 App 完成回报 → 本轮拉起使命结束，立即退出。
+    // （launchd StartCalendarInterval 会定时再拉起；不再 KeepAlive 常驻 →
+    //  绕开 iOS 17 "inefficient" SIGKILL 杀循环 + RootHide 拦截器常驻泄漏。）
+    if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
+    _exit(0);
 }
 
 // ─── 3 应用绕过：合并计时器 ────────────────────────────────────
@@ -1331,14 +1197,8 @@ static int s_printStatus(void) {
                marked > 0 ? "（≥3 个会触发限制，可 --bypass-3app 手动解除）" : "");
     }
 
-    // 3. 下次计划触发
-    NSDate *next = s_getNextFireDate();
-    if (next) {
-        printf("下次计划触发     : %s (%.1f 分钟后)\n",
-               next.description.UTF8String, [next timeIntervalSinceNow] / 60.0);
-    } else {
-        printf("下次计划触发     : 未记录\n");
-    }
+    // 3. 下次触发（v1.1.155 短命模式：launchd StartCalendarInterval 每 5 分钟拉起一次）
+    printf("下次触发         : launchd 每 5 分钟拉起一次（无需常驻进程）\n");
 
     // 4. 最近一次「触发」（daemon 写 trigger 的时间）
     NSDictionary *trg = [NSDictionary dictionaryWithContentsOfFile:kTriggerPath];
@@ -1420,22 +1280,25 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    // ── 正常守护模式 ──
+    // ── 正常守护模式（v1.1.155 短命化） ──
+    // 由 launchd StartCalendarInterval 每 5 分钟拉起一次（+ RunAtLoad 开机一次）。
+    // 每次拉起：做一轮到期检查 → 需要续签则唤醒 App 并等待其完成 → 退出。
+    // 进程不再常驻 → 绕开 iOS 17 launchd "inefficient" SIGKILL 杀循环，
+    // 也让 RootHide XPC 拦截器的常驻泄漏彻底没有累积机会。
     s_log(@"========================================");
-    s_log(@"=== 启动 pid=%d uid=%d ===", getpid(), getuid());
+    s_log(@"=== 启动 pid=%d uid=%d（短命模式，本轮做完即退出）===", getpid(), getuid());
     s_log(@"管理命令:");
     s_log(@"  sudo /usr/libexec/repro-signingd --status      ← 查看是否真的续签了（推荐先看这个）");
-    s_log(@"  sudo killall -HUP repro-signingd              ← 手动触发续签（daemon 不会退出）");
-    s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 同步手动触发（前台看完整输出）");
+    s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 手动触发续签（同步等待完成，推荐）");
     s_log(@"  sudo /usr/libexec/repro-signingd --bypass-3app ← 手动解除免费账号 3 应用限制");
-    s_log(@"  sudo launchctl kickstart -k system/jp.soh.reprovision.signingd  ← 重启 daemon");
+    s_log(@"  sudo launchctl kickstart -k system/jp.soh.reprovision.signingd  ← 立即拉起一轮");
     s_log(@"========================================");
     s_setup_signal_handlers();
 
     // v1.1.150：崩溃循环检测（方案C）——10 分钟内反复被拉起 → 告警疑似 RootHide hook 问题
     s_checkCrashLoop();
 
-    // v1.1.150/151：内存看门狗（方案A）——超 400MB 主动退出，清 RootHide 拦截器泄漏
+    // v1.1.150/151：内存看门狗（方案A）——防等待 App 期间（最长 5 分钟）RootHide 拦截器泄漏
     s_startMemWatchdog();
 
     // v1.1.67：启动时自检自身 entitlement + namespace（每次触发也会再打印）
@@ -1455,28 +1318,10 @@ int main(int argc, char *argv[]) {
     s_log(@"配置: 自动=%@ 间隔=%ld分 阈值=%ld天",
           c.enabled ? @"是" : @"否", (long)c.minutes, (long)c.days);
     s_log(@"BundleID: %@ | 触发路径: %@", kAppBundleID, kTriggerPath);
-    s_log(@"架构: Daemon(调度+唤醒+保活) → App(后台静默签名) → exit(0)");
-    s_log(@"      用户无需手动打开 App");
+    s_log(@"架构: Daemon(短命检查+唤醒+保活) → App(后台静默签名) → daemon 退出");
+    s_log(@"      launchd 每 5 分钟重新拉起，用户无需手动打开 App");
 
-    // 注册系统通知监听
-    s_setupNotifyPosts();
-
-    // 启动定时器
-    // ⚠️ v1.1.66 修复：旧版在 s_startSigningTimer() 之外，又无条件在启动 5 秒后
-    //    调一次 s_fire()，完全无视持久化的 nextFireDate。结果每次 daemon 重启
-    //    （包括 deb 重装）都立刻尝试续签 → 在 RootHide 下必然 result=7 失败刷屏。
-    //    s_startSigningTimer() 已经处理了「过期即 5 秒后触发」「未过期则按间隔等待」，
-    //    这里绝不该再额外触发一次。删除该冗余 dispatch。
-    s_startSigningTimer();
-
-    // 配置变更通知
-    int t; notify_register_dispatch("com.reprovision.signingd-config-updated", &t,
-        dispatch_get_main_queue(), ^(int _){
-        s_log(@"配置变更 → 重读并重设定时器");
-        s_startSigningTimer();
-    });
-
-    // 续签完成通知 → 更新统计 + 释放 BKS
+    // 续签完成通知 → 更新统计 + 释放 BKS + 退出本轮
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
         dispatch_get_main_queue(), ^(int _){
         s_onSigningComplete();
@@ -1491,10 +1336,26 @@ int main(int argc, char *argv[]) {
         s_requestBypass(@"App 签名完成");
     });
 
-    // 启动时先跑一次：覆盖 daemon 未运行期间（重启后 / 刚装完 deb）新装的应用
+    // 本轮先清一次 3 应用标记（覆盖 daemon 未运行期间新装/重签的应用）
     s_requestBypass(@"daemon 启动");
 
-    s_log(@"进入主循环（等待定时器/SIGHUP/解锁/亮屏触发）");
+    // ── 核心：立即执行一轮到期检查 ──
+    // （不再需要常驻定时器/解锁/亮屏监听——launchd 每 5 分钟拉起天然覆盖，
+    //   设备深睡错过调度会在唤醒后立即补执行。）
+    BOOL fired = s_fire();
+    if (!fired) {
+        s_log(@"本轮检查无需续签（开关关闭/低电量/24h 冷却中）→ 立即退出，下次由 launchd 拉起");
+        s_gracefulExit(0);
+        return 0;
+    }
+
+    // 已触发续签：等待 App 完成（signing-complete notify）或 5 分钟超时，避免进程常驻。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * 60 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s_log(@"⚠️ 等待 App 完成超时(5 分钟) → 本轮退出，下次由 launchd 拉起（App 侧会自行兜底写入冷却时间）");
+        s_gracefulExit(0);
+    });
+    s_log(@"已触发续签，等待 App 完成（最多 5 分钟，完成或超时即退出）");
     [[NSRunLoop mainRunLoop] run];
     return 0;
 }

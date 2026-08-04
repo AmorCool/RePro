@@ -269,6 +269,23 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         sendResignNotification(success: success, errorText: errorText)
 
+        // 🔴 v1.1.155 双保险：daemon 已改「短命模式」（每 5 分钟拉起，等 App 完成或 5 分钟
+        // 超时即退出）。若 daemon 超时先退，App 的 signing-complete notify 会无人接收 →
+        // lastResignTime 不被更新 → 下次拉起冷却误判。因此 App 完成续签后自己写入冷却基准文件。
+        // （daemon 收到 notify 后会以完整统计覆盖此文件，两版 key 兼容。）
+        let lastResult: [String: Any] = [
+            "lastResignTime": Date().timeIntervalSince1970,
+            "status": success ? "success" : "failed",
+            "detail": errorText,
+            "appReport": [
+                "result": success ? "success" : "failed",
+                "elapsed": elapsed,
+                "detail": errorText.isEmpty ? "阈值内的到期应用已处理完毕" : errorText,
+                "trigger": "daemon-background-launch",
+            ],
+        ]
+        (lastResult as NSDictionary).write(toFile: "\(Self.ipcDir)/last-resign-result.plist", atomically: true)
+
         RPVSigningdNotify.notifySigningComplete()
         LogManager.shared.info("══════ 续签结束，已回报 daemon ══════", source: "AppDelegate")
         DaemonLogStop()
