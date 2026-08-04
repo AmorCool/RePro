@@ -14,6 +14,13 @@ struct SettingsView: View {
     // 键名必须与 repro-signingd.m 的 s_bypassEnabled() 读取的键一致。
     @AppStorage("bypassFreeAppLimit") private var bypassFreeAppLimit: Bool = false
 
+    // v1.1.128：低电量强制续签。键名必须与 repro-signingd.m 的 s_parseCfg() 读取的键一致。
+    @AppStorage("forceResignLowPower") private var forceResignLowPower: Bool = false
+    /// 下次自动续签时间（signingd 持久化在 signingd-state.plist 的 nextFireDate）。
+    /// v1.1.129：详细 24 小时制 yyyy-MM-dd HH:mm:ss + 副行剩余倒计时，每 30 秒自动刷新
+    @State private var nextResignTimeText: String = "—"
+    @State private var nextResignCountdownText: String = "等待 daemon 调度…"
+
     // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
     @AppStorage("notificationsDebug") private var notificationsDebug: Bool = false
@@ -86,6 +93,7 @@ struct SettingsView: View {
             .onChange(of: autoResign) { _ in needsConfigSync = true }
             .onChange(of: checkIntervalMin) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
+            .onChange(of: forceResignLowPower) { _ in needsConfigSync = true }
             .onChange(of: account.isSignedIn) { signedIn in
                 // 退出登录后，重置登录前输入框（带已保存凭据预填）与显示开关
                 if !signedIn {
@@ -247,6 +255,30 @@ struct SettingsView: View {
         Section {
             Toggle("启用自动重签", isOn: $autoResign)
             Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...7)
+
+            // v1.1.128：低电量强制续签（原版 ReProvision 默认低电量跳过；开启后不跳过）
+            Toggle("低电量强制续签", isOn: $forceResignLowPower)
+
+            // v1.1.128：展示 daemon 持久化的下一次自动续签时间（signingd-state.plist）
+            // v1.1.129：详细 24 小时制 + 副行倒计时，.task 每 30 秒自动刷新
+            HStack(alignment: .firstTextBaseline) {
+                Text("下次自动续签")
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(nextResignTimeText)
+                        .foregroundColor(.secondary)
+                        .onAppear { refreshNextResignTime() }
+                    Text(nextResignCountdownText)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .task {
+                    while !Task.isCancelled {
+                        refreshNextResignTime()
+                        try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    }
+                }
+            }
 
             // 展开式间隔选择
             Button {
@@ -429,6 +461,37 @@ struct SettingsView: View {
         if hours == 0 { return "\(mins) 分钟" }
         if mins == 0 { return "\(hours) 小时" }
         return "\(hours) 小时 \(mins) 分钟"
+    }
+
+    /// 读取 repro-signingd 持久化的下次续签时间（signingd-state.plist 的 nextFireDate）。
+    /// v1.1.129：像原版 ReProvision（NSDateFormatter MediumStyle）一样显示完整日期时间，
+    /// 但强制 24 小时制（en_US_POSIX locale + 自定义格式，不受系统 12/24 小时设置影响），
+    /// 副行显示剩余倒计时；页面可见时每 30 秒自动刷新。
+    private func refreshNextResignTime() {
+        let statePath = "/var/mobile/Library/RePro/signingd-state.plist"
+        guard let d = NSDictionary(contentsOfFile: statePath),
+              let next = d["nextFireDate"] as? Date else {
+            nextResignTimeText = "—"
+            nextResignCountdownText = "等待 daemon 调度…"
+            return
+        }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
+        let remain = next.timeIntervalSinceNow
+        if remain > 0 {
+            nextResignTimeText = fmt.string(from: next)
+            let totalSec = Int(remain)
+            let mins = totalSec / 60
+            let secs = totalSec % 60
+            nextResignCountdownText = mins > 0 ? "约 \(mins) 分 \(secs) 秒后触发" : "\(secs) 秒后触发"
+        } else {
+            // v1.1.130：过期/已触发后不再显示过去的完整时间（易误读），
+            // 显示「等待 daemon 调度…」——daemon 启动时会按过期处理并立即续签
+            nextResignTimeText = "等待 daemon 调度…"
+            nextResignCountdownText = "即将触发…"
+        }
     }
 
     // MARK: - 签名后端

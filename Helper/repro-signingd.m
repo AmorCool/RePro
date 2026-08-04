@@ -271,7 +271,7 @@ static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
 //   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
 //   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
-typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; } sd_config;
+typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; BOOL forceResignLowPower; } sd_config;
 
 /// 本次实际生效的配置来源（--status 会打印，方便一眼确认有没有读到 App 的设置）
 static NSString *gCfgSource = @"未读取";
@@ -292,6 +292,8 @@ static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
     out->minutes = m;
     out->days    = dy;
     out->enabled = rawEn ? [rawEn boolValue] : YES;
+    id rawLow = d[@"forceResignLowPower"];
+    out->forceResignLowPower = rawLow ? [rawLow boolValue] : NO;
     return YES;
 }
 
@@ -841,7 +843,7 @@ static void s_fire(void) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"自动续签已关闭，跳过"); return; }
 
-    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
         s_log(@"低电量模式，跳过续签");
         return;
     }
@@ -1000,7 +1002,7 @@ static dispatch_queue_t  gSignalQueue = nil;
 static void s_manualResign(NSString *reason) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"[%@] 自动续签已关闭，忽略本次触发", reason); return; }
-    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
         s_log(@"[%@] 低电量模式，忽略本次触发", reason);
         return;
     }
