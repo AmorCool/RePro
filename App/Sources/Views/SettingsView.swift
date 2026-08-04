@@ -14,6 +14,11 @@ struct SettingsView: View {
     // 键名必须与 repro-signingd.m 的 s_bypassEnabled() 读取的键一致。
     @AppStorage("bypassFreeAppLimit") private var bypassFreeAppLimit: Bool = false
 
+    // v1.1.128：低电量强制续签。键名必须与 repro-signingd.m 的 s_parseCfg() 读取的键一致。
+    @AppStorage("forceResignLowPower") private var forceResignLowPower: Bool = false
+    /// 下次自动续签时间（signingd 持久化在 signingd-state.plist 的 nextFireDate），onAppear 刷新
+    @State private var nextResignTimeText: String = "—"
+
     // 通知开关。键名必须与 RPVNotificationManager.h 里的常量一致。
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
     @AppStorage("notificationsDebug") private var notificationsDebug: Bool = false
@@ -91,6 +96,7 @@ struct SettingsView: View {
             .onChange(of: autoResign) { _ in needsConfigSync = true }
             .onChange(of: checkIntervalMin) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
+            .onChange(of: forceResignLowPower) { _ in needsConfigSync = true }
             .onChange(of: account.isSignedIn) { signedIn in
                 // 退出登录后，重置登录前输入框（带已保存凭据预填）与显示开关
                 if !signedIn {
@@ -257,6 +263,18 @@ struct SettingsView: View {
         Section {
             Toggle("启用自动重签", isOn: $autoResign)
             Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...7)
+
+            // v1.1.128：低电量强制续签（原版 ReProvision 默认低电量跳过；开启后不跳过）
+            Toggle("低电量强制续签", isOn: $forceResignLowPower)
+
+            // v1.1.128：展示 daemon 持久化的下一次自动续签时间（signingd-state.plist）
+            HStack {
+                Text("下次自动续签")
+                Spacer()
+                Text(nextResignTimeText)
+                    .foregroundColor(.secondary)
+                    .onAppear { refreshNextResignTime() }
+            }
 
             // 展开式间隔选择
             Button {
@@ -489,6 +507,29 @@ struct SettingsView: View {
         if hours == 0 { return "\(mins) 分钟" }
         if mins == 0 { return "\(hours) 小时" }
         return "\(hours) 小时 \(mins) 分钟"
+    }
+
+    /// 读取 repro-signingd 持久化的下次续签时间（signingd-state.plist 的 nextFireDate）。
+    /// 展示格式：今天 HH:mm / 明天 HH:mm / MM-dd HH:mm；读不到或已过期显示「—」。
+    private func refreshNextResignTime() {
+        let statePath = "/var/mobile/Library/RePro/signingd-state.plist"
+        guard let d = NSDictionary(contentsOfFile: statePath),
+              let next = d["nextFireDate"] as? Date else {
+            nextResignTimeText = "—"
+            return
+        }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "zh_CN")
+        fmt.dateFormat = "HH:mm"
+        let cal = Calendar.current
+        if cal.isDateInToday(next) {
+            nextResignTimeText = "今天 " + fmt.string(from: next)
+        } else if cal.isDateInTomorrow(next) {
+            nextResignTimeText = "明天 " + fmt.string(from: next)
+        } else {
+            fmt.dateFormat = "MM-dd HH:mm"
+            nextResignTimeText = fmt.string(from: next)
+        }
     }
 
     // MARK: - 签名后端

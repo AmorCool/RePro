@@ -272,7 +272,12 @@ static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
 //   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
 //   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
-typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; } sd_config;
+typedef struct {
+    BOOL enabled;
+    NSInteger minutes;
+    NSInteger days;
+    BOOL forceResignLowPower;   // v1.1.128：低电量强制续签（默认 NO=低电量跳过）
+} sd_config;
 
 /// 本次实际生效的配置来源（--status 会打印，方便一眼确认有没有读到 App 的设置）
 static NSString *gCfgSource = @"未读取";
@@ -293,6 +298,9 @@ static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
     out->minutes = m;
     out->days    = dy;
     out->enabled = rawEn ? [rawEn boolValue] : YES;
+    // v1.1.128：低电量强制续签开关（App 设置「低电量强制续签」，默认关=低电量跳过）
+    id rawLow = d[@"forceResignLowPower"];
+    out->forceResignLowPower = rawLow ? [rawLow boolValue] : NO;
     return YES;
 }
 
@@ -842,8 +850,9 @@ static void s_fire(void) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"自动续签已关闭，跳过"); return; }
 
-    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
-        s_log(@"低电量模式，跳过续签");
+    // v1.1.128：低电量默认跳过续签；「低电量强制续签」开启后不跳过
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
+        s_log(@"低电量模式，跳过续签（设置「低电量强制续签」可强制）");
         return;
     }
 
@@ -882,103 +891,6 @@ static void s_initiateAndReschedule(void) {
     s_start_timer(interval);
     s_log(@"已重新调度 — 下次触发 %.0f 分钟后 (%@)",
           interval / 60.0, nextFire);
-}
-
-// ─── 开机自动修复越狱联网 ─────────────────────────────────────
-// 需求（v1.1.124）：重启设备重新越狱后，国行「允许使用数据」授权会重新丢失，
-// 插件/应用又断网。daemon 是 rootfs LaunchDaemon（开机自启），在这里检测
-// 「设备重启时间晚于上次修复时间」→ 自动 exec repro-helper fix-cellular 一次。
-// 共享时间戳文件 fix-cellular-last.plist（App 手动修复也会写），防抖避免重复。
-
-static NSString *const kFixCellularStampPath =
-    @"/var/mobile/Library/RePro/fix-cellular-last.plist";
-
-/// 设备开机时间（epoch 秒），失败返回 0。
-static time_t s_boottime(void) {
-    struct timeval boottime = {0};
-    size_t len = sizeof(boottime);
-    int mib[2] = { CTL_KERN, KERN_BOOTTIME };
-    if (sysctl(mib, 2, &boottime, &len, NULL, 0) == 0) {
-        return (time_t)boottime.tv_sec;
-    }
-    return 0;
-}
-
-/// 读取上次修复时间戳（epoch 秒），无则返回 0。
-static time_t s_lastFixCellularTime(void) {
-    NSDictionary *stamp = [NSDictionary dictionaryWithContentsOfFile:kFixCellularStampPath];
-    return stamp ? (time_t)[stamp[@"timestamp"] doubleValue] : 0;
-}
-
-/// 写修复时间戳（App 手动修复与 daemon 自动修复共用，防抖）。
-static void s_markFixCellularDone(void) {
-    NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
-    [stamp writeToFile:kFixCellularStampPath atomically:YES];
-    chown(kFixCellularStampPath.UTF8String, 501, 501);
-}
-
-/// 解析 repro-helper 的绝对路径（rootfs daemon 视角，三种越狱形态）。
-static NSString *s_resolveHelperPath(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    // RootHide：jbroot 在 /var/containers/Bundle/Application/.jbroot-*/usr/libexec
-    NSArray *appDirEntries = [fm contentsOfDirectoryAtPath:kBundleRoot error:nil];
-    for (NSString *entry in appDirEntries) {
-        if ([entry hasPrefix:@".jbroot-"]) {
-            NSString *p = [NSString stringWithFormat:@"%@/%@/usr/libexec/repro-helper",
-                           kBundleRoot, entry];
-            if ([fm isExecutableFileAtPath:p]) return p;
-        }
-    }
-    // rootless / rootful
-    for (NSString *p in @[@"/var/jb/usr/libexec/repro-helper",
-                          @"/usr/libexec/repro-helper"]) {
-        if ([fm isExecutableFileAtPath:p]) return p;
-    }
-    return nil;
-}
-
-/// 开机后自动修复一次（后台线程执行，不阻塞 daemon 启动）。
-/// v1.1.126：①加「daemon 启动距 boottime < 5 分钟」条件——只有真正开机自启才触发，
-/// 安装 deb 后手动重启 daemon 不误触发（否则首次安装登录会被 SpringBoard 重启打断）；
-/// ②日志全部静默（用户要求隐藏修复联网日志）。
-/// v1.1.127：🔴 续签互斥——若续签正在进行（gResignInProgress），跳过本次自动修复。
-/// killall SpringBoard 会杀掉正在后台签名的 App → 续签半途而废甚至损坏。
-/// 修复可以在下次开机再补（时间戳不写，下次启动仍满足条件）；安全优先于效率。
-static void s_autoFixCellularOnBoot(void) {
-    time_t boot = s_boottime();
-    if (boot == 0) {
-        return; // 无法读取 boottime，跳过
-    }
-    // 仅当 daemon 是随系统开机启动（启动时刻距 boottime 5 分钟内）才自动修复。
-    // 场景：重启设备重新越狱 → 系统拉起 daemon → 授权丢失 → 自动修复。
-    // 场景：安装 deb / launchctl 手动重启 daemon → 不是开机 → 不触发。
-    time_t now = time(NULL);
-    if (now - boot > 300) {
-        return;
-    }
-    // 🔴 续签互斥：续签进行中（最近 120 秒内发起过）→ 跳过，避免 killall SpringBoard
-    // 打断正在后台执行的 App 续签。时间戳不写，下次开机仍满足条件会再补。
-    if (gResignInProgress && (now - gResignStartTime) < 120) {
-        return;
-    }
-    time_t lastFix = s_lastFixCellularTime();
-    if (lastFix >= boot) {
-        return; // 上次修复不早于开机，无需重复
-    }
-
-    NSString *helper = s_resolveHelperPath();
-    if (!helper) {
-        return;
-    }
-
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // 复用 s_run_cmd 执行（rootfs daemon 直接跑 helper；传自身 bundleID 修复自身）
-        NSString *cmd = [NSString stringWithFormat:@"'%@' fix-cellular '%@' 2>&1",
-                         helper, kAppBundleID];
-        s_run_cmd(cmd); // 🔇 静默：丢弃输出
-        // 无论成败都写时间戳，避免每次 daemon 重启都反复触发
-        s_markFixCellularDone();
-    });
 }
 
 // ─── 定时器管理 ─────────────────────────────────────────────────
@@ -1098,8 +1010,9 @@ static dispatch_queue_t  gSignalQueue = nil;
 static void s_manualResign(NSString *reason) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"[%@] 自动续签已关闭，忽略本次触发", reason); return; }
-    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) {
-        s_log(@"[%@] 低电量模式，忽略本次触发", reason);
+    // v1.1.128：低电量默认跳过续签；「低电量强制续签」开启后不跳过
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled] && !c.forceResignLowPower) {
+        s_log(@"[%@] 低电量模式，忽略本次触发（设置「低电量强制续签」可强制）", reason);
         return;
     }
     if (gResignInProgress && (time(NULL) - gResignStartTime) < 120) {
@@ -1412,10 +1325,6 @@ int main(int argc, char *argv[]) {
 
     // 注册系统通知监听
     s_setupNotifyPosts();
-
-    // v1.1.124：开机自动修复越狱联网（重启越狱后国行授权丢失）
-    // 放这里而非 s_startSigningTimer 里，避免与续签调度混在一起。
-    s_autoFixCellularOnBoot();
 
     // 启动定时器
     // ⚠️ v1.1.66 修复：旧版在 s_startSigningTimer() 之外，又无条件在启动 5 秒后

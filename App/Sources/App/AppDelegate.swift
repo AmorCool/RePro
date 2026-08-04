@@ -32,6 +32,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// 又触发一次前台续签（重复签名）。
     private var daemonResignInProgress = false
 
+    /// v1.1.128：续签因网络异常失败后是否已触发过「修复联网→重试」。
+    /// 单次续签会话内只修一次，避免修复后仍失败造成循环。
+    private var didRetryResignAfterFix = false
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         LogManager.shared.initialize()
@@ -240,6 +244,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             errorText = e.localizedDescription
             LogManager.shared.warning("续签失败: \(errorText)", source: "AppDelegate")
             writeResignReport(result: "failed", detail: errorText, elapsed: elapsed, trigger: trigger)
+
+            // 🔴 v1.1.128 核心逻辑重构：续签因网络权限丢失失败 → 静默修复联网 →
+            // 修复完成后再触发一次续签（仅自动续签时）。日志实据：
+            // 「拉取证书列表失败…似乎已断开与互联网的连接」「续签失败:
+            // updateCurrentTeamIDWithCompletionHandler: 似乎已断开与互联网的连接」。
+            if isDaemon && isNetworkishError(errorText) && !didRetryResignAfterFix {
+                didRetryResignAfterFix = true
+                LogManager.shared.warning("续签因网络异常失败 → 静默修复联网后重试续签", source: "AppDelegate")
+                // 修复会 killall SpringBoard，App 进程随之结束；重试由修复完成后
+                // SpringBoard 重启 + daemon 下一轮定时触发兜底，这里无需自己续签。
+                RPVBridge.sharedInstance().fixCellularData { _, _ in
+                    // 🔇 静默：修复后由 daemon 定时器自然触发下一轮续签
+                }
+            }
         }
 
         // 续签完成通知：daemon 路径无论成败都通知；前台路径仅在失败时补一条总览
@@ -282,65 +300,23 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 这里只是前台激活时的额外保险。
         RPVBridge.migrateKeychainAccessibility()
 
-        // v1.1.124：前台激活时若设备重启过且未修复过 → 自动修复越狱联网
-        // （daemon 开机已自动修一次，这里是用户手动打开 App 时的兜底，共享时间戳防抖）
-        autoFixCellularIfNeeded()
-
         // daemon 静默续签正在进行时，不要重复触发前台续签
         if daemonResignInProgress { return }
         if checkDaemonTrigger() { doAutoResign() }
         else { tryAutoResign() }
     }
 
-    // MARK: - 自动修复越狱联网（v1.1.124）
+    // MARK: - 续签失败触发「修复联网→重试」（v1.1.128 核心逻辑重构）
 
-    /// 设备开机时间（epoch 秒），失败返回 0。
-    private func systemBootTime() -> TimeInterval {
-        var mib = [CTL_KERN, KERN_BOOTTIME]
-        var boottime = timeval()
-        var size = MemoryLayout<timeval>.size
-        guard sysctl(&mib, 2, &boottime, &size, nil, 0) == 0 else { return 0 }
-        return TimeInterval(boottime.tv_sec)
-    }
-
-    /// 上次修复时间戳（与 signingd 共享 plist，防抖）。
-    private var lastFixCellularTime: TimeInterval {
-        let p = "\(Self.ipcDir)/fix-cellular-last.plist"
-        guard let d = NSDictionary(contentsOfFile: p),
-              let ts = d["timestamp"] as? Double else { return 0 }
-        return ts
-    }
-
-    /// 写修复时间戳。
-    private func markFixCellularDone() {
-        let p = "\(Self.ipcDir)/fix-cellular-last.plist"
-        (["timestamp": Date().timeIntervalSince1970] as NSDictionary)
-            .write(toFile: p, atomically: true)
-    }
-
-    /// 前台激活时自动修复：仅当「设备重启时间 > 上次修复时间」（重启越狱后授权丢失）。
-    /// v1.1.126：加 lastFix > 0 门槛——首次安装（从未修复过）不自动触发，
-    /// 避免 SpringBoard 重启打断首次登录；日志静默（用户要求隐藏修复联网日志）。
-    /// v1.1.127：🔴 续签互斥——daemon 静默续签进行中则跳过（killall SpringBoard
-    /// 会杀掉正在后台签名的 App，续签半途而废）。时间戳不写，下次激活仍会补。
-    private func autoFixCellularIfNeeded() {
-        let boot = systemBootTime()
-        let lastFix = lastFixCellularTime
-        // 必须修复过（lastFix > 0）且设备重启晚于上次修复才自动补修
-        guard boot > 0, lastFix > 0, boot > lastFix else { return }
-        // 🔴 续签互斥：daemon 续签进行中（flag 或 trigger 文件 180 秒内）→ 跳过
-        if daemonResignInProgress || isDaemonTriggeredResignFresh() { return }
-        RPVBridge.sharedInstance().fixCellularData { _, _ in
-            // 🔇 静默：无日志、无提示
-        }
-    }
-
-    /// 续签 trigger 文件是否新鲜（180 秒内），用于修复前互斥判断。
-    private func isDaemonTriggeredResignFresh() -> Bool {
-        let p = "\(Self.ipcDir)/auto-resign-trigger"
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: p),
-              let mtime = attrs[.modificationDate] as? Date else { return false }
-        return Date().timeIntervalSince(mtime) < 180
+    /// 判定续签失败是否为网络类错误（蜂窝权限丢失 → -1009「似乎已断开与互联网的连接」）。
+    /// 是则走「静默修复联网 → daemon 下一轮续签」闭环，不打扰用户。
+    private func isNetworkishError(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("互联网") || lower.contains("网络") || lower.contains("network")
+            || lower.contains("connection") || lower.contains("连接") || lower.contains("离线")
+            || lower.contains("offline") || lower.contains("nsurlerrordomain")
+            || lower.contains("-1009") || lower.contains("dns")
+            || lower.contains("timed out") || lower.contains("timeout")
     }
 
     // MARK: - 触发检测
@@ -397,6 +373,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             // daemon 的 s_bypassEnabled() 会按 CFPreferences → 本 plist → 容器偏好 三级回退，
             // 这里同步一份，保证 RootHide 下 cfprefsd 跨 namespace 读不到时仍能生效。
             "bypassFreeAppLimit": d.object(forKey: "bypassFreeAppLimit") as? Bool ?? false,
+            // v1.1.128：低电量强制续签（daemon s_parseCfg 读同 key）
+            "forceResignLowPower": d.object(forKey: "forceResignLowPower") as? Bool ?? false,
         ]
         let fm = FileManager.default
         if !fm.fileExists(atPath: Self.ipcDir) {
