@@ -301,14 +301,13 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 
 // 原理（重新逆向 cn.tinyapps.Renet v1.2.2 + ZIKCellularAuthorization 实测）：
 // 国行越狱后蜂窝失效 = iOS 的 App 蜂窝/WiFi 数据使用策略被重置。
-// Renet 反汇编确认三时代 API：
-//   iOS 11/12：PSAppDataUsagePolicyCache -setUsagePoliciesForBundle:cellular:wifi:（传 1,1）
-//   iOS 17+ ：PSAppDataUsagePolicyCache -setPolicies:completion:
+// Renet 反汇编确认历史 API（我们只用最底层通用的 CoreTelephony C 函数）：
+//   iOS 11/12（v1.1.143 已移除该路径：PSAppDataUsagePolicyCache 在 iOS16/roothide 实例化即崩溃，且 v1.1.122 起只探查不设置、对修复无贡献）
 //   🔴 底层通用：CoreTelephony 私有 C 函数
 //       _CTServerConnectionCreateOnTargetQueue / _CTServerConnectionSetCellularUsagePolicy
 //       —— Settings 里每个 App 的蜂窝开关底层就是它，全 iOS 版本存在。
 //   Renet 的 __LINKEDIT 也导入了 _CTServerConnectionSetCellularUsagePolicy。
-// 本 helper 路径：①CoreTelephony C 函数（主，全版本通用）②SettingsCellular ObjC（备）。
+// 本 helper 路径：①CoreTelephony C 函数（主，全版本通用）②AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案，@try/@catch 兜底）。
 // 在 root helper 里做：无需 App entitlements，root 权限直接调私有框架。
 
 typedef CFTypeRef (*CTServerConnectionCreateIMP)(CFAllocatorRef, NSString *,
@@ -513,13 +512,17 @@ static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
     return ids;
 }
 
-/// 重启 SpringBoard 使策略生效（root 直接 killall；先试 rootfs 路径再试 /var/jb）
-static void RPVHelperRestartSpringBoard(void) {
-    RPVHelperLog(@"fix-cellular: 重启 SpringBoard 使策略生效");
+/// 温和刷新偏好缓存（killall cfprefsd），使设置 UI 立即反映刚写入的策略。
+/// 🔴 v1.1.143：原 killall SpringBoard 会令 launchd 重拉 SpringBoard 时走 roothide
+///   的 posix_spawn 钩子 abort → 内核 panic → 整机重启（iOS16/roothide 实测 panic-full）。
+///   改用 killall cfprefsd（非 jbroot 系统守护，重拉不触发该钩子），仅刷新偏好缓存；
+///   已在同环境实机验证 killall cfprefsd 不触发重启。
+static void RPVHelperFlushPreferences(void) {
+    RPVHelperLog(@"fix-cellular: 刷新偏好缓存（killall cfprefsd）以更新设置 UI");
     pid_t pid = fork();
     if (pid == 0) {
-        execl("/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
-        execl("/var/jb/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
+        execl("/usr/bin/killall", "killall", "cfprefsd", (char *)NULL);
+        execl("/var/jb/usr/bin/killall", "killall", "cfprefsd", (char *)NULL);
         _exit(127);
     }
     if (pid > 0) {
@@ -527,138 +530,6 @@ static void RPVHelperRestartSpringBoard(void) {
     }
 }
 
-/// 备路径：SettingsCellular 私有框架 PSAppDataUsagePolicyCache（iOS 17 方法 setPolicies:completion:）
-static int RPVHelperFixCellularViaSettingsCellular(NSArray<NSString *> *bundleIDs) {
-    // 加载 SettingsCellular 私有框架，拿 PSAppDataUsagePolicyCache
-    Class cacheClass = NSClassFromString(@"PSAppDataUsagePolicyCache");
-    if (!cacheClass) {
-        void *h = dlopen("/System/Library/PrivateFrameworks/SettingsCellular.framework/SettingsCellular", RTLD_NOW);
-        if (h) {
-            cacheClass = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        }
-    }
-    if (!cacheClass) {
-        RPVHelperLog(@"fix-cellular(ObjC): 找不到 PSAppDataUsagePolicyCache（SettingsCellular 私有框架未加载）");
-        return 4;
-    }
-
-    id cache = [cacheClass performSelector:NSSelectorFromString(@"sharedInstance")];
-    if (!cache) {
-        cache = [[cacheClass alloc] init];
-    }
-    if (!cache) {
-        RPVHelperLog(@"fix-cellular(ObjC): PSAppDataUsagePolicyCache 实例化失败");
-        return 5;
-    }
-
-    // 运行时自省：dump 类全部实例方法，自动匹配策略设置方法。
-    // roothide/jbroot 的 SettingsCellular 框架版本不同，选择器名与参数签名会变。
-    // 🔴 v1.1.122 重大发现（用户日志 repro_log_1785823244 铁证）：
-    //    setPolicies:completion: 签名 = 返回 v，arg0=@(self) arg1=:(sel) arg2=@ arg3=@?(block)。
-    //    但 arg2 不是 NSDictionary——传字典后系统在异步 completion 里对它调
-    //    `bundleId` 选择器 → `-[__NSFrozenDictionaryM bundleId]: unrecognized selector`
-    //    → helper 崩溃 exit=-1。arg2 必须是**带 bundleId 属性的策略对象数组**。
-    //    🔴 故 v1.1.122 起本路径**只探查策略对象结构，不再调用 setPolicies:completion:**，
-    //    修复主力是 CoreTelephony C 函数（v1.1.120 补 fine-grained 后已返回 0 全成功）。
-    SEL setPolicy = NULL;
-    SEL fetchPolicy = NULL; // 用于探查策略对象格式
-
-    // 第一轮：优先 roothide 实际存在的方法，再试其他候选
-    NSArray<NSString *> *candidates = @[
-        @"setPolicies:completion:",      // roothide iOS 17 实测方法
-        @"addPoliciesToCache:",          // roothide 备选
-        @"setUsagePoliciesForBundle:cellular:wifi:", // 旧版/iOS 14-16
-        @"setUsagePolicyForBundle:cellular:wifi:",
-        @"setUsagePoliciesForBundle:cellularPolicy:wifiPolicy:",
-        @"setUsagePolicies:forBundle:",
-        @"setUsagePolicy:forBundle:",
-        @"setCellularDataUsagePolicy:forBundle:",
-        @"setAppCellularDataUsagePolicy:forBundleID:",
-        @"_setUsagePoliciesForBundle:cellular:wifi:",
-    ];
-    for (NSString *selName in candidates) {
-        SEL s = NSSelectorFromString(selName);
-        if ([cache respondsToSelector:s]) {
-            setPolicy = s;
-            RPVHelperLog(@"fix-cellular(ObjC): 命中候选选择器 %@", selName);
-
-            // 🔴 铁证诊断：打印方法签名的 type encoding，确定参数类型。
-            NSMethodSignature *sigDiag = [cache methodSignatureForSelector:s];
-            if (sigDiag) {
-                NSMutableString *desc = [NSMutableString string];
-                for (NSUInteger ai = 0; ai < [sigDiag numberOfArguments]; ai++) {
-                    [desc appendFormat:@" arg%lu=%s", (unsigned long)ai,
-                        [sigDiag getArgumentTypeAtIndex:ai]];
-                }
-                RPVHelperLog(@"fix-cellular(ObjC): %@ 签名: 返回=%s%@",
-                    selName, [sigDiag methodReturnType], desc);
-            }
-            break;
-        }
-    }
-
-    // 🔴 探查方法必须在第一轮就找（原代码只在 dump 分支赋值，导致命中候选后
-    //     fetchPolicy 一直为 NULL、探查从未执行——v1.1.121 日志印证）
-    for (NSString *selName in @[@"fetchUsagePoliciesFor:", @"fetchUsagePolicyFor:",
-                                @"policiesFor:", @"addPoliciesToCache:"]) {
-        SEL s = NSSelectorFromString(selName);
-        if ([cache respondsToSelector:s]) {
-            fetchPolicy = s;
-            RPVHelperLog(@"fix-cellular(ObjC): 探查方法可用 %@", selName);
-            break;
-        }
-    }
-
-    // ── 只探查策略对象格式，不调用 setPolicies:completion:（防崩溃）──
-    // 拿一个真实策略对象样本，打印其 class / description / 是否响应 bundleId，
-    // 为下一版构造正确参数提供铁证。
-    id samplePolicy = nil;
-    if (fetchPolicy && bundleIDs.count > 0) {
-        @try {
-            NSString *testBid = bundleIDs.firstObject;
-            NSMethodSignature *fsig = [cache methodSignatureForSelector:fetchPolicy];
-            NSInvocation *finv = [NSInvocation invocationWithMethodSignature:fsig];
-            [finv setTarget:cache];
-            [finv setSelector:fetchPolicy];
-            if ([fsig numberOfArguments] > 2) [finv setArgument:&testBid atIndex:2];
-            [finv retainArguments];
-            [finv invoke];
-            if (strcmp([fsig methodReturnType], "@") == 0) {
-                void *ret = NULL;
-                [finv getReturnValue:&ret];
-                samplePolicy = (__bridge id)ret;
-            }
-            RPVHelperLog(@"fix-cellular(ObjC): %s(%@) 返回 %@ (类型:%@)",
-                sel_getName(fetchPolicy), testBid, samplePolicy, [samplePolicy class]);
-
-            // 打印策略对象结构：class 名、description、是否响应 bundleId、全部实例方法
-            if (samplePolicy) {
-                RPVHelperLog(@"fix-cellular(ObjC): 策略对象描述: %@", samplePolicy);
-                RPVHelperLog(@"fix-cellular(ObjC): 响应 bundleId=%d cellular=%d wifi=%d",
-                    [samplePolicy respondsToSelector:NSSelectorFromString(@"bundleId")],
-                    [samplePolicy respondsToSelector:NSSelectorFromString(@"cellular")],
-                    [samplePolicy respondsToSelector:NSSelectorFromString(@"wifi")]);
-                unsigned int mc = 0;
-                Method *methods = class_copyMethodList([samplePolicy class], &mc);
-                for (unsigned int i = 0; i < mc && i < 20; i++) {
-                    RPVHelperLog(@"fix-cellular(ObjC):   策略对象方法: %s",
-                        sel_getName(method_getName(methods[i])));
-                }
-                free(methods);
-            }
-        } @catch (NSException *e) {
-            RPVHelperLog(@"fix-cellular(ObjC): 探查策略格式异常: %@", e.reason);
-        }
-    }
-
-    if (!setPolicy) {
-        RPVHelperLog(@"fix-cellular(ObjC): PSAppDataUsagePolicyCache 无可用策略设置方法（见上方 dump）");
-        return 6;
-    }
-
-    RPVHelperLog(@"fix-cellular(ObjC): 🔴 v1.1.122 起不调用 setPolicies:completion:（参数需带 bundleId 的策略对象，字典会崩溃），修复主力为 CoreTelephony C 函数路径");
-    return 0;
-}
 
 static int RPVHelperFixCellular(NSString *selfBid) {
     RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
@@ -682,24 +553,21 @@ static int RPVHelperFixCellular(NSString *selfBid) {
         return 3;
     }
 
-    // ── 三路径都执行（不短路）──
+    // ── 两路径都执行（不短路）──
     // ①CoreTelephony C 函数：主路径，v1.1.120 补 fine-grained entitlement 后
-    //   246/246 返回码 0（CommCenter 接受），用户实测开关可恢复。
-    // ②SettingsCellular setPolicies:completion:：v1.1.122 起只探查不调用（参数需
-    //   带 bundleId 的策略对象，字典会崩 -[__NSFrozenDictionaryM bundleId]）。
-    // ③AppWirelessDataUsageManager（Preferences.framework）：Renet/Undecimus iOS 11
+    //   246/246 返回码 0（CommCenter 接受），用户实测开关可恢复。修复主力。
+    // ②AppWirelessDataUsageManager（Preferences.framework）：Renet/Undecimus iOS 11
     //   官方方案，setAppWirelessDataOption:@(3)；iOS 17 已移除该类则自动跳过。
+    //   🔴 v1.1.143 删除 PSAppDataUsagePolicyCache（SettingsCellular）路径：该私有类在
+    //   iOS 16/roothide 下实例化即崩溃（SIGABRT→内核 panic），且 v1.1.122 起只探查不设置
+    //   策略、对修复无贡献，故整段移除。修复主力始终是 CoreTelephony C 函数路径。
     int ctRet = RPVHelperFixCellularViaCTServer(bundleIDs);
     if (ctRet != 0) {
         RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)", ctRet);
     }
-    int objcRet = RPVHelperFixCellularViaSettingsCellular(bundleIDs);
-    if (objcRet != 0) {
-        RPVHelperLog(@"fix-cellular: SettingsCellular 路径失败(code=%d)", objcRet);
-    }
     RPVHelperFixCellularViaAppWirelessDataUsageManager(bundleIDs);
 
-    RPVHelperRestartSpringBoard();
+    RPVHelperFlushPreferences();
     RPVHelperLog(@"fix-cellular 完成");
     return 0;
 }
@@ -758,7 +626,7 @@ int main(int argc, char *argv[]) {
         }
 
         // fix-cellular = App「设置」里「修复越狱联网问题」手动入口（仅手动，无 daemon 自动循环）。
-        // 重置全部应用蜂窝/WiFi 数据策略为「始终允许」并重启 SpringBoard 生效。
+        // 重置全部应用蜂窝/WiFi 数据策略为「始终允许」并刷新偏好缓存（killall cfprefsd）生效。
         if ([command isEqualToString:@"fix-cellular"]) {
             if (argc < 2 || argc > 3) {
                 RPVHelperPrintUsage();
@@ -768,9 +636,9 @@ int main(int argc, char *argv[]) {
             gHelperSilent = YES;
 
             // 🔴 续签互斥兜底：若续签 trigger 文件新鲜（180 秒内刚发起过续签，
-            // 说明 App 正在后台签名），直接跳过修复（exit 0）——killall SpringBoard
-            // 会杀掉正在签名的 App，续签半途而废甚至损坏。App 上层已判断过，这里兜底防
-            // 手动点击/时序竞态。修复可延后，续签中断不可恢复。
+            // 说明 App 正在后台签名），直接跳过修复（exit 0）。现已改为 killall cfprefsd、
+            // 不再误杀签名中的 App，但仍保留 180s 互斥防手动点击/时序竞态。
+            // 修复可延后，续签中断不可恢复。
             {
                 NSDictionary *trigger = [NSDictionary dictionaryWithContentsOfFile:
                     @"/var/mobile/Library/RePro/auto-resign-trigger"];
