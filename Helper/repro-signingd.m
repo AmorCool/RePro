@@ -941,6 +941,9 @@ static NSString *s_resolveHelperPath(void) {
 /// v1.1.126：①加「daemon 启动距 boottime < 5 分钟」条件——只有真正开机自启才触发，
 /// 安装 deb 后手动重启 daemon 不误触发（否则首次安装登录会被 SpringBoard 重启打断）；
 /// ②日志全部静默（用户要求隐藏修复联网日志）。
+/// v1.1.127：🔴 续签互斥——若续签正在进行（gResignInProgress），跳过本次自动修复。
+/// killall SpringBoard 会杀掉正在后台签名的 App → 续签半途而废甚至损坏。
+/// 修复可以在下次开机再补（时间戳不写，下次启动仍满足条件）；安全优先于效率。
 static void s_autoFixCellularOnBoot(void) {
     time_t boot = s_boottime();
     if (boot == 0) {
@@ -951,6 +954,11 @@ static void s_autoFixCellularOnBoot(void) {
     // 场景：安装 deb / launchctl 手动重启 daemon → 不是开机 → 不触发。
     time_t now = time(NULL);
     if (now - boot > 300) {
+        return;
+    }
+    // 🔴 续签互斥：续签进行中（最近 120 秒内发起过）→ 跳过，避免 killall SpringBoard
+    // 打断正在后台执行的 App 续签。时间戳不写，下次开机仍满足条件会再补。
+    if (gResignInProgress && (now - gResignStartTime) < 120) {
         return;
     }
     time_t lastFix = s_lastFixCellularTime();

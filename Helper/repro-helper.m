@@ -765,6 +765,20 @@ int main(int argc, char *argv[]) {
             }
             // v1.1.126：用户要求隐藏修复联网日志（不美观）→ 全程静默，只留退出码。
             gHelperSilent = YES;
+
+            // 🔴 v1.1.127 续签互斥兜底：若续签 trigger 文件新鲜（180 秒内刚发起过续签，
+            // 说明 App 正在后台签名），直接跳过修复（exit 0）——killall SpringBoard
+            // 会杀掉正在签名的 App，续签半途而废甚至损坏。App/signingd 上层已判断过，
+            // 这里兜底防手动点击/时序竞态。
+            {
+                NSDictionary *trigger = [NSDictionary dictionaryWithContentsOfFile:
+                    @"/var/mobile/Library/RePro/auto-resign-trigger"];
+                NSTimeInterval ts = trigger ? [trigger[@"timestamp"] doubleValue] : 0;
+                if (ts > 0 && (time(NULL) - (time_t)ts) < 180) {
+                    return 0; // 🔇 静默跳过（不写时间戳，后续仍可触发修复）
+                }
+            }
+
             // argv[2] = ReSign 自身 bundle id（App 侧传入）。roothide 下 ReSign 装在
             // jbroot Applications 目录，枚举在 namespace 里看不到自身 → 由 App 显式
             // 传入，helper 无条件加入修复列表并优先处理。

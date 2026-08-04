@@ -731,7 +731,17 @@ struct SettingsView: View {
 
     /// 静默执行越狱联网修复（无任何 UI 提示）。返回是否真的触发了修复。
     /// 防抖：10 分钟内不重复触发（避免登录失败就反复重启 SpringBoard）。
+    /// v1.1.127：🔴 续签互斥——daemon 静默续签进行中则跳过（killall SpringBoard
+    /// 会杀掉正在后台签名的 App）。跳过时不写防抖时间戳，下次登录失败仍可触发。
     private func silentFixCellularOnNetworkError() -> Bool {
+        // 🔴 续签互斥：daemon 续签进行中（trigger 文件 180 秒内）→ 不修复
+        let triggerPath = "/var/mobile/Library/RePro/auto-resign-trigger"
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: triggerPath),
+           let mtime = attrs[.modificationDate] as? Date,
+           Date().timeIntervalSince(mtime) < 180 {
+            return false
+        }
+
         let d = UserDefaults.standard
         let now = Date().timeIntervalSince1970
         let last = d.double(forKey: "lastSilentFixCellularTime")

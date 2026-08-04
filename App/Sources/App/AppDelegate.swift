@@ -321,14 +321,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// 前台激活时自动修复：仅当「设备重启时间 > 上次修复时间」（重启越狱后授权丢失）。
     /// v1.1.126：加 lastFix > 0 门槛——首次安装（从未修复过）不自动触发，
     /// 避免 SpringBoard 重启打断首次登录；日志静默（用户要求隐藏修复联网日志）。
+    /// v1.1.127：🔴 续签互斥——daemon 静默续签进行中则跳过（killall SpringBoard
+    /// 会杀掉正在后台签名的 App，续签半途而废）。时间戳不写，下次激活仍会补。
     private func autoFixCellularIfNeeded() {
         let boot = systemBootTime()
         let lastFix = lastFixCellularTime
         // 必须修复过（lastFix > 0）且设备重启晚于上次修复才自动补修
         guard boot > 0, lastFix > 0, boot > lastFix else { return }
+        // 🔴 续签互斥：daemon 续签进行中（flag 或 trigger 文件 180 秒内）→ 跳过
+        if daemonResignInProgress || isDaemonTriggeredResignFresh() { return }
         RPVBridge.sharedInstance().fixCellularData { _, _ in
             // 🔇 静默：无日志、无提示
         }
+    }
+
+    /// 续签 trigger 文件是否新鲜（180 秒内），用于修复前互斥判断。
+    private func isDaemonTriggeredResignFresh() -> Bool {
+        let p = "\(Self.ipcDir)/auto-resign-trigger"
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: p),
+              let mtime = attrs[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(mtime) < 180
     }
 
     // MARK: - 触发检测
