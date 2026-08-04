@@ -327,10 +327,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private func _syncConfig() {
         let d = UserDefaults.standard
-        let intervalMin = d.object(forKey: "checkIntervalMin") as? Int ?? 120
         let config: [String: Any] = [
             "autoResign":         d.object(forKey: "autoResign") as? Bool ?? true,
-            "checkIntervalMin":   intervalMin,
             "resignThreshold":    d.object(forKey: "resignThreshold") as? Int ?? 2,
             // daemon 的 s_bypassEnabled() 会按 CFPreferences → 本 plist → 容器偏好 三级回退，
             // 这里同步一份，保证 RootHide 下 cfprefsd 跨 namespace 读不到时仍能生效。
@@ -343,7 +341,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let plistPath = "\(Self.ipcDir)/signingd-config.plist"
         (config as NSDictionary).write(toFile: plistPath, atomically: true)
         RPVSigningdNotify.notifyConfigUpdated()
-        LogManager.shared.info("配置已同步到 plist: autoResign=\(config["autoResign"] ?? "nil") checkIntervalMin=\(intervalMin)min", source: "AppDelegate")
+        LogManager.shared.info("配置已同步到 plist: autoResign=\(config["autoResign"] ?? "nil")", source: "AppDelegate")
     }
 
     private func setupSigningdNotify() { let _ = RPVSigningdNotify.shared }

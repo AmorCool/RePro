@@ -75,7 +75,6 @@ static const char *const kFreeProfileXattr = "com.apple.installd.validatedByFree
 // 用户 App 安装根目录（rootless / RootHide 下真实路径一致；daemon 跑在 rootfs 真实命名空间）
 static NSString *const kBundleRoot = @"/var/containers/Bundle/Application";
 
-static const NSInteger  kFallbackMinutes = 120;   // 默认 2 小时
 static const NSInteger  kFallbackDays    = 2;
 
 // 🔴 v1.1.148 续签冷却（用户要求：续签完成后至少间隔 1 天才能再次续签）。
@@ -383,7 +382,7 @@ static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
 //   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
 //   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
-typedef struct { BOOL enabled; NSInteger minutes; NSInteger days; BOOL forceResignLowPower; } sd_config;
+typedef struct { BOOL enabled; NSInteger days; BOOL forceResignLowPower; } sd_config;
 
 /// 本次实际生效的配置来源（--status 会打印，方便一眼确认有没有读到 App 的设置）
 static NSString *gCfgSource = @"未读取";
@@ -391,20 +390,16 @@ static NSString *gCfgSource = @"未读取";
 /// 从字典解析配置（key 与 App 端 @AppStorage 完全一致）
 static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
     if (![d isKindOfClass:[NSDictionary class]]) return NO;
-    id rawMin = d[@"checkIntervalMin"];
     id rawDy  = d[@"resignThreshold"];
     id rawEn  = d[@"autoResign"];
-    if (!rawMin && !rawDy && !rawEn) return NO;   // 三个键一个都没有 = 不是我们的配置
+    if (!rawDy && !rawEn) return NO;   // 两个键一个都没有 = 不是我们的配置
 
-    NSInteger m  = rawMin ? [rawMin integerValue] : kFallbackMinutes;
-    NSInteger dy = rawDy  ? [rawDy  integerValue] : kFallbackDays;
-    if (m  < 1) m  = kFallbackMinutes;
+    NSInteger dy = rawDy ? [rawDy integerValue] : kFallbackDays;
     if (dy < 1) dy = kFallbackDays;
     // v1.1.148：兜底 clamp 提前重签天数上限（防旧配置残留 7 或手改 plist 塞进更大值；
     // 7 天 = 免费账号 7 天有效期下永远在到期窗口内 → 每 24h 全量重签 → zsign 内存暴涨）
     if (dy > kMaxThresholdDays) dy = kMaxThresholdDays;
 
-    out->minutes = m;
     out->days    = dy;
     out->enabled = rawEn ? [rawEn boolValue] : YES;
     id rawLow = d[@"forceResignLowPower"];
@@ -444,7 +439,7 @@ static NSDictionary *s_readContainerPreferences(void) {
 }
 
 static sd_config s_cfg(void) {
-    sd_config cfg = (sd_config){YES, kFallbackMinutes, kFallbackDays};
+    sd_config cfg = (sd_config){YES, kFallbackDays};
     NSString *source = nil;
 
     if (s_parseCfg(s_readAppPreferences(), &cfg)) {
@@ -456,23 +451,23 @@ static sd_config s_cfg(void) {
     }
 
     // 只在配置值或来源发生变化时才写日志，避免像旧版那样每秒刷屏
-    static NSInteger lastMin = -1, lastDays = -1;
+    static NSInteger lastDays = -1;
     static int lastEn = -1;
     static NSString *lastSource = nil;
     NSString *srcName = source ?: @"内置默认值";
     gCfgSource = srcName;   // 供 --status 显示，让用户一眼看出读的是不是 App 里的设置
 
-    if (lastMin != cfg.minutes || lastDays != cfg.days ||
+    if (lastDays != cfg.days ||
         lastEn != (int)cfg.enabled || ![lastSource isEqualToString:srcName]) {
-        lastMin = cfg.minutes; lastDays = cfg.days;
+        lastDays = cfg.days;
         lastEn = (int)cfg.enabled; lastSource = srcName;
 
         if (source) {
-            s_log(@"读取配置[来源: %@]: 检查间隔=%ld分 提前重签=%ld天 自动续签=%@",
-                  srcName, (long)cfg.minutes, (long)cfg.days, cfg.enabled ? @"开" : @"关");
+            s_log(@"读取配置[来源: %@]: 提前重签=%ld天 自动续签=%@",
+                  srcName, (long)cfg.days, cfg.enabled ? @"开" : @"关");
         } else {
-            s_log(@"⚠️ 三个来源都没读到配置，退回默认值: 检查间隔=%ld分 提前重签=%ld天",
-                  (long)kFallbackMinutes, (long)kFallbackDays);
+            s_log(@"⚠️ 两个来源都没读到配置，退回默认值: 提前重签=%ld天",
+                  (long)kFallbackDays);
             s_log(@"   来源1 CFPreferences(%@, user=mobile) / 来源2 %@ / 来源3 App 容器偏好",
                   kAppBundleID, kConfigPath);
         }
@@ -735,57 +730,6 @@ static void *s_acquireBKSAssertion(pid_t targetPid) {
     return (__bridge_retained void *)result;
 }
 
-/// 设置系统级电源唤醒
-///
-/// v1.1.64 更正：之前一直以为日志里的失败码是「RootHide 权限限制」，
-/// 实际 0xE00002C2 = kIOReturnBadArgument，是我们自己把 type 参数写错了
-/// （见下方注释）。此功能仍属「增强体验」而非核心链路，失败不阻塞续签。
-static BOOL s_scheduleSystemWake(NSTimeInterval secondsFromNow) {
-    void *ioKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
-    if (!ioKit) {
-        s_log(@"[Step 3/3] 无法加载 IOKit — 系统级唤醒不可用（非致命）");
-        return NO;
-    }
-
-    typedef int (*IOPMSchedFn)(CFDateRef, CFStringRef, CFStringRef);
-    IOPMSchedFn schedFn = (IOPMSchedFn)dlsym(ioKit, "IOPMSchedulePowerEvent");
-    if (!schedFn) {
-        s_log(@"[Step 3/3] 无法找到 IOPMSchedulePowerEvent — 系统级唤醒不可用（非致命）");
-        dlclose(ioKit);
-        return NO;
-    }
-
-    NSDate *wakeDate = [NSDate dateWithTimeIntervalSinceNow:secondsFromNow];
-
-    // ⚠️ v1.1.64 修复：type 参数必须是 IOPMLib.h 里定义的字面量常量，
-    //    kIOPMAutoWakeOrPowerOn == "wakepoweron"。
-    //    旧版自己编了个 "AutoWakeOrPowerOn"，IOKit 认不出来 →
-    //    直接返回 kIOReturnBadArgument(0xE00002C2)，也就是日志里那个
-    //    ret=-536870206（同一个数的十进制写法）。跟权限一点关系都没有。
-    int ret = schedFn((__bridge CFDateRef)wakeDate,
-                       CFSTR("jp.soh.reprovision.signingd"),
-                       CFSTR("wakepoweron"));
-    dlclose(ioKit);
-
-    if (ret == 0) {
-        s_log(@"[Step 3/3] 已设置系统级唤醒 — %.0f 秒后 (%@)", secondsFromNow, wakeDate);
-        return YES;
-    }
-
-    // 注意：全部用 %@ 拼 NSString，不要用 %s 传中文 C 字符串
-    //（NSString 的 %s 按系统编码解释，中文会变成 Êú™Áü• 这种乱码，v1.1.63 日志里就是这么来的）
-    unsigned int uret = (unsigned int)ret;
-    NSString *reason = @"未知错误";
-    if      (uret == 0xE00002C1) reason = @"kIOReturnNotPrivileged 权限不足";
-    else if (uret == 0xE00002C2) reason = @"kIOReturnBadArgument 参数错误";
-    else if (uret == 0xE00002C5) reason = @"kIOReturnExclusiveAccess 被独占";
-    else if (uret == 0xE00002C6) reason = @"kIOReturnBadMessageID 消息 ID 错误";
-    else if (uret == 0xE00002C7) reason = @"kIOReturnUnsupported 系统不支持";
-    s_log(@"[Step 3/3] 系统级唤醒失败 (ret=0x%08X %@) — 非致命，定时器/解锁/亮屏触发仍可用",
-          uret, reason);
-    return NO;
-}
-
 /// 释放 BKSProcessAssertion
 ///
 /// ⚠️ v1.1.64 修复：旧版 performSelector:@selector(release) —— ARC 下这既不合法
@@ -902,18 +846,14 @@ static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
         }
     };
 
-    // Step 3 的公共逻辑：预约下一次系统级唤醒
-    void (^scheduleWake)(void) = ^{
-        sd_config c = s_cfg();
-        NSTimeInterval wakeInterval = ((NSTimeInterval)c.minutes * 60.0) - 30;
-        if (wakeInterval > 10) s_scheduleSystemWake(wakeInterval);
-    };
+    // v1.1.158：删除「预约下一次系统级唤醒」（IOPMSchedulePowerEvent）——
+    // signingd 短命化后由 launchd StartCalendarInterval 每 5 分钟定时拉起，
+    // 设备深睡错过调度会在唤醒后立即补执行，无需 IOPM 自定义唤醒。
 
     if (!waitForCompletion) {
         // 异步模式：定时器触发的正常流程，用 dispatch_after 不阻塞主循环
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ acquireAssertion(); });
-        scheduleWake();
         // result==7（后台内容刷新式启动）同样视为成功：App 实际已被拉起
         return (launchResult == 0 || launchResult == 7 || existingPid > 0);
     }
@@ -921,7 +861,6 @@ static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
     // ── 同步模式：--resign-now / SIGHUP 触发，阻塞等待 ──
     sleep(2);                 // 给 App 一点启动时间
     acquireAssertion();
-    scheduleWake();
 
     s_log(@"[完成] 唤醒流程结束 — App 将在后台静默执行续签");
     // result==7（后台内容刷新式启动）同样视为成功：App 实际已被拉起
@@ -1175,7 +1114,6 @@ static int s_printStatus(void) {
     sd_config c = s_cfg();
     printf("配置来源         : %s\n", gCfgSource.UTF8String);
     printf("自动续签开关     : %s\n", c.enabled ? "开" : "关");
-    printf("检查间隔         : %ld 分钟   ← 应与 App「设置」页一致\n", (long)c.minutes);
     printf("提前重签阈值     : %ld 天     ← 应与 App「设置」页一致\n", (long)c.days);
 
     // 2b. 免费账号 3 应用限制绕过
@@ -1315,8 +1253,8 @@ int main(int argc, char *argv[]) {
     chown(kPidPath.UTF8String, 501, 501);
 
     sd_config c = s_cfg();
-    s_log(@"配置: 自动=%@ 间隔=%ld分 阈值=%ld天",
-          c.enabled ? @"是" : @"否", (long)c.minutes, (long)c.days);
+    s_log(@"配置: 自动=%@ 阈值=%ld天",
+          c.enabled ? @"是" : @"否", (long)c.days);
     s_log(@"BundleID: %@ | 触发路径: %@", kAppBundleID, kTriggerPath);
     s_log(@"架构: Daemon(短命检查+唤醒+保活) → App(后台静默签名) → daemon 退出");
     s_log(@"      launchd 每 5 分钟重新拉起，用户无需手动打开 App");

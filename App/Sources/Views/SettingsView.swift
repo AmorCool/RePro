@@ -7,8 +7,6 @@ import Darwin
 struct SettingsView: View {
     @AppStorage("autoResign") private var autoResign: Bool = true
     @AppStorage("resignThreshold") private var resignThreshold: Int = 2
-    // checkIntervalMin: 检查间隔，单位分钟，默认 120（2小时），最少 1 分钟
-    @AppStorage("checkIntervalMin") private var checkIntervalMin: Int = 120
 
     // 免费账号「同一设备最多 3 个自签应用」限制绕过。
     // 键名必须与 repro-signingd.m 的 s_bypassEnabled() 读取的键一致。
@@ -16,10 +14,6 @@ struct SettingsView: View {
 
     // v1.1.128：低电量强制续签。键名必须与 repro-signingd.m 的 s_parseCfg() 读取的键一致。
     @AppStorage("forceResignLowPower") private var forceResignLowPower: Bool = false
-    /// 下次自动续签时间（signingd 持久化在 signingd-state.plist 的 nextFireDate）。
-    /// v1.1.129：详细 24 小时制 yyyy-MM-dd HH:mm:ss + 副行剩余倒计时，每 30 秒自动刷新
-    @State private var nextResignTimeText: String = "—"
-    @State private var nextResignCountdownText: String = "等待 daemon 调度…"
 
     /// 越狱联网修复（国行蜂窝/WiFi 权限重置）：执行中标记 + 结果弹窗
     @State private var isFixingCellular: Bool = false
@@ -32,11 +26,6 @@ struct SettingsView: View {
     /// 系统授权状态描述，onAppear 时刷新
     @State private var notifyStatusText: String = "检查中…"
     @State private var notifyNeedsSystemSettings = false
-
-    /// 从分钟数拆出的小时和分钟（纯展示用，不绑定 @AppStorage）
-    @State private var intervalHours: Int = 2
-    @State private var intervalMins: Int = 0
-    @State private var showIntervalPicker: Bool = false
 
     /// 日志文件大小（onAppear 时更新）
     @State private var logFileSize: String = "—"
@@ -89,14 +78,11 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .onAppear {
                 refreshEnvironment()
-                intervalHours = checkIntervalMin / 60
-                intervalMins  = checkIntervalMin % 60
                 refreshLogFileSize()
                 refreshNotificationStatus()
                 needsConfigSync = false
             }
             .onChange(of: autoResign) { _ in needsConfigSync = true }
-            .onChange(of: checkIntervalMin) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
             .onChange(of: forceResignLowPower) { _ in needsConfigSync = true }
             .onChange(of: account.isSignedIn) { signedIn in
@@ -272,91 +258,13 @@ struct SettingsView: View {
             // v1.1.128：低电量强制续签（原版 ReProvision 默认低电量跳过；开启后不跳过）
             Toggle("低电量强制续签", isOn: $forceResignLowPower)
 
-            // v1.1.128：展示 daemon 持久化的下一次自动续签时间（signingd-state.plist）
-            // v1.1.129：详细 24 小时制 + 副行倒计时，.task 每 30 秒自动刷新
-            HStack(alignment: .firstTextBaseline) {
-                Text("下次自动续签")
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(nextResignTimeText)
-                        .foregroundColor(.secondary)
-                        .onAppear { refreshNextResignTime() }
-                    Text(nextResignCountdownText)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .task {
-                    while !Task.isCancelled {
-                        refreshNextResignTime()
-                        try? await Task.sleep(nanoseconds: 30_000_000_000)
-                    }
-                }
-            }
-
-            // 展开式间隔选择
-            Button {
-                withAnimation { showIntervalPicker.toggle() }
-            } label: {
-                HStack {
-                    Text("检查间隔")
-                    Spacer()
-                    Text(formatInterval(hours: intervalHours, mins: intervalMins))
-                        .foregroundColor(.secondary)
-                    Image(systemName: showIntervalPicker ? "chevron.down" : "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            // v1.1.148: 解释「检查间隔」的含义，避免与「续签频率」混淆：
-            // 它只是 daemon 每过多久「看一眼有没有到期应用」，本身不产生续签动作；
-            // 真正决定续签频率的是「提前重签天数」（到期窗口）+ 续签后 24 小时冷却。
-            HStack(spacing: 6) {
-                Image(systemName: "info.circle")
-                    .foregroundColor(.secondary)
-                Text("检查间隔 = daemon 每隔多久检查一次到期情况，不是续签频率。续签受「提前重签天数」与「续签后 24 小时冷却」双重约束：即使检查间隔设为 1 分钟，距上次续签不足 24 小时也不会触发。")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            if showIntervalPicker {
-                VStack(spacing: 0) {
-                    HStack {
-                        Picker("小时", selection: $intervalHours) {
-                            ForEach(0...23, id: \.self) { h in
-                                Text("\(h) 小时").tag(h)
-                            }
-                        }
-                        .pickerStyle(.wheel)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-
-                        Picker("分钟", selection: $intervalMins) {
-                            ForEach(0...59, id: \.self) { m in
-                                Text("\(m) 分钟").tag(m)
-                            }
-                        }
-                        .pickerStyle(.wheel)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-                    }
-                    .frame(height: 160)
-
-                    Button("确定") {
-                        let totalMin = max(1, intervalHours * 60 + intervalMins)
-                        checkIntervalMin = totalMin
-                        intervalHours = totalMin / 60
-                        intervalMins  = totalMin % 60
-                        withAnimation { showIntervalPicker = false }
-                        LogManager.shared.info("检查间隔已更新: \(totalMin) 分钟", source: "SettingsView")
-                    }
-                    .padding(.vertical, 8)
-                }
-            }
+            // v1.1.158：已移除「检查间隔」与「下次自动续签」——signingd 短命化
+            // （launchd 每 5 分钟拉起一轮）后两者均为空壳摆设：检查间隔不再由
+            // 配置控制、也没有可展示的「计划触发时间」，相关代码一并删除。
         } header: {
             Text("自动重签")
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
-                Text("repro-signingd 守护进程以 root 权限定时检查并触发续签。全部日志写入 <jbroot>/var/log/reprorefresh_at.log（daemon + App 共同维护）。")
                 // v1.1.148: 把续签频率的完整逻辑讲清楚，用户无需翻代码就能理解
                 Text("续签频率 = 提前重签天数（到期窗口）+ 续签后 24 小时冷却。免费 Apple ID 的签名有效期只有 7 天，建议提前 2~3 天重签；上限 6 天，避免「签完还在窗口内」导致频繁全量重签。")
 
@@ -408,12 +316,9 @@ struct SettingsView: View {
                         .frame(width: 32)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("修复当前插件联网问题")
+                        Text("修复本插件联网")
                             .font(.body)
                             .foregroundColor(.primary)
-                        Text("当本插件无法联网（国行「允许使用数据」授权丢失）时，把 ReSign 自身的蜂窝/WiFi 数据策略重置为「始终允许」并刷新偏好缓存（cfprefsd）生效。其他应用请通过「设置 → 蜂窝网络」手动管理。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
 
                     Spacer()
@@ -530,43 +435,6 @@ struct SettingsView: View {
     private func openSystemNotificationSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
-    }
-
-    private func formatInterval(hours: Int, mins: Int) -> String {
-        if hours == 0 { return "\(mins) 分钟" }
-        if mins == 0 { return "\(hours) 小时" }
-        return "\(hours) 小时 \(mins) 分钟"
-    }
-
-    /// 读取 repro-signingd 持久化的下次续签时间（signingd-state.plist 的 nextFireDate）。
-    /// v1.1.129：像原版 ReProvision（NSDateFormatter MediumStyle）一样显示完整日期时间，
-    /// 但强制 24 小时制（en_US_POSIX locale + 自定义格式，不受系统 12/24 小时设置影响），
-    /// 副行显示剩余倒计时；页面可见时每 30 秒自动刷新。
-    private func refreshNextResignTime() {
-        let statePath = "/var/mobile/Library/RePro/signingd-state.plist"
-        guard let d = NSDictionary(contentsOfFile: statePath),
-              let next = d["nextFireDate"] as? Date else {
-            nextResignTimeText = "—"
-            nextResignCountdownText = "等待 daemon 调度…"
-            return
-        }
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
-
-        let remain = next.timeIntervalSinceNow
-        if remain > 0 {
-            nextResignTimeText = fmt.string(from: next)
-            let totalSec = Int(remain)
-            let mins = totalSec / 60
-            let secs = totalSec % 60
-            nextResignCountdownText = mins > 0 ? "约 \(mins) 分 \(secs) 秒后触发" : "\(secs) 秒后触发"
-        } else {
-            // v1.1.130：过期/已触发后不再显示过去的完整时间（易误读），
-            // 显示「等待 daemon 调度…」——daemon 启动时会按过期处理并立即续签
-            nextResignTimeText = "等待 daemon 调度…"
-            nextResignCountdownText = "即将触发…"
-        }
     }
 
     // MARK: - 签名后端
