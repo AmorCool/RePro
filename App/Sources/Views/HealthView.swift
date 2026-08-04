@@ -65,8 +65,6 @@ struct HealthView: View {
                                               : (snapshot!.rootHelperAvailable ? .good : .warning))
         } header: {
             Text("签名后端")
-        } footer: {
-            Text("root helper 只在需要写系统描述文件时按需拉起，用完即退；缺失时会退回直接写文件，部分越狱环境下可能失败。")
         }
     }
 
@@ -115,16 +113,37 @@ struct HealthView: View {
     }
 
     // MARK: 操作
+    //
+    // 关键设计：ProgressView 必须放在 Button label 内部，**不能**作为
+    // 独立的 List 行存在。否则 isLoading 切换会让 List 高度突变（多/少
+    // 一行 ProgressView），iOS 17 上会触发 _UITabBarVisualProvider 的
+    // safeAreaInsets 重算，配合 roothide launchdhook 注入的 UIKit
+    // 拦截器，最终表现为「系统 TabBar 在刷新瞬间上下抖动」（用户称「鬼畜」）。
+    // 把 spinner 嵌进 button label，List 整列高度恒定，TabBar 不再抖动。
 
     private var actionsSection: some View {
         Section {
-            Button("刷新状态") { refresh() }
-                .disabled(isLoading)
+            Button {
+                refresh()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.body)
+                        .foregroundColor(.blue)
+                        .frame(width: 24)
 
-            if isLoading {
-                ProgressView("正在检测…")
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    Text("刷新状态")
+                        .foregroundColor(.primary)
+
+                    Spacer()
+
+                    if isLoading {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    }
+                }
             }
+            .disabled(isLoading)
         }
     }
 
@@ -169,6 +188,11 @@ struct HealthRow: View {
                 .font(.callout)
             statusIcon
         }
+        // 旁白默认会把 label/value/icon 拆成三个独立元素念出来，体验割裂。
+        // 这里合并成一个「label：value（状态）」完整短语。
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label)：\(value)")
+        .accessibilityValue(accessibilityStatusText)
     }
 
     private var statusColor: Color {
@@ -178,6 +202,16 @@ struct HealthRow: View {
         case .warning: return .orange
         case .unknown: return .secondary
         case .neutral: return .secondary
+        }
+    }
+
+    private var accessibilityStatusText: String {
+        switch status {
+        case .good: return "正常"
+        case .bad: return "异常"
+        case .warning: return "需关注"
+        case .unknown: return "未知"
+        case .neutral: return ""
         }
     }
 
