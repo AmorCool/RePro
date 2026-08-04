@@ -64,7 +64,9 @@ struct SettingsView: View {
     @State private var loginAttempt: Int = 0
     @State private var loginTimeoutWorkItem: DispatchWorkItem?
     private let loginTimeout: TimeInterval = 30
-    private let loginMaxRetries: Int = 2
+    /// 登录失败「确认后强制重试」alert 状态
+    @State private var showingLoginRetryAlert = false
+    @State private var loginFailureReason: String = ""
 
     @State private var availableTeams: [DeveloperTeam] = []
     @State private var showingTeamSheet = false
@@ -143,6 +145,14 @@ struct SettingsView: View {
                 Button("好", role: .cancel) {}
             } message: {
                 Text(fixCellularMessage)
+            }
+            .alert("登录失败", isPresented: $showingLoginRetryAlert) {
+                Button("重试") { attemptLogin() }
+                Button("取消", role: .cancel) {
+                    loginMessage = "登录失败: \(loginFailureReason)"
+                }
+            } message: {
+                Text(loginFailureReason)
             }
             .sheet(isPresented: $showingTeamSheet) { teamSheet }
         }
@@ -685,12 +695,13 @@ struct SettingsView: View {
     // MARK: - 动作
 
     private func performLogin() {
-        attemptLogin(retryCount: 0)
+        attemptLogin()
     }
 
-    /// 一次登录尝试：带超时看门狗 + 网络错误自动重试。
-    /// 每次尝试用 loginAttempt 作为 epoch，旧的迟到回调会被忽略，避免重试时重复处理。
-    private func attemptLogin(retryCount: Int) {
+    /// 一次登录尝试：带超时看门狗。登录失败不再自动重试，
+    /// 改为弹出「确认后强制重试」alert，由用户决定是否重试。
+    /// 每次尝试用 loginAttempt 作为 epoch，旧的迟到回调会被忽略，避免重复处理。
+    private func attemptLogin() {
         loginTimeoutWorkItem?.cancel()
 
         let attempt = loginAttempt + 1
@@ -698,11 +709,7 @@ struct SettingsView: View {
 
         isLoggingIn = true
         loginSucceeded = false
-        if retryCount > 0 {
-            loginMessage = "网络异常，正在自动重试（\(retryCount)/\(loginMaxRetries)）…"
-        } else {
-            loginMessage = nil
-        }
+        loginMessage = nil
 
         let workItem = DispatchWorkItem { [self] in
             guard self.loginAttempt == attempt else { return }
@@ -710,8 +717,7 @@ struct SettingsView: View {
             self.loginSucceeded = false
             self.loginMessage = "登录超时（网络可能不稳定），请重试"
             LogManager.shared.error("Apple ID 登录超时（\(Int(self.loginTimeout))s 无响应）", source: "SettingsView")
-            // 超时按网络错误处理，走自动重试
-            self.handleLoginFailure(reason: "timeout", retryCount: retryCount)
+            self.handleLoginFailure(reason: "timeout")
         }
         loginTimeoutWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + loginTimeout, execute: workItem)
@@ -719,11 +725,11 @@ struct SettingsView: View {
         account.login(appleID: appleID, password: password) { [self] step in
             guard self.loginAttempt == attempt else { return }
             workItem.cancel()
-            self.handleLoginStep(step, retryCount: retryCount)
+            self.handleLoginStep(step)
         }
     }
 
-    private func handleLoginStep(_ step: BridgeClient.LoginStep, retryCount: Int = 0) {
+    private func handleLoginStep(_ step: BridgeClient.LoginStep) {
         switch step {
         case .chooseTeam(let teams):
             if teams.count == 1, let only = teams.first {
@@ -751,33 +757,17 @@ struct SettingsView: View {
             }
 
         case .failed(let reason):
-            handleLoginFailure(reason: reason, retryCount: retryCount)
+            handleLoginFailure(reason: reason)
         }
     }
 
-    /// 登录失败统一处理：网络/超时类错误自动重试（最多 loginMaxRetries 次）；
-    /// 账号/密码类错误直接报错，不重试以免死循环。
-    private func handleLoginFailure(reason: String, retryCount: Int) {
-        let lower = reason.lowercased()
-        let isNetworkish = reason.contains("超时") || reason.contains("timeout") || reason.contains("timed out")
-            || reason.contains("网络") || reason.contains("network") || reason.contains("connection")
-            || reason.contains("连接") || reason.contains("离线") || reason.contains("offline")
-            || reason.contains("请求失败") || reason.contains("could not connect")
-            || reason.contains("nsurlerrordomain") || reason.contains("dns")
-        let isCredential = reason.contains("密码") || lower.contains("incorrect")
-            || reason.contains("不正确") || reason.contains("app-specific")
-            || reason.contains("验证") || reason.contains("2fa")
-        if isNetworkish && !isCredential && retryCount < loginMaxRetries {
-            let next = retryCount + 1
-            LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
-                self.attemptLogin(retryCount: next)
-            }
-            return
-        }
+    /// 登录失败统一处理：移除自动重试检测，改为「确认后强制重试」——
+    /// 弹出 alert 展示失败原因，用户点「重试」才再次尝试，避免无意义的自动循环。
+    private func handleLoginFailure(reason: String) {
         isLoggingIn = false
         loginSucceeded = false
-        loginMessage = "登录失败: \(reason)"
+        loginFailureReason = reason
+        showingLoginRetryAlert = true
         LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
     }
 
