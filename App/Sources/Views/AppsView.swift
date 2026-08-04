@@ -378,8 +378,8 @@ struct AppsView: View {
 
 // MARK: - 徽标辅助
 
-/// 通用胶囊徽标
-private func pill(_ text: String, color: Color) -> some View {
+/// 通用胶囊徽标（与 pill 等价，统一命名）
+private func badge(_ text: String, color: Color) -> some View {
     Text(text)
         .font(.caption2)
         .padding(.horizontal, 6)
@@ -387,6 +387,11 @@ private func pill(_ text: String, color: Color) -> some View {
         .background(color.opacity(0.15))
         .foregroundColor(color)
         .cornerRadius(4)
+}
+
+/// 通用胶囊徽标（保留旧名兼容）
+private func pill(_ text: String, color: Color) -> some View {
+    badge(text, color: color)
 }
 
 /// 证书 / Apple ID 来源徽标（依据 embedded.mobileprovision 到期时间判定：
@@ -399,7 +404,47 @@ private func signingSourcePill(_ app: InstalledApp) -> some View {
     case .appleID: (color, text) = (.blue, "Apple ID")
     case .unknown: (color, text) = (.secondary, "未知")
     }
-    return pill(text, color: color)
+    return badge(text, color: color)
+}
+
+// MARK: - 公共行组件（三个 RowView 共用，消除三份拷贝）
+
+/// 应用图标（48×48 圆角，无图标时显示占位）
+private struct AppIconView: View {
+    let icon: UIImage?
+    var body: some View {
+        if let icon = icon {
+            Image(uiImage: icon)
+                .resizable()
+                .frame(width: 48, height: 48)
+                .cornerRadius(10)
+        } else {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 48, height: 48)
+                .overlay(Image(systemName: "app").foregroundColor(.secondary))
+        }
+    }
+}
+
+/// 有效时间徽标：已过期 / 临近过期 / 有效 / 无描述文件
+private struct ExpiryBadgeView: View {
+    let app: InstalledApp
+    var body: some View {
+        if let daysLeft = app.daysUntilExpiry {
+            if daysLeft < 0 {
+                badge("已过期", color: .red)
+            } else if daysLeft <= 3 {
+                badge("\(daysLeft) 天后过期", color: .orange)
+            } else {
+                badge("有效 (\(daysLeft) 天)", color: .green)
+            }
+        } else if app.hasEmbeddedProvision {
+            badge("到期时间未知", color: .secondary)
+        } else {
+            badge("无描述文件", color: .secondary)
+        }
+    }
 }
 
 // MARK: - 应用行视图
@@ -410,7 +455,7 @@ struct AppRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            icon
+            AppIconView(icon: app.icon)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.displayName)
@@ -426,7 +471,7 @@ struct AppRowView: View {
                         .frame(maxWidth: 160)
                 } else {
                     HStack(spacing: 4) {
-                        expiryBadge
+                        ExpiryBadgeView(app: app)
                         signingSourcePill(app)
                     }
                 }
@@ -446,48 +491,6 @@ struct AppRowView: View {
         }
         .padding(.vertical, 4)
     }
-
-    @ViewBuilder
-    private var icon: some View {
-        if let icon = app.icon {
-            Image(uiImage: icon)
-                .resizable()
-                .frame(width: 48, height: 48)
-                .cornerRadius(10)
-        } else {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.3))
-                .frame(width: 48, height: 48)
-                .overlay(Image(systemName: "app").foregroundColor(.secondary))
-        }
-    }
-
-    @ViewBuilder
-    private var expiryBadge: some View {
-        if let daysLeft = app.daysUntilExpiry {
-            if daysLeft < 0 {
-                badge("已过期", color: .red)
-            } else if daysLeft <= 3 {
-                badge("\(daysLeft) 天后过期", color: .orange)
-            } else {
-                badge("有效 (\(daysLeft) 天)", color: .green)
-            }
-        } else if app.hasEmbeddedProvision {
-            badge("到期时间未知", color: .secondary)
-        } else {
-            badge("无描述文件", color: .secondary)
-        }
-    }
-
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption2)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .foregroundColor(color)
-            .cornerRadius(4)
-    }
 }
 
 // MARK: - 其他应用行视图
@@ -503,7 +506,7 @@ struct OtherAppRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            icon
+            AppIconView(icon: app.icon)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.displayName)
@@ -516,7 +519,7 @@ struct OtherAppRowView: View {
 
                 // 与 AppRowView 同款徽标：有效期 + 证书 / Apple ID 来源
                 HStack(spacing: 4) {
-                    expiryBadge
+                    ExpiryBadgeView(app: app)
                     signingSourcePill(app)
                 }
             }
@@ -536,49 +539,6 @@ struct OtherAppRowView: View {
         .padding(.vertical, 4)   // 与 AppRowView 一致，去掉额外水平内边距，避免行内容被挤压
         .contentShape(Rectangle())
     }
-
-    @ViewBuilder
-    private var icon: some View {
-        if let icon = app.icon {
-            Image(uiImage: icon)
-                .resizable()
-                .frame(width: 48, height: 48)
-                .cornerRadius(10)
-        } else {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.3))
-                .frame(width: 48, height: 48)
-                .overlay(Image(systemName: "app").foregroundColor(.secondary))
-        }
-    }
-
-    /// 有效时间徽标（与 AppRowView.expiryBadge 同款）：已过期 / 临近过期 / 有效 / 无描述文件
-    @ViewBuilder
-    private var expiryBadge: some View {
-        if let daysLeft = app.daysUntilExpiry {
-            if daysLeft < 0 {
-                badge("已过期", color: .red)
-            } else if daysLeft <= 3 {
-                badge("\(daysLeft) 天后过期", color: .orange)
-            } else {
-                badge("有效 (\(daysLeft) 天)", color: .green)
-            }
-        } else if app.hasEmbeddedProvision {
-            badge("到期时间未知", color: .secondary)
-        } else {
-            badge("无描述文件", color: .secondary)
-        }
-    }
-
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption2)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .foregroundColor(color)
-            .cornerRadius(4)
-    }
 }
 
 // MARK: - 小黑屋应用行视图
@@ -589,7 +549,7 @@ struct BlacklistRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            icon
+            AppIconView(icon: app.icon)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.displayName)
@@ -602,11 +562,8 @@ struct BlacklistRowView: View {
                     .lineLimit(1)
 
                 // 有效时间 + 证书 / Apple ID 来源
-                // 小黑屋里的「ReSign 签应用 / 其它应用」来源徽标已删除——
-                // 用户实测三徽标挤一行时 "ReSign" 被压成两行（"ReSig\nn"），
-                // 删掉后剩两个徽标各自有足够空间显示。
                 HStack(spacing: 4) {
-                    expiryBadge
+                    ExpiryBadgeView(app: app)
                     signingSourcePill(app)
                 }
             }
@@ -626,48 +583,5 @@ struct BlacklistRowView: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 16)
         .contentShape(Rectangle())
-    }
-
-    /// 有效时间徽标（与 AppRowView.expiryBadge 同款）：已过期 / 临近过期 / 有效 / 无描述文件
-    @ViewBuilder
-    private var expiryBadge: some View {
-        if let daysLeft = app.daysUntilExpiry {
-            if daysLeft < 0 {
-                badge("已过期", color: .red)
-            } else if daysLeft <= 3 {
-                badge("\(daysLeft) 天后过期", color: .orange)
-            } else {
-                badge("有效 (\(daysLeft) 天)", color: .green)
-            }
-        } else if app.hasEmbeddedProvision {
-            badge("到期时间未知", color: .secondary)
-        } else {
-            badge("无描述文件", color: .secondary)
-        }
-    }
-
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption2)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .foregroundColor(color)
-            .cornerRadius(4)
-    }
-
-    @ViewBuilder
-    private var icon: some View {
-        if let icon = app.icon {
-            Image(uiImage: icon)
-                .resizable()
-                .frame(width: 48, height: 48)
-                .cornerRadius(10)
-        } else {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.3))
-                .frame(width: 48, height: 48)
-                .overlay(Image(systemName: "app").foregroundColor(.secondary))
-        }
     }
 }

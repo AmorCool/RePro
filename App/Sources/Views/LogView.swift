@@ -250,9 +250,14 @@ struct LogEntryRow: View {
         .padding(.vertical, 6)
     }
 
+    // 静态 formatter 复用，避免每行日志都 new 一个 DateFormatter（列表 5000 行时开销显著）
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
+        return LogEntryRow.timeFormatter.string(from: date)
     }
 }

@@ -140,10 +140,15 @@ struct HealthView: View {
         }
     }
 
+    // 静态 formatter 复用（refresh 每次调用都创建新 formatter，不必要）
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
+
     private func formatExpiry(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return HealthView.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 }
 

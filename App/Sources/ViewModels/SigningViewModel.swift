@@ -55,6 +55,12 @@ final class SigningViewModel: ObservableObject {
         }
     }
 
+    deinit {
+        if let obs = blacklistObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+    }
+
     // MARK: - 进度订阅
 
     private func bindSigningCallbacks() {

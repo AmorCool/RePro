@@ -47,8 +47,29 @@ func DaemonLogDefaultPath() -> String {
 }
 
 /// 同步写入一行到 daemon 日志（在 LogManager.append 中调用）
+/// 内置 2 MB 轮转：超出后截断保留后半段，避免长期运行撑满磁盘
 private func daemonLogWrite(ts: String, source: String, message: String) {
     guard let f = gDaemonLogFile else { return }
+
+    // 每写入 ~100 行检查一次文件大小（避免每次都 stat 的开销）
+    static var writeCount: Int = 0
+    writeCount += 1
+    if writeCount % 100 == 1, let path = gDaemonLogPath {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? Int64,
+           size > LogManager.maxDaemonLogSize {
+            // 截断：关闭当前文件 → 重开（fopen "w" 清空）→ 写入轮转标记
+            fclose(f)
+            gDaemonLogFile = nil
+            if let nf = fopen(path, "w") {
+                gDaemonLogFile = nf
+                chmod(path, 0666)
+                fputs("=== 日志文件已自动轮转（超出 2 MB 上限，旧日志已清除）===\n", nf)
+                fflush(nf)
+            }
+        }
+    }
+
     let line = "[\(ts)] [\(source)] \(message)\n"
     fputs(line, f)
     fflush(f)
@@ -101,13 +122,23 @@ class LogManager: ObservableObject {
         #endif
     }
 
+    // 静态 formatter 复用（append 每秒可能被调用多次，避免反复创建 DateFormatter）
+    private static let dateFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
+
+    // daemon 日志文件大小上限（2 MB），超出后截断保留后半段
+    private static let maxDaemonLogSize: Int64 = 2 * 1024 * 1024
+
     private func append(level: LogLevel, message: String, source: String) {
         let now = Date()
         let entry = LogEntry(id: UUID(), timestamp: now, level: level, message: message, source: source)
 
         // daemon 日志：同步写入（最关键——不用 async，不丢数据）
-        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        daemonLogWrite(ts: df.string(from: now), source: source, message: message)
+        let ts = LogManager.dateFormat.string(from: now)
+        daemonLogWrite(ts: ts, source: source, message: message)
 
         // 内存日志：异步更新 UI
         queue.async { [weak self] in

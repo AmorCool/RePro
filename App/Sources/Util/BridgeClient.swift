@@ -22,8 +22,9 @@ final class BridgeClient: ObservableObject {
     var savedPassword: String? { bridge.savedPassword }
 
     /// bundleID → 显示名。发通知时把「com.xxx.yyy」换成用户看得懂的名字，
-    /// 由 fetchInstalledApps 顺带刷新。
+    /// 由 fetchInstalledApps 顺带刷新。上限 500 条（远超实际安装量），超出后清空重建。
     private var appNameCache: [String: String] = [:]
+    private static let maxAppNameCacheSize = 500
 
     /// 界面层（SigningViewModel）注册的进度 / 错误订阅者。
     /// 桥接层的 handler 全局只有一份，统一由本类持有后再转发，
@@ -128,7 +129,10 @@ final class BridgeClient: ObservableObject {
                 return
             }
             let apps = infos.map(InstalledApp.init(info:))
-            // 顺带刷新通知用的名字表
+            // 顺带刷新通知用的名字表（超上限时清空重建，防止长期运行后只增不减）
+            if self!.appNameCache.count > BridgeClient.maxAppNameCacheSize {
+                self!.appNameCache.removeAll()
+            }
             for app in apps {
                 self?.appNameCache[app.bundleIdentifier] = app.displayName
             }

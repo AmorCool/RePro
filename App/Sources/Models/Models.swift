@@ -44,9 +44,16 @@ struct InstalledApp: Identifiable, Hashable {
     /// 这样列表刷新后 SwiftUI 仍能把同一个应用对上号。
     var id: String { bundleIdentifier }
 
+    /// 缓存解码后的图标（避免列表滚动时每帧都 UIImage(data:) 重新解码 PNG）
+    /// SwiftUI 的 List 在滚动时会反复调用此属性，不缓存会导致明显卡顿。
+    private var _cachedIcon: UIImage?
+
     var icon: UIImage? {
+        if let cached = _cachedIcon { return cached }
         guard let data = iconData else { return nil }
-        return UIImage(data: data)
+        let decoded = UIImage(data: data)
+        _cachedIcon = decoded
+        return decoded
     }
 
     /// 距离证书过期还剩几天；没有到期日时返回 nil
@@ -262,10 +269,13 @@ struct RegisteredAppID: Identifiable, Hashable {
         if days < 0 { return "已过期 \(abs(days)) 天" }
         if days == 0 { return "今天过期" }
         if days <= 30 { return "\(days) 天后过期" }
-        // 超过 30 天显示具体日期
-        let fmt = DateFormatter()
-        fmt.dateStyle = .medium
-        if let expiry = applicationExpiryDate { return fmt.string(from: expiry) }
+        // 超过 30 天显示具体日期（静态 formatter 复用）
+        static let mediumFmt: DateFormatter = {
+            let f = DateFormatter()
+            f.dateStyle = .medium
+            return f
+        }()
+        if let expiry = applicationExpiryDate { return RegisteredAppID.mediumFmt.string(from: expiry) }
         return "未知"
     }
 
