@@ -371,6 +371,117 @@ static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
     return 0;
 }
 
+/// 国行「允许使用数据」授权的终极手段：删除 NetworkExtension 缓存 + 重启 CommCenter。
+/// 🔴 情报来源（Undecimus issue #1112 + rootlessJB 时代官方 workaround）：
+///    国行 iOS 10.3+ 的「允许使用数据」授权数据实际存在
+///    /var/preferences/com.apple.networkextension.plist / .necp.plist / .cache.plist，
+///    越狱后弹窗机制损坏导致授权条目缺失 → App 蜂窝被禁。
+///    删除这三个文件 + killall CommCenter 后系统重新评估所有 App 的蜂窝授权，
+///    对系统应用（com.apple.*）、App Store、越狱工具自身全部生效。
+///    root 直接删文件，不需要任何 entitlement。
+static void RPVHelperFixCellularResetNetworkExtension(void) {
+    NSArray<NSString *> *paths = @[
+        @"/var/preferences/com.apple.networkextension.plist",
+        @"/var/preferences/com.apple.networkextension.necp.plist",
+        @"/var/preferences/com.apple.networkextension.cache.plist",
+        // rootless/roothide 的 jbroot 变体（若存在）
+        @"/var/jb/var/preferences/com.apple.networkextension.plist",
+        @"/var/jb/var/preferences/com.apple.networkextension.necp.plist",
+        @"/var/jb/var/preferences/com.apple.networkextension.cache.plist",
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    int removed = 0;
+    for (NSString *p in paths) {
+        if ([fm fileExistsAtPath:p]) {
+            NSError *err = nil;
+            if ([fm removeItemAtPath:p error:&err]) {
+                removed++;
+                RPVHelperLog(@"fix-cellular(netext): 已删除 %@", p);
+            } else {
+                RPVHelperLog(@"fix-cellular(netext): 删除 %@ 失败: %@", p, err.localizedDescription);
+            }
+        }
+    }
+    if (removed > 0) {
+        RPVHelperLog(@"fix-cellular(netext): 共删除 %d 个缓存，重启 CommCenter 使系统重新评估蜂窝授权", removed);
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("/usr/bin/killall", "killall", "CommCenter", (char *)NULL);
+            execl("/var/jb/usr/bin/killall", "killall", "CommCenter", (char *)NULL);
+            _exit(127);
+        }
+        if (pid > 0) {
+            waitpid(pid, NULL, 0);
+        }
+    } else {
+        RPVHelperLog(@"fix-cellular(netext): 未找到 networkextension 缓存（已清理过或本机无此机制）");
+    }
+}
+
+/// 另一条 Renet 路径：AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案）。
+/// Undecimus issue #1112：setAppWirelessDataOption:@(3)（3=WLAN与蜂窝全允许）+
+/// setAppCellularDataEnabled:@(1)。iOS 17 若类仍在则有效，否则跳过。
+static void RPVHelperFixCellularViaAppWirelessDataUsageManager(NSArray<NSString *> *bundleIDs) {
+    void *prefsHandle = dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences",
+                               RTLD_NOW);
+    Class mgr = NSClassFromString(@"AppWirelessDataUsageManager");
+    if (!mgr && prefsHandle) {
+        mgr = NSClassFromString(@"AppWirelessDataUsageManager");
+    }
+    if (!mgr) {
+        RPVHelperLog(@"fix-cellular(awdum): AppWirelessDataUsageManager 不存在（iOS 17 可能已移除），跳过");
+        return;
+    }
+
+    SEL setWireless = NSSelectorFromString(@"setAppWirelessDataOption:forBundleIdentifier:completionHandler:");
+    SEL setCellular = NSSelectorFromString(@"setAppCellularDataEnabled:forBundleIdentifier:completionHandler:");
+    if (![mgr respondsToSelector:setWireless] || ![mgr respondsToSelector:setCellular]) {
+        RPVHelperLog(@"fix-cellular(awdum): 方法缺失 setWireless=%d setCellular=%d",
+                     [mgr respondsToSelector:setWireless], [mgr respondsToSelector:setCellular]);
+        return;
+    }
+
+    NSNumber *optionAll = @(3);  // 3 = WLAN 与蜂窝（全允许）
+    NSNumber *enabled = @(1);    // 1 = 蜂窝启用
+    int okWireless = 0, okCellular = 0;
+    for (NSString *bid in bundleIDs) {
+        @try {
+            // 类方法：AppWirelessDataUsageManager 是类方法调用
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:
+                [mgr methodSignatureForSelector:setWireless]];
+            [inv setTarget:mgr];
+            [inv setSelector:setWireless];
+            [inv setArgument:&optionAll atIndex:2];
+            [inv setArgument:&bid atIndex:3];
+            dispatch_block_t done = ^{};
+            [inv setArgument:&done atIndex:4];
+            [inv retainArguments];
+            [inv invoke];
+            okWireless++;
+        } @catch (NSException *e) {
+            RPVHelperLog(@"fix-cellular(awdum): %@ wireless 异常: %@", bid, e.reason);
+        }
+        @try {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:
+                [mgr methodSignatureForSelector:setCellular]];
+            [inv setTarget:mgr];
+            [inv setSelector:setCellular];
+            [inv setArgument:&enabled atIndex:2];
+            [inv setArgument:&bid atIndex:3];
+            dispatch_block_t done = ^{};
+            [inv setArgument:&done atIndex:4];
+            [inv retainArguments];
+            [inv invoke];
+            okCellular++;
+        } @catch (NSException *e) {
+            RPVHelperLog(@"fix-cellular(awdum): %@ cellular 异常: %@", bid, e.reason);
+        }
+    }
+    RPVHelperLog(@"fix-cellular(awdum): setAppWirelessDataOption %d/%lu, setAppCellularDataEnabled %d/%lu",
+                 okWireless, (unsigned long)bundleIDs.count,
+                 okCellular, (unsigned long)bundleIDs.count);
+}
+
 /// 枚举已安装应用 bundle id：多路径尝试安装记录 + 容器 metadata 兜底 + /Applications 兜底。
 /// 注意：iOS 15+ com.apple.mobile.installation.plist 已不存在；容器真实路径是
 /// /var/containers/Bundle/Application（小写 containers，无 mobile 段）。
@@ -681,11 +792,15 @@ static int RPVHelperFixCellular(void) {
         return 3;
     }
 
-    // ── 双路径都执行（不短路）──
+    // ── 四路径都执行（不短路）──
     // ①CoreTelephony C 函数：对用户应用（有策略条目的）有效，但系统应用(com.apple.*)与
     //   越狱工具自身常被忽略（返回 2，无策略条目）。
     // ②SettingsCellular setPolicies:completion:：设置 App 改「每个 App 蜂窝开关」用的正是它，
-    //   能覆盖系统应用；两者互补，缺一不可。
+    //   能覆盖系统应用。
+    // ③AppWirelessDataUsageManager（Preferences.framework）：Renet/Undecimus iOS 11 官方方案，
+    //   setAppWirelessDataOption:@(3)（WLAN与蜂窝全允许）。
+    // ④删除 networkextension 缓存 + 重启 CommCenter：国行「允许使用数据」授权的终极手段，
+    //   系统应用/App Store/越狱工具自身全部重新评估，root 删文件无需 entitlement。
     int ctRet = RPVHelperFixCellularViaCTServer(bundleIDs);
     if (ctRet != 0) {
         RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)", ctRet);
@@ -694,6 +809,8 @@ static int RPVHelperFixCellular(void) {
     if (objcRet != 0) {
         RPVHelperLog(@"fix-cellular: SettingsCellular 路径失败(code=%d)", objcRet);
     }
+    RPVHelperFixCellularViaAppWirelessDataUsageManager(bundleIDs);
+    RPVHelperFixCellularResetNetworkExtension();
 
     RPVHelperRestartSpringBoard();
     RPVHelperLog(@"fix-cellular 完成");
