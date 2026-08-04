@@ -52,6 +52,7 @@
 #include <time.h>
 #include <signal.h>
 #include <dlfcn.h>
+#import <mach/mach.h>
 #import <Foundation/Foundation.h>
 
 static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
@@ -100,6 +101,71 @@ static int gBacklightToken = 0;
 // 用于判断续签是否真的成功：记录每次续签的开始/结束时间和状态
 static time_t     gResignStartTime = 0;       // 本次续签开始时间
 static BOOL       gResignInProgress = NO;     // 是否有续签正在进行
+
+// ─── 内存看门狗（v1.1.150：RootHide 拦截器泄漏自救，方案A）────────────────
+// 背景：RootHide 的 systemhook/XPC 拦截器在常驻进程里持续泄漏内存，本 daemon
+// 曾被实测涨到 3.6~5.1GB（Jetsam physicalPages.internal 实锤）。daemon 自身
+// 代码无大分配点，无法从代码层面止住泄漏 → 只能「定期自检、超限主动重启」：
+// launchd 配了 KeepAlive=true，退出后立刻拉起新进程，泄漏随旧进程一起释放。
+// 1.5GB 上限：正常 daemon 常驻 <100MB，签一次名峰值也就几百 MB，1.5GB 远超
+// 正常水位；签名进行中（gResignInProgress）不退出，避免打断签名。
+// 前向声明：s_log 定义在下方（C99 要求先声明后使用）
+static void s_log(NSString *fmt, ...);
+static const uint64_t kMemWatchdogLimit = 1500ULL * 1024 * 1024;  // 1.5 GB
+
+static void s_memWatchdogTick(void) {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+    kern_return_t kr = task_info(mach_task_self(), TASK_VM_INFO,
+                                 (task_info_t)&info, &cnt);
+    if (kr != KERN_SUCCESS) return;
+    double mb = (double)info.phys_footprint / (1024.0 * 1024.0);
+    if (info.phys_footprint <= kMemWatchdogLimit) {
+        // 日常每 30 分钟（6 个 tick）记录一次水位，便于在日志里观察泄漏曲线
+        static int quiet = 0;
+        if (++quiet >= 6) { quiet = 0; s_log(@"内存看门狗: 当前 %.0f MB（上限 1500 MB）", mb); }
+        return;
+    }
+    if (gResignInProgress) {
+        s_log(@"内存看门狗: %.0f MB 已超上限，但续签进行中，下轮再检查", mb);
+        return;
+    }
+    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB 超 1.5GB 上限 → 主动退出，launchd 将立即重新拉起", mb);
+    s_log(@"   （这是针对 RootHide 拦截器内存泄漏的自救：旧进程释放后泄漏清零，不影响续签调度）");
+    if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
+    exit(0);
+}
+
+static void s_startMemWatchdog(void) {
+    static dispatch_source_t wd = NULL;
+    if (wd) return;
+    wd = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(wd, dispatch_time(DISPATCH_TIME_NOW, 5 * 60 * NSEC_PER_SEC),
+                              5 * 60 * NSEC_PER_SEC, 10 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(wd, ^{ s_memWatchdogTick(); });
+    dispatch_resume(wd);
+    s_log(@"内存看门狗已启动（每 5 分钟自检，超 1.5GB 主动重启，签名中不退出）");
+}
+
+// ─── 崩溃循环检测（v1.1.150，方案C）──────────────────────────────────
+// daemon 每次被 launchd 拉起都记一次。若 10 分钟内 ≥3 次，说明在崩溃循环
+// （RootHide hook 不稳定时常见），写醒目告警帮助定位是环境问题还是代码问题。
+static void s_checkCrashLoop(void) {
+    NSString *path = [kIpcDir stringByAppendingString:@"/signingd-crash-count.plist"];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:path];
+    double first = d ? [d[@"first"] doubleValue] : 0;
+    NSInteger count = d ? [d[@"count"] integerValue] : 0;
+    time_t now = time(NULL);
+    if (first <= 0 || (now - (time_t)first) > 600) { first = now; count = 1; }
+    else { count += 1; }
+    [@{@"first": @(first), @"count": @(count)} writeToFile:path atomically:YES];
+    chown(path.UTF8String, 501, 501);
+    if (count >= 3) {
+        s_log(@"⚠️⚠️⚠️ daemon 10 分钟内已被拉起 %ld 次（崩溃循环）", (long)count);
+        s_log(@"   疑似 RootHide hook 环境问题 —— 建议更新 RootHide/roothide，或重装本 deb；");
+        s_log(@"   若重启后仍循环，用 --status 排查，并把本日志反馈给作者");
+    }
+}
 static NSInteger  gResignTotalCount  = 0;     // 累计续签次数
 static NSInteger  gResignSuccessCount = 0;    // 成功次数
 static NSString *gLastResignStatus  = @"";    // 上次续签状态
@@ -1323,6 +1389,12 @@ int main(int argc, char *argv[]) {
     s_log(@"  sudo launchctl kickstart -k system/jp.soh.reprovision.signingd  ← 重启 daemon");
     s_log(@"========================================");
     s_setup_signal_handlers();
+
+    // v1.1.150：崩溃循环检测（方案C）——10 分钟内反复被拉起 → 告警疑似 RootHide hook 问题
+    s_checkCrashLoop();
+
+    // v1.1.150：内存看门狗（方案A）——超 1.5GB 主动退出，清 RootHide 拦截器泄漏
+    s_startMemWatchdog();
 
     // v1.1.67：启动时自检自身 entitlement + namespace（每次触发也会再打印）
     s_report_self_entitlements();
