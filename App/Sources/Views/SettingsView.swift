@@ -391,7 +391,7 @@ struct SettingsView: View {
         guard !isFixingCellular else { return }
         isFixingCellular = true
         LogManager.shared.info("用户点击「修复蜂窝数据」，经 root helper 执行", source: "SettingsView")
-        RPVBridge.sharedInstance()?.fixCellularData { success, message in
+        RPVBridge.sharedInstance().fixCellularData { success, message in
             isFixingCellular = false
             fixCellularMessage = message ?? (success ? "修复完成" : "修复失败")
             showFixCellularAlert = true
