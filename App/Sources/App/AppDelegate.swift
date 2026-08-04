@@ -154,51 +154,66 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         LogManager.shared.info("══════ 静默续签开始（daemon 后台拉起 pid=\(getpid())）══════", source: "AppDelegate")
 
-        let d = UserDefaults.standard
-        let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
-
-        // 锁屏/刚唤醒（锁屏界面尚未解锁）时 SAMKeychain 可能暂时读不到密码，导致 isSignedIn 为假。
-        // 重试最多 3 次（每次间隔 5 秒）兜底；但真正的修复在 v1.1.90：
-        // 旧版 migrateKeychainAccessibility 走 SecItemUpdate，根本改不了 kSecAttrAccessible
-        // （该属性只能在 SecItemAdd 创建时设定），所以密码项一直停留在 WhenUnlocked；
-        // v1.1.90 改为「删后重建」+ 刷新本地凭证缓存文件，后台锁屏也能读到密码。
-        let maxRetry = 3
-        for attempt in 1...maxRetry {
-            BridgeClient.shared.refreshAccountState()
-            if BridgeClient.shared.isSignedIn { break }
-            if attempt < maxRetry {
-                LogManager.shared.info("未登录 Apple ID（锁屏 Keychain 不可读？），\(5)s 后重试 \(attempt)/\(maxRetry - 1)…", source: "AppDelegate")
-                Thread.sleep(forTimeInterval: 5)
-            }
-        }
-
-        guard BridgeClient.shared.isSignedIn else {
-            LogManager.shared.warning("未登录 Apple ID → 静默续签中止（重试 \(maxRetry) 次仍失败，请确认设备已解锁过一次）", source: "AppDelegate")
-            writeResignReport(result: "failed", detail: "未登录 Apple ID，无法续签", elapsed: 0)
-            RPVSigningdNotify.notifySigningComplete()
-            daemonResignInProgress = false
-            LogManager.shared.info("══════ 静默续签结束（未登录），已回报 daemon ══════", source: "AppDelegate")
-            DaemonLogStop()
-            Thread.sleep(forTimeInterval: 0.5)
-            exit(0)
-            return
-        }
-
-        // 后台任务保活：确保与 Apple 服务器的续签网络请求不会被系统挂起
-        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "repro-daemon-resign") { }
-
-        LogManager.shared.info("阈值 \(threshold) 天 → 开始扫描并重签到期应用", source: "AppDelegate")
-
-        // 签名前自动撤销旧证书（与前台 SigningViewModel 共享同一套逻辑），
-        // 防止 "You already have a current Development certificate or a pending certificate request" 错误。
-        // v1.1.86 前此处直接调 resignAllExpiring 漏掉了撤销步骤 → 后台续签 CSR 冲突。
-        BridgeClient.shared.autoRevokeBeforeSigning { [weak self] in
+        // 🔴 v1.1.112: 账号刷新重试循环搬到后台线程执行。
+        // 原实现把 Thread.sleep(forTimeInterval: 5) ×最多 2 次直接放在【主线程】上：
+        // 网络抖动 / 锁屏 Keychain 不可读时 refreshAccountState 连续失败，主线程被阻塞
+        // 10s+（期间 didFinishLaunching 尚未返回），daemon 后台拉起场景下 iOS 看门狗
+        // 判定主线程无响应 → ExcUserFault（EXC_GUARD / GUARD_TYPE_USER / LIBXPC
+        // XPC_EXIT_REASON_FAULT，is_simulated=1）直接杀 App。
+        // 实据：设备 8/3 13:17 / 13:51 / 13:52 / 13:53 连续 4 份同型崩溃（1.1.92/1.1.94），
+        // 且用户日志同时段出现「拉取证书列表失败…似乎已断开与互联网的连接」。
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+            let d = UserDefaults.standard
+            let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
+
+            // 锁屏/刚唤醒（锁屏界面尚未解锁）时 SAMKeychain 可能暂时读不到密码，导致 isSignedIn 为假。
+            // 重试最多 3 次（每次间隔 5 秒）兜底；但真正的修复在 v1.1.90：
+            // 旧版 migrateKeychainAccessibility 走 SecItemUpdate，根本改不了 kSecAttrAccessible
+            // （该属性只能在 SecItemAdd 创建时设定），所以密码项一直停留在 WhenUnlocked；
+            // v1.1.90 改为「删后重建」+ 刷新本地凭证缓存文件，后台锁屏也能读到密码。
+            let maxRetry = 3
+            var signedIn = false
+            for attempt in 1...maxRetry {
+                BridgeClient.shared.refreshAccountState()
+                if BridgeClient.shared.isSignedIn { signedIn = true; break }
+                if attempt < maxRetry {
+                    LogManager.shared.info("未登录 Apple ID（锁屏 Keychain 不可读？网络抖动？），5s 后重试 \(attempt)/\(maxRetry - 1)…", source: "AppDelegate")
+                    Thread.sleep(forTimeInterval: 5)   // 后台线程 sleep，不再阻塞主线程
+                }
+            }
+
+            guard signedIn else {
+                LogManager.shared.warning("未登录 Apple ID → 静默续签中止（重试 \(maxRetry) 次仍失败，请确认设备已解锁过一次）", source: "AppDelegate")
+                self.writeResignReport(result: "failed", detail: "未登录 Apple ID，无法续签", elapsed: 0)
+                RPVSigningdNotify.notifySigningComplete()
+                self.daemonResignInProgress = false
+                LogManager.shared.info("══════ 静默续签结束（未登录），已回报 daemon ══════", source: "AppDelegate")
+                DaemonLogStop()
+                Thread.sleep(forTimeInterval: 0.5)     // 后台线程 sleep，不影响主线程
+                exit(0)
+                return
+            }
+
+            // 后台任务保活：确保与 Apple 服务器的续签网络请求不会被系统挂起。
+            // Apple 文档要求 beginBackgroundTask 在【主线程】调用，故回主线程开启。
+            DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                let elapsed = Date().timeIntervalSince(started)
-                self.handleResignCompletion(result: result, elapsed: elapsed, isDaemon: true)
-                UIApplication.shared.endBackgroundTask(bgTask)
+                let bgTask = UIApplication.shared.beginBackgroundTask(withName: "repro-daemon-resign") { }
+                LogManager.shared.info("阈值 \(threshold) 天 → 开始扫描并重签到期应用", source: "AppDelegate")
+
+                // 签名前自动撤销旧证书（与前台 SigningViewModel 共享同一套逻辑），
+                // 防止 "You already have a current Development certificate or a pending certificate request" 错误。
+                // v1.1.86 前此处直接调 resignAllExpiring 漏掉了撤销步骤 → 后台续签 CSR 冲突。
+                BridgeClient.shared.autoRevokeBeforeSigning { [weak self] in
+                    guard let self = self else { return }
+                    BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
+                        guard let self = self else { return }
+                        let elapsed = Date().timeIntervalSince(started)
+                        self.handleResignCompletion(result: result, elapsed: elapsed, isDaemon: true)
+                        UIApplication.shared.endBackgroundTask(bgTask)
+                    }
+                }
             }
         }
     }
