@@ -64,9 +64,9 @@ struct SettingsView: View {
     @State private var loginAttempt: Int = 0
     @State private var loginTimeoutWorkItem: DispatchWorkItem?
     private let loginTimeout: TimeInterval = 30
-    /// 登录失败「确认后强制重试」alert 状态
-    @State private var showingLoginRetryAlert = false
-    @State private var loginFailureReason: String = ""
+    /// 登录失败默认自动「强制重试」（不弹窗、不分类），带上限防止死循环
+    private let loginMaxRetries: Int = 2
+    @State private var loginRetryCount: Int = 0
 
     @State private var availableTeams: [DeveloperTeam] = []
     @State private var showingTeamSheet = false
@@ -145,14 +145,6 @@ struct SettingsView: View {
                 Button("好", role: .cancel) {}
             } message: {
                 Text(fixCellularMessage)
-            }
-            .alert("登录失败", isPresented: $showingLoginRetryAlert) {
-                Button("重试") { attemptLogin() }
-                Button("取消", role: .cancel) {
-                    loginMessage = "登录失败: \(loginFailureReason)"
-                }
-            } message: {
-                Text(loginFailureReason)
             }
             .sheet(isPresented: $showingTeamSheet) { teamSheet }
         }
@@ -695,11 +687,11 @@ struct SettingsView: View {
     // MARK: - 动作
 
     private func performLogin() {
+        loginRetryCount = 0
         attemptLogin()
     }
 
-    /// 一次登录尝试：带超时看门狗。登录失败不再自动重试，
-    /// 改为弹出「确认后强制重试」alert，由用户决定是否重试。
+    /// 一次登录尝试：带超时看门狗。登录失败默认自动「强制重试」（不弹窗、不分类错误）。
     /// 每次尝试用 loginAttempt 作为 epoch，旧的迟到回调会被忽略，避免重复处理。
     private func attemptLogin() {
         loginTimeoutWorkItem?.cancel()
@@ -761,14 +753,22 @@ struct SettingsView: View {
         }
     }
 
-    /// 登录失败统一处理：移除自动重试检测，改为「确认后强制重试」——
-    /// 弹出 alert 展示失败原因，用户点「重试」才再次尝试，避免无意义的自动循环。
+    /// 登录失败统一处理：默认「强制重试」——失败即自动重试（不弹窗、不分类错误），
+    /// 达到上限后才停止并展示失败原因，避免无意义自动循环与死循环。
     private func handleLoginFailure(reason: String) {
-        isLoggingIn = false
-        loginSucceeded = false
-        loginFailureReason = reason
-        showingLoginRetryAlert = true
-        LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
+        guard loginRetryCount < loginMaxRetries else {
+            isLoggingIn = false
+            loginSucceeded = false
+            loginMessage = "登录失败: \(reason)"
+            LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
+            return
+        }
+        loginRetryCount += 1
+        LogManager.shared.info("Apple ID 登录失败，自动重试（\(loginRetryCount)/\(loginMaxRetries)）: \(reason)", source: "SettingsView")
+        loginMessage = "登录失败，正在重试（\(loginRetryCount)/\(loginMaxRetries)）…"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            self.attemptLogin()
+        }
     }
 
     private func selectTeam(_ team: DeveloperTeam) {
