@@ -596,6 +596,40 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     [EEBackend setExtensionImportOptionsRemoveExtensions:remove useMainProfileForExtensions:useMain];
 }
 
+#pragma mark - 越狱联网修复（国行蜂窝/WiFi 权限重置，手动入口）
+
+/// 设置里「修复越狱联网问题」按钮调用：同步拉起 repro-helper fix-cellular（CoreTelephony 路径），
+/// 重置全部应用蜂窝/WiFi 数据策略为「始终允许」并重启 SpringBoard 生效。
+/// 仅手动触发，无 daemon 自动循环（避免之前 daemon 空转 killall SpringBoard 拖死系统）。
+- (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *helperPath = RPVResolvedRootHelperPath();
+        if (helperPath.length == 0) {
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(NO, @"未找到 repro-helper（root 助手），无法执行修复");
+                });
+            }
+            return;
+        }
+
+        // 把 ReSign 自身的 bundle id 传给 helper：roothide 下 ReSign 装在 jbroot
+        // Applications 目录，枚举扫 /Applications 时在 namespace 里可能看不到自身
+        // （v1.1.122 实测：246 个应用里没有 com.reprovision.repro），导致无法修复自身。
+        // helper 会把该 id 无条件加入修复列表并优先处理。
+        NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.reprovision.repro";
+        BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
+        NSString *message = ok
+            ? @"已重置全部应用（含 ReSign 自身）的蜂窝/WiFi 数据策略为「始终允许」，SpringBoard 正在重启生效（界面会短暂重载）。"
+            : @"修复失败，请稍后重试。";
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(ok, message);
+            });
+        }
+    });
+}
+
 #pragma mark - RPVApplicationSigningProtocol
 
 - (void)applicationSigningDidStart {
