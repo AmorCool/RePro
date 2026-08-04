@@ -302,33 +302,65 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 // 在 root helper 里做：无需 App entitlements（com.apple.CommCenter.fine-grained 等），
 // root 权限直接调私有框架。
 
-/// 枚举已安装应用 bundle id：优先读系统安装记录，兜底扫容器 metadata.plist。
+/// 枚举已安装应用 bundle id：多路径尝试安装记录 + 容器 metadata 兜底 + /Applications 兜底。
+/// 注意：iOS 15+ com.apple.mobile.installation.plist 已不存在；容器真实路径是
+/// /var/containers/Bundle/Application（小写 containers，无 mobile 段）。
 static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
     NSMutableArray<NSString *> *ids = [NSMutableArray array];
-    NSDictionary *install =
-        [NSDictionary dictionaryWithContentsOfFile:
-            @"/private/var/mobile/Library/Caches/com.apple.mobile.installation.plist"];
-    for (NSString *section in @[@"User", @"System"]) {
-        NSDictionary *apps = install[section];
-        for (NSString *bid in apps) {
-            if (bid.length && ![ids containsObject:bid]) {
-                [ids addObject:bid];
+
+    // ── 方法1：系统安装记录 plist（各版本路径逐一尝试）──
+    NSArray<NSString *> *plistPaths = @[
+        @"/private/var/mobile/Library/Caches/com.apple.mobile.installation.plist",
+        @"/var/mobile/Library/Caches/com.apple.mobile.installation.plist",
+        @"/var/Library/Caches/com.apple.mobile.installation.plist",
+    ];
+    for (NSString *pp in plistPaths) {
+        NSDictionary *install = [NSDictionary dictionaryWithContentsOfFile:pp];
+        if (!install) continue;
+        for (NSString *section in @[@"User", @"System"]) {
+            NSDictionary *apps = install[section];
+            for (NSString *bid in apps) {
+                if (bid.length && ![ids containsObject:bid])
+                    [ids addObject:bid];
             }
         }
+        if (ids.count > 0) break; // 命中即止
     }
+
+    // ── 方法2：扫容器目录 .com.apple.mobile_container_manager.metadata.plist ──
     if (ids.count == 0) {
-        // 兜底：扫容器目录（越狱环境安装记录被清理时仍能拿到应用列表）
-        NSString *base = @"/var/mobile/Containers/Bundle/Application";
-        NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
-        for (NSString *dir in dirs) {
-            NSString *meta = [NSString stringWithFormat:@"%@/%@/.com.apple.mobile_container_manager.metadata.plist",
-                              base, dir];
-            NSString *bid = [NSDictionary dictionaryWithContentsOfFile:meta][@"MCMMetadataIdentifier"];
-            if (bid.length && ![ids containsObject:bid]) {
-                [ids addObject:bid];
+        NSArray<NSString *> *bases = @[
+            @"/var/containers/Bundle/Application",       // 标准 iOS 路径（正确）
+            @"/var/mobile/Containers/Bundle/Application", // 某些 JB 环境可能存在
+            @"/private/var/containers/Bundle/Application",
+        ];
+        for (NSString *base in bases) {
+            NSArray *dirs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
+            for (NSString *dir in dirs) {
+                NSString *meta = [NSString stringWithFormat:
+                    "%@/%@/.com.apple.mobile_container_manager.metadata.plist", base, dir];
+                NSString *bid = [NSDictionary dictionaryWithContentsOfFile:meta]
+                                    [@"MCMMetadataIdentifier"];
+                if (bid.length && ![ids containsObject:bid])
+                    [ids addObject:bid];
             }
+            if (ids.count > 0) break;
         }
     }
+
+    // ── 方法3：扫 /Applications（系统 App 终极兜底）──
+    if (ids.count == 0) {
+        NSArray *dirs = [[NSFileManager defaultManager]
+            contentsOfDirectoryAtPath:@"/Applications" error:nil];
+        for (NSString *dir in dirs) {
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                [NSString stringWithFormat:@"/Applications/%@/Info.plist", dir]];
+            NSString *bid = info[@"CFBundleIdentifier"];
+            if (bid.length && ![ids containsObject:bid])
+                [ids addObject:bid];
+        }
+    }
+
     return ids;
 }
 
