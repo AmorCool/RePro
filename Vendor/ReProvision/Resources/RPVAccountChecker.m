@@ -178,8 +178,10 @@ static NSString *RPVLocalizedAuthFailure(NSError *error, NSString *fallbackEngli
 }
 
 - (NSString*)UDIDForCurrentDevice {
+    // MGCopyAnswer 是 Create Rule（返回 +1），必须 __bridge_transfer 转移所有权，
+    // 否则每次取 UDID（注册设备/拉应用列表）都泄漏一个 CFString。
     CFStringRef udid = (CFStringRef)MGCopyAnswer(kMGUniqueDeviceID);
-    return (__bridge NSString*)udid;
+    return (__bridge_transfer NSString*)udid;   // NULL 时自动转 nil，安全
 }
 
 - (EESystemType)platformTypeForCurrentDevice {

@@ -1,13 +1,23 @@
 import Foundation
 import os.log
+import os.lock
 
 // MARK: - 全局 daemon 日志句柄（用 C FILE* 同步写入，可靠）
 
 private var gDaemonLogFile: UnsafeMutablePointer<FILE>? = nil
 private var gDaemonLogPath: String? = nil
+/// 🔴 v1.1.162 修复：daemon 日志 FILE* 会被多个线程访问 ——
+/// LogManager.append 由任意线程调用（Vendor 的 diagnostic 通知在 RPVBridge
+/// workQueue 后台线程同步执行 observer），而 DaemonLogStop/DaemonLogStart/
+/// 轮转逻辑跑在主线程。旧版无锁：后台线程 fputs 期间主线程 fclose →
+/// use-after-fclose 崩溃（且崩在签名热路径上）。用 os_unfair_lock 串行化
+/// 所有句柄操作（文件 IO 持锁没问题，阻塞时其他线程排队等待）。
+private var gDaemonLogLock = os_unfair_lock()
 
 /// 开启 daemon 日志转发（后续所有 LogManager 日志同步写入该文件）
 func DaemonLogStart(_ path: String) {
+    os_unfair_lock_lock(&gDaemonLogLock)
+    defer { os_unfair_lock_unlock(&gDaemonLogLock) }
     gDaemonLogPath = path
     let dir = (path as NSString).deletingLastPathComponent
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -17,6 +27,8 @@ func DaemonLogStart(_ path: String) {
 
 /// 关闭 daemon 日志转发
 func DaemonLogStop() {
+    os_unfair_lock_lock(&gDaemonLogLock)
+    defer { os_unfair_lock_unlock(&gDaemonLogLock) }
     if let f = gDaemonLogFile { fclose(f) }
     gDaemonLogFile = nil
     gDaemonLogPath = nil
@@ -24,6 +36,8 @@ func DaemonLogStop() {
 
 /// 清空 daemon 日志（fopen("w")截断，不依赖权限）
 func DaemonLogClear(_ path: String) {
+    os_unfair_lock_lock(&gDaemonLogLock)
+    defer { os_unfair_lock_unlock(&gDaemonLogLock) }
     if let f = gDaemonLogFile { fclose(f); gDaemonLogFile = nil }
     if let f = fopen(path, "w") { fclose(f); chmod(path, 0666) }
 }
@@ -54,6 +68,8 @@ private var daemonLogWriteCount: Int = 0
 /// 同步写入一行到 daemon 日志（在 LogManager.append 中调用）
 /// 内置 2 MB 轮转：超出后截断保留后半段，避免长期运行撑满磁盘
 private func daemonLogWrite(ts: String, source: String, message: String) {
+    os_unfair_lock_lock(&gDaemonLogLock)
+    defer { os_unfair_lock_unlock(&gDaemonLogLock) }
     guard let f = gDaemonLogFile else { return }
 
     // 每写入 ~100 行检查一次文件大小（避免每次都 stat 的开销）
@@ -63,6 +79,8 @@ private func daemonLogWrite(ts: String, source: String, message: String) {
            let size = attrs[.size] as? Int64,
            size > maxDaemonLogSize {
             // 截断：关闭当前文件 → 重开（fopen "w" 清空）→ 写入轮转标记
+            // （锁内执行：其他线程的 fputs 要么等解锁要么已持有旧句柄——不会发生
+            //  持旧 FILE* 时被 fclose 的 use-after-free）
             fclose(f)
             gDaemonLogFile = nil
             if let nf = fopen(path, "w") {

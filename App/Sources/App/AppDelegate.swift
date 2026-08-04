@@ -226,7 +226,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             // Apple 文档要求 beginBackgroundTask 在【主线程】调用，故回主线程开启。
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                let bgTask = UIApplication.shared.beginBackgroundTask(withName: "repro-daemon-resign") { }
+                // v1.1.162：expirationHandler 里 endBackgroundTask——系统到期强制
+                // 结束时若不配对 end，会泄漏后台断言并刷「Blocking the main thread」
+                // 警告；到期 = 续签已超时，App 侧兜底逻辑（App 自行写冷却）不受影响。
+                var bgTask: UIBackgroundTaskIdentifier = .invalid
+                bgTask = UIApplication.shared.beginBackgroundTask(withName: "repro-daemon-resign") {
+                    if bgTask != .invalid {
+                        UIApplication.shared.endBackgroundTask(bgTask)
+                        bgTask = .invalid
+                    }
+                }
                 LogManager.shared.info("阈值 \(threshold) 天 → 开始扫描并重签到期应用", source: "AppDelegate")
 
                 // 签名前自动撤销旧证书（与前台 SigningViewModel 共享同一套逻辑），
@@ -238,7 +247,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                         guard let self = self else { return }
                         let elapsed = Date().timeIntervalSince(started)
                         self.handleResignCompletion(result: result, elapsed: elapsed)
-                        UIApplication.shared.endBackgroundTask(bgTask)
+                        if bgTask != .invalid {
+                            UIApplication.shared.endBackgroundTask(bgTask)
+                            bgTask = .invalid
+                        }
                     }
                 }
             }
@@ -293,9 +305,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         // daemon 后台拉起且用户全程未打开 → 干净退出，释放 daemon 侧的 BKS 断言
         if UIApplication.shared.applicationState == .background {
-            // 留出本地通知提交窗口（usernoted 异步 XPC），确保续签结果横幅能送达
-            Thread.sleep(forTimeInterval: 1.5)
-            exit(0)
+            // 🔴 v1.1.162：sleep + exit 移到后台线程。旧版在主线程 Thread.sleep(1.5s)
+            // —— 主线程阻塞是 ExcUserFault 看门狗的诱因之一（虽 1.5s 单次不会触发，
+            // 但配合网络抖动/锁屏 Keychain 卡顿可能叠加超时）。sleep 的目的只是
+            // 留出本地通知提交窗口（usernoted 异步 XPC），后台线程 sleep 同样有效。
+            DispatchQueue.global(qos: .utility).async {
+                Thread.sleep(forTimeInterval: 1.5)
+                exit(0)
+            }
+            return
         }
     }
 

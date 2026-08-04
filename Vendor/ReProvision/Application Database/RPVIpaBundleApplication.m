@@ -33,6 +33,10 @@ static BOOL (^_rpvDaemonFileCopyHandler)(NSString *srcPath, NSString *dstPath) =
 
 // 等待 iCloud/File Provider 文件真正下载到本地（status==Current/Downloaded）或超时。
 // 避免把 0 字节占位符当真实 .ipa 拷走，导致“无法读取这个 .ipa”。
+// 🔴 v1.1.162：超时 120s → 30s、轮询 500ms → 1s。本函数在 RPVBridge 的**唯一串行
+// workQueue** 上同步执行，120 秒忙等会饿死队列上的登录/拉应用列表/后台续签任务
+// （daemon 等 App 完成只有 5 分钟窗口）。iCloud 大文件 30s 内没下完就放弃，
+// 后续 copyItemAtURL 走占位符兜底，解压失败会给出清晰报错而非整个桥接线卡死。
 static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
     if (![url isFileURL]) return;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
@@ -49,7 +53,7 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
                 return;
             }
         }
-        usleep(500000);
+        usleep(1000000);   // 1s
     }
 }
 
@@ -101,7 +105,7 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
                 NSError *dlErr = nil;
                 [[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&dlErr];
             }
-            RPVWaitForUbiquitousDownload(url, 120.0);
+            RPVWaitForUbiquitousDownload(url, 30.0);
         }
     }
 
@@ -202,7 +206,13 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
                 icons = [infoPlist objectForKey:@"CFBundleIcons"];
         }
 
-        BOOL iconExists = [icons.allKeys containsObject:@"CFBundlePrimaryIcon"] &&  [[[icons objectForKey:@"CFBundlePrimaryIcon"] allKeys] containsObject:@"CFBundleIconFiles"];
+        // 🔴 v1.1.162 修复：畸形 IPA 的 Info.plist 里 CFBundlePrimaryIcon 可能是
+        // NSString/NSArray（非字典），直接对它调 allKeys → unrecognized selector 闪退。
+        // 先 isKindOfClass 归一化再取键。
+        id primaryIcon = [icons objectForKey:@"CFBundlePrimaryIcon"];
+        BOOL iconExists = [icons.allKeys containsObject:@"CFBundlePrimaryIcon"] &&
+                          [primaryIcon isKindOfClass:[NSDictionary class]] &&
+                          [[(NSDictionary *)primaryIcon allKeys] containsObject:@"CFBundleIconFiles"];
         NSData *data = nil;
 
         if (iconExists) {
@@ -287,6 +297,15 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
         }
     } @catch (NSException *e) {
         // Really?! This is usually caused by AnemoneIcons.dylib
+    }
+
+    // 🔴 v1.1.162 修复：maskImage 可能为 nil（iOS 17 mobileicons 资产布局变化、
+    // Anemone 注入导致 bundleWithIdentifier 失败等）。旧版直接往下走：
+    // maskRef=NULL → CGBitmapContextCreateImage(NULL) 返回 NULL →
+    // CGImageMaskCreate(NULL provider) 返回 NULL → [UIImage imageWithCGImage:NULL]
+    // **必崩**（iOS 17 实测 EXC_BAD_ACCESS）。找不到掩码时退回系统默认图标。
+    if (!maskImage || !icon) {
+        return icon ?: [UIImage _applicationIconImageForBundleIdentifier:@"" format:2 scale:[UIScreen mainScreen].scale];
     }
 
     // See: https://stackoverflow.com/a/8127762
