@@ -371,53 +371,6 @@ static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
     return 0;
 }
 
-/// 国行「允许使用数据」授权的终极手段：删除 NetworkExtension 缓存 + 重启 CommCenter。
-/// 🔴 情报来源（Undecimus issue #1112 + rootlessJB 时代官方 workaround）：
-///    国行 iOS 10.3+ 的「允许使用数据」授权数据实际存在
-///    /var/preferences/com.apple.networkextension.plist / .necp.plist / .cache.plist，
-///    越狱后弹窗机制损坏导致授权条目缺失 → App 蜂窝被禁。
-///    删除这三个文件 + killall CommCenter 后系统重新评估所有 App 的蜂窝授权，
-///    对系统应用（com.apple.*）、App Store、越狱工具自身全部生效。
-///    root 直接删文件，不需要任何 entitlement。
-static void RPVHelperFixCellularResetNetworkExtension(void) {
-    NSArray<NSString *> *paths = @[
-        @"/var/preferences/com.apple.networkextension.plist",
-        @"/var/preferences/com.apple.networkextension.necp.plist",
-        @"/var/preferences/com.apple.networkextension.cache.plist",
-        // rootless/roothide 的 jbroot 变体（若存在）
-        @"/var/jb/var/preferences/com.apple.networkextension.plist",
-        @"/var/jb/var/preferences/com.apple.networkextension.necp.plist",
-        @"/var/jb/var/preferences/com.apple.networkextension.cache.plist",
-    ];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    int removed = 0;
-    for (NSString *p in paths) {
-        if ([fm fileExistsAtPath:p]) {
-            NSError *err = nil;
-            if ([fm removeItemAtPath:p error:&err]) {
-                removed++;
-                RPVHelperLog(@"fix-cellular(netext): 已删除 %@", p);
-            } else {
-                RPVHelperLog(@"fix-cellular(netext): 删除 %@ 失败: %@", p, err.localizedDescription);
-            }
-        }
-    }
-    if (removed > 0) {
-        RPVHelperLog(@"fix-cellular(netext): 共删除 %d 个缓存，重启 CommCenter 使系统重新评估蜂窝授权", removed);
-        pid_t pid = fork();
-        if (pid == 0) {
-            execl("/usr/bin/killall", "killall", "CommCenter", (char *)NULL);
-            execl("/var/jb/usr/bin/killall", "killall", "CommCenter", (char *)NULL);
-            _exit(127);
-        }
-        if (pid > 0) {
-            waitpid(pid, NULL, 0);
-        }
-    } else {
-        RPVHelperLog(@"fix-cellular(netext): 未找到 networkextension 缓存（已清理过或本机无此机制）");
-    }
-}
-
 /// 另一条 Renet 路径：AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案）。
 /// Undecimus issue #1112：setAppWirelessDataOption:@(3)（3=WLAN与蜂窝全允许）+
 /// setAppCellularDataEnabled:@(1)。iOS 17 若类仍在则有效，否则跳过。
@@ -616,6 +569,21 @@ static int RPVHelperFixCellularViaSettingsCellular(NSArray<NSString *> *bundleID
         if ([cache respondsToSelector:s]) {
             setPolicy = s;
             RPVHelperLog(@"fix-cellular(ObjC): 命中候选选择器 %@", selName);
+
+            // 🔴 铁证诊断：打印方法签名的 type encoding，确定参数类型。
+            //    v1.1.119 日志显示 setPolicies:completion: 声称 246/246 但系统应用无效
+            //    = 参数格式错（静默失败）。encoding 会告诉我们第一参数是
+            //    NSDictionary/NSArray/NSString/还是别的，据此构造正确参数。
+            NSMethodSignature *sigDiag = [cache methodSignatureForSelector:s];
+            if (sigDiag) {
+                NSMutableString *desc = [NSMutableString string];
+                for (NSUInteger ai = 0; ai < [sigDiag numberOfArguments]; ai++) {
+                    [desc appendFormat:@" arg%lu=%s", (unsigned long)ai,
+                        [sigDiag getArgumentTypeAtIndex:ai]];
+                }
+                RPVHelperLog(@"fix-cellular(ObjC): %@ 签名: 返回=%s%@",
+                    selName, [sigDiag methodReturnType], desc);
+            }
             break;
         }
     }
@@ -810,7 +778,6 @@ static int RPVHelperFixCellular(void) {
         RPVHelperLog(@"fix-cellular: SettingsCellular 路径失败(code=%d)", objcRet);
     }
     RPVHelperFixCellularViaAppWirelessDataUsageManager(bundleIDs);
-    RPVHelperFixCellularResetNetworkExtension();
 
     RPVHelperRestartSpringBoard();
     RPVHelperLog(@"fix-cellular 完成");
