@@ -24,13 +24,7 @@ final class ResignProgress: ObservableObject {
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
-    private static let lastAutoResignKey = "lastAutoResignTimestamp"
     private static let ipcDir = "/var/mobile/Library/RePro"
-
-    /// 标记 daemon 后台静默续签是否正在进行。
-    /// 用于防止用户在续签期间打开 App 时，applicationDidBecomeActive
-    /// 又触发一次前台续签（重复签名）。
-    private var daemonResignInProgress = false
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
@@ -55,7 +49,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         BridgeClient.shared.fetchEnvironment { _ in }
 
-        // 冷启动时的自动续签交给 applicationDidBecomeActive 统一触发，避免重复。
+        // 自动续签统一由 daemon 定时触发（后台拉起执行），前台打开不再触发重签。
         return true
     }
 
@@ -92,9 +86,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         syncSigningdConfig()
         setupSigningdNotify()
 
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("com.reprovision.signingd-foreground-resign"),
-            object: nil, queue: .main) { [weak self] _ in self?.doAutoResign() }
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in self?.syncConfigSilent() }
@@ -139,7 +130,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ///  · 续签完成后，若 App 仍处在后台（用户没打开），才干净退出；
     ///    若用户中途打开（已转到前台），则保留进程、正常显示 UI。
     private func startDaemonResign() {
-        daemonResignInProgress = true
         // 提示横幅：用户中途打开 App 时，明确告知这是 daemon 后台续签、无需操作
         ResignProgress.shared.show(
             title: "ReSign 后台自动续签",
@@ -187,7 +177,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 LogManager.shared.warning("未登录 Apple ID → 静默续签中止（重试 \(maxRetry) 次仍失败，请确认设备已解锁过一次）", source: "AppDelegate")
                 self.writeResignReport(result: "failed", detail: "未登录 Apple ID，无法续签", elapsed: 0)
                 RPVSigningdNotify.notifySigningComplete()
-                self.daemonResignInProgress = false
                 LogManager.shared.info("══════ 静默续签结束（未登录），已回报 daemon ══════", source: "AppDelegate")
                 DaemonLogStop()
                 Thread.sleep(forTimeInterval: 0.5)     // 后台线程 sleep，不影响主线程
@@ -210,7 +199,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                     BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
                         guard let self = self else { return }
                         let elapsed = Date().timeIntervalSince(started)
-                        self.handleResignCompletion(result: result, elapsed: elapsed, isDaemon: true)
+                        self.handleResignCompletion(result: result, elapsed: elapsed)
                         UIApplication.shared.endBackgroundTask(bgTask)
                     }
                 }
@@ -219,11 +208,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     /// 续签完成统一收尾：写报告、回报 daemon、发通知、按需退出。
-    /// isDaemon=true 表示 daemon 后台拉起；false 表示前台激活触发。
+    /// 自动续签只由 daemon 后台拉起触发（isDaemon 恒为 true 的旧参数已移除）。
     private func handleResignCompletion(result: Result<Void, Error>,
-                                        elapsed: TimeInterval,
-                                        isDaemon: Bool) {
-        let trigger = isDaemon ? "daemon-background-launch" : "app-foreground"
+                                        elapsed: TimeInterval) {
         let success: Bool
         let errorText: String
 
@@ -234,29 +221,23 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             LogManager.shared.info(String(format: "续签完成，耗时 %.1f 秒", elapsed), source: "AppDelegate")
             writeResignReport(result: "success",
                              detail: "阈值内的到期应用已处理完毕",
-                             elapsed: elapsed, trigger: trigger)
+                             elapsed: elapsed, trigger: "daemon-background-launch")
         case .failure(let e):
             success = false
             errorText = e.localizedDescription
             LogManager.shared.warning("续签失败: \(errorText)", source: "AppDelegate")
-            writeResignReport(result: "failed", detail: errorText, elapsed: elapsed, trigger: trigger)
+            writeResignReport(result: "failed", detail: errorText, elapsed: elapsed, trigger: "daemon-background-launch")
         }
 
-        // 续签完成通知：daemon 路径无论成败都通知；前台路径仅在失败时补一条总览
-        // （前台成功由 BridgeClient 逐应用「重签完成」通知覆盖，避免重复打扰）。
-        // notificationsEnabled 关闭时 RPVNotificationManager 内部自动 no-op。
-        if isDaemon || !success {
-            sendResignNotification(success: success, errorText: errorText, isDaemon: isDaemon)
-        }
+        sendResignNotification(success: success, errorText: errorText)
 
         RPVSigningdNotify.notifySigningComplete()
         LogManager.shared.info("══════ 续签结束，已回报 daemon ══════", source: "AppDelegate")
         DaemonLogStop()
-        daemonResignInProgress = false
         ResignProgress.shared.hide()
 
         // daemon 后台拉起且用户全程未打开 → 干净退出，释放 daemon 侧的 BKS 断言
-        if isDaemon && UIApplication.shared.applicationState == .background {
+        if UIApplication.shared.applicationState == .background {
             // 留出本地通知提交窗口（usernoted 异步 XPC），确保续签结果横幅能送达
             Thread.sleep(forTimeInterval: 1.5)
             exit(0)
@@ -264,16 +245,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     /// 发送续签完成 / 失败通知
-    private func sendResignNotification(success: Bool, errorText: String, isDaemon: Bool) {
-        let title: String
-        let body: String
-        if success {
-            title = isDaemon ? "ReSign 后台续签完成" : "ReSign 续签完成"
-            body  = isDaemon ? "后台自动续签已成功完成" : "应用续签已成功完成"
-        } else {
-            title = isDaemon ? "ReSign 后台续签失败" : "ReSign 续签失败"
-            body  = errorText.isEmpty ? "未知错误" : errorText
-        }
+    private func sendResignNotification(success: Bool, errorText: String) {
+        let title = success ? "ReSign 后台续签完成" : "ReSign 后台续签失败"
+        let body = success ? "后台自动续签已成功完成" : (errorText.isEmpty ? "未知错误" : errorText)
         RPVNotificationManager.sharedInstance().sendNotification(title: title, body: body, isDebug: false, identifier: nil)
     }
 
@@ -282,49 +256,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 这里只是前台激活时的额外保险。
         RPVBridge.migrateKeychainAccessibility()
 
-        // daemon 静默续签正在进行时，不要重复触发前台续签
-        if daemonResignInProgress { return }
-        if checkDaemonTrigger() { doAutoResign() }
-        else { tryAutoResign() }
-    }
-
-    // MARK: - 触发检测
-
-    private func checkDaemonTrigger() -> Bool {
-        let p = "\(Self.ipcDir)/auto-resign-trigger"
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: p),
-              let mtime = attrs[.modificationDate] as? Date else { return false }
-        let last = UserDefaults.standard.object(forKey: "lastDaemonTriggerTime") as? Date ?? .distantPast
-        if mtime > last { UserDefaults.standard.set(mtime, forKey: "lastDaemonTriggerTime"); return true }
-        return false
-    }
-
-    // MARK: - 自动续签
-
-    /// 每次 App 激活时检查：已登录 + 开启自动 = 执行续签
-    /// resignAllExpiring 内部会按阈值过滤，没有到期应用会快速返回
-    private func tryAutoResign() {
-        let d = UserDefaults.standard
-        guard (d.object(forKey: "autoResign") as? Bool ?? true), BridgeClient.shared.isSignedIn else { return }
-        doAutoResign()
-    }
-
-    private func doAutoResign() {
-        let d = UserDefaults.standard
-        let threshold = d.object(forKey: "resignThreshold") as? Int ?? 2
-        d.set(Date(), forKey: Self.lastAutoResignKey)
-
-        let started = Date()
-        DaemonLogStart(DaemonLogDefaultPath())
-        // 前台手动续签也给出进度提示，避免界面看似无响应
-        ResignProgress.shared.show(title: "ReSign 正在重签", message: "正在检查并重签即将到期的应用…")
-        LogManager.shared.info("══════ 自动续签（阈值 \(threshold) 天）══════", source: "AppDelegate")
-
-        BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
-            guard let self = self else { return }
-            let elapsed = Date().timeIntervalSince(started)
-            self.handleResignCompletion(result: result, elapsed: elapsed, isDaemon: false)
-        }
+        // 🔴 v1.1.144：前台激活不再触发自动重签。
+        // 历史设计「进入前台就重签」（applicationDidBecomeActive → tryAutoResign →
+        // doAutoResign → resignAllExpiring）每次回到前台都跑一次完整 zsign 重签管线，
+        // 反复前后台切换会造成内存暴涨（实测 Jetsam 中 repro-signingd 曾达 3.6GB），
+        // 整机内存被压垮后 roothide 的 XPC 拦截在前后台切换时集体 fault
+        // （EXC_GUARD/LIBXPC/XPC_EXIT_REASON_FAULT 杀主线程 → 冷启动即闪退）。
+        // 自动续签现统一由 daemon 定时触发（后台拉起静默续签），此处不再代跑。
     }
 
     // MARK: - daemon 配置同步
