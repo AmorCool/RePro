@@ -397,13 +397,18 @@ static int RPVHelperFixCellular(void) {
     }
 
     // 运行时自省：dump 类全部实例方法，自动匹配策略设置方法。
-    // roothide/jbroot 的 SettingsCellular 框架版本可能不同，选择器名与参数签名会变，
-    // 不能硬编码单一选择器名。
+    // roothide/jbroot 的 SettingsCellular 框架版本不同，选择器名与参数签名会变。
+    // 已确认：roothide(iOS 17) 的 PSAppDataUsagePolicyCache 方法为 setPolicies:completion:，
+    //         而非旧版 setUsagePoliciesForBundle:cellular:wifi:。
+    // 🔴 自动匹配必须排除单参数属性 setter（如 setPolicyCache:），只匹配多参数"策略"方法。
     SEL setPolicy = NULL;
+    SEL fetchPolicy = NULL; // 用于探查策略对象格式
 
-    // 第一轮：尝试已知候选选择器名
+    // 第一轮：优先 roothide 实际存在的方法，再试其他候选
     NSArray<NSString *> *candidates = @[
-        @"setUsagePoliciesForBundle:cellular:wifi:",
+        @"setPolicies:completion:",      // roothide iOS 17 实测方法
+        @"addPoliciesToCache:",          // roothide 备选
+        @"setUsagePoliciesForBundle:cellular:wifi:", // 旧版/iOS 14-16
         @"setUsagePolicyForBundle:cellular:wifi:",
         @"setUsagePoliciesForBundle:cellularPolicy:wifiPolicy:",
         @"setUsagePolicies:forBundle:",
@@ -421,20 +426,27 @@ static int RPVHelperFixCellular(void) {
         }
     }
 
-    // 第二轮：均未命中 → dump 全部实例方法，输出日志辅助诊断
+    // 第二轮：dump 全部实例方法，智能匹配「多参数策略」方法（排除属性 setter）
     if (!setPolicy) {
         RPVHelperLog(@"fix-cellular: 硬编码候选均未命中，dump PSAppDataUsagePolicyCache 全部实例方法：");
         unsigned int mc = 0;
         Method *methods = class_copyMethodList(cacheClass, &mc);
         for (unsigned int i = 0; i < mc; i++) {
-            const char *selName = sel_getName(method_getName(methods[i]));
-            RPVHelperLog(@"  %s", selName);
-            // 自动匹配：以 "set" 开头且包含 Usage/usage/Policy/policy
-            if (!setPolicy && strncmp(selName, "set", 3) == 0 &&
-                (strstr(selName, "Usage") || strstr(selName, "usage") ||
-                 strstr(selName, "Policy") || strstr(selName, "policy"))) {
-                setPolicy = method_getName(methods[i]);
+            Method m = methods[i];
+            const char *selName = sel_getName(method_getName(m));
+            NSUInteger nArgs = method_getNumberOfArguments(m); // 0=target 1=sel 2+=real
+            RPVHelperLog(@"  %s (参数%lu个)", selName, (unsigned long)(nArgs > 2 ? nArgs - 2 : 0));
+
+            // 🔴 只匹配：以 set 开头 + 至少 2 个实际参数（排除 setProperty:）+ 含 Policies/UsagePolicies
+            if (!setPolicy && strncmp(selName, "set", 3) == 0 && nArgs >= 4 &&
+                (strstr(selName, "Policies") || strstr(selName, "UsagePolicies"))) {
+                setPolicy = method_getName(m);
                 RPVHelperLog(@"fix-cellular: 自动匹配到 %s", selName);
+            }
+            // 同时找到 fetch/policies 探查方法
+            if (!fetchPolicy &&
+                (strstr(selName, "fetchUsagePolicies") || strstr(selName, "policiesFor"))) {
+                fetchPolicy = method_getName(m);
             }
         }
         free(methods);
@@ -445,29 +457,117 @@ static int RPVHelperFixCellular(void) {
         return 6;
     }
 
-    // NSInvocation 适配任意参数数量（roothide 框架签名可能不同）
+    // ── 探查策略对象格式 ──
+    // 先调用 fetchUsagePoliciesFor:/policiesFor: 取一个已安装 App 的策略对象，
+    // 看它是什么类型（NSDictionary/NSArray/CTCellularDataUsagePolicy?），
+    // 再构造相同格式的对象批量设置。
+    id samplePolicy = nil;
+    if (fetchPolicy && bundleIDs.count > 0) {
+        @try {
+            NSString *testBid = bundleIDs.firstObject;
+            if ([cache respondsToSelector:fetchPolicy]) {
+                NSMethodSignature *fsig = [cache methodSignatureForSelector:fetchPolicy];
+                NSInvocation *finv = [NSInvocation invocationWithMethodSignature:fsig];
+                [finv setTarget:cache];
+                [finv setSelector:fetchPolicy];
+                if ([fsig numberOfArguments] > 2) [finv setArgument:&testBid atIndex:2];
+                [finv retainArguments];
+                [finv invoke];
+                if (strcmp([fsig methodReturnType], "@") == 0) {
+                    void *ret = NULL;
+                    [finv getReturnValue:&ret];
+                    samplePolicy = (__bridge id)ret;
+                }
+                RPVHelperLog(@"fix-cellular: %s(%@) 返回 %@ (类型:%@)",
+                    sel_getName(fetchPolicy), testBid, samplePolicy, [samplePolicy class]);
+            }
+        } @catch (NSException *e) {
+            RPVHelperLog(@"fix-cellular: 探查策略格式异常: %@", e.reason);
+        }
+    }
+
+    // ── 构造策略对象 ──
+    // roothide 的 setPolicies:completion: 第一个参数是 NSDictionary，
+    // key=bundleID, value=@1(AlwaysAllow)/@2(WLAN Only)/@3(Never)。
+    // 尝试多种格式：
+    //   格式A: @{bundleID: @1}          （最简：直接 map）
+    //   格式B: @{@"bundleID": bid, @"cellular": @1, @"wifi": @1}  （每条一个字典）
+    id policiesArg = nil;
+    {
+        NSMutableDictionary<NSString *, NSNumber *> *dict = [NSMutableDictionary dictionary];
+        for (NSString *bid in bundleIDs) dict[bid] = @1;
+        policiesArg = [dict copy];
+    }
+    RPVHelperLog(@"fix-cellular: 构造策略参数字典 %lu 项", (unsigned long)[(NSDictionary *)policiesArg count]);
+
+    // ── 调用策略设置方法 ──
     NSMethodSignature *sig = [cache methodSignatureForSelector:setPolicy];
     if (!sig) {
         RPVHelperLog(@"fix-cellular 失败：无法获取 %s 的方法签名", sel_getName(setPolicy));
         return 7;
     }
 
-    NSNumber *alwaysAllow = @(1);
     int okCount = 0;
-    for (NSString *bid in bundleIDs) {
-        @try {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:cache];
-            [inv setSelector:setPolicy];
-            NSUInteger nArgs = [sig numberOfArguments]; // 0=target 1=selector 2+=actual
-            if (nArgs > 2) [inv setArgument:&bid atIndex:2];
-            if (nArgs > 3) [inv setArgument:&alwaysAllow atIndex:3];
-            if (nArgs > 4) [inv setArgument:&alwaysAllow atIndex:4];
+    BOOL didTry = NO;
+    @try {
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setTarget:cache];
+        [inv setSelector:setPolicy];
+        NSUInteger nArgs = [sig numberOfArguments];
+
+        // 根据参数数量传递策略对象（兼容旧版逐 bundle 循环和新版批量设置）
+        if (nArgs == 4) {
+            // 新版：setPolicies:completion: → arg2=policies, arg3=completion block
+            [inv setArgument:&policiesArg atIndex:2];
+            // completion block: void(^)(void)
+            dispatch_block_t done = ^{};
+            [inv setArgument:&done atIndex:3];
             [inv retainArguments];
             [inv invoke];
-            okCount++;
-        } @catch (NSException *e) {
-            RPVHelperLog(@"fix-cellular: %@ 设置异常: %@", bid, e.reason);
+            okCount = (int)bundleIDs.count; // 批量调用，成功即全部
+            didTry = YES;
+        } else if (nArgs == 3) {
+            // addPoliciesToCache: → arg2=policies
+            [inv setArgument:&policiesArg atIndex:2];
+            [inv retainArguments];
+            [inv invoke];
+            okCount = (int)bundleIDs.count;
+            didTry = YES;
+        }
+    } @catch (NSException *e) {
+        RPVHelperLog(@"fix-cellular: 批量设置异常: %@（将逐 bundle 重试）", e.reason);
+        okCount = 0;
+        didTry = NO;
+    }
+
+    // 若批量失败/不支持批量 → 逐个 bundle 调
+    if (!didTry || okCount == 0) {
+        okCount = 0;
+        NSMethodSignature *sig2 = [cache methodSignatureForSelector:setPolicy];
+        NSUInteger nArgs2 = [sig2 numberOfArguments];
+        for (NSString *bid in bundleIDs) {
+            @try {
+                NSInvocation *inv2 = [NSInvocation invocationWithMethodSignature:sig2];
+                [inv2 setTarget:cache];
+                [inv2 setSelector:setPolicy];
+                if (nArgs2 > 2) [inv2 setArgument:&bid atIndex:2];
+                // 单个策略值为 @1
+                NSNumber *one = @1;
+                if (nArgs2 > 3) [inv2 setArgument:&one atIndex:3];
+                if (nArgs2 > 4) [inv2 setArgument:&one atIndex:4];
+                if (nArgs2 == 4 && strcmp([sig2 getArgumentTypeAtIndex:3], "@?") == 0) {
+                    // setPolicies:completion: 格式但需要逐 bundle 调
+                    NSDictionary *single = @{bid: @1};
+                    [inv2 setArgument:&single atIndex:2];
+                    dispatch_block_t done = ^{};
+                    [inv2 setArgument:&done atIndex:3];
+                }
+                [inv2 retainArguments];
+                [inv2 invoke];
+                okCount++;
+            } @catch (NSException *e) {
+                RPVHelperLog(@"fix-cellular: %@ 设置异常: %@", bid, e.reason);
+            }
         }
     }
     RPVHelperLog(@"fix-cellular: 成功设置 %d/%lu 个应用", okCount, (unsigned long)bundleIDs.count);
