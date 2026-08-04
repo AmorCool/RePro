@@ -60,7 +60,6 @@ struct SettingsView: View {
     @State private var showingRespringAlert = false
     @State private var showingSignOutAlert = false
     @State private var showingCertificates = false
-    @State private var zsignPath: String?
 
     var body: some View {
         NavigationView {
@@ -71,13 +70,12 @@ struct SettingsView: View {
                 freeLimitSection
                 blacklistSection
                 notificationSection
-                signingBackendSection
                 systemSection
                 aboutSection
             }
             .navigationTitle("设置")
             .onAppear {
-                refreshEnvironment()
+                refreshAccountOnly()
                 refreshLogFileSize()
                 refreshNotificationStatus()
                 needsConfigSync = false
@@ -437,33 +435,6 @@ struct SettingsView: View {
         UIApplication.shared.open(url)
     }
 
-    // MARK: - 签名后端
-
-    private var signingBackendSection: some View {
-        Section {
-            HStack {
-                Text("签名工具")
-                Spacer()
-                Text("zsign")
-                    .foregroundColor(.secondary)
-            }
-            HStack(alignment: .top) {
-                Text("可执行文件")
-                Spacer()
-                Text(zsignPath ?? "未找到")
-                    .font(.system(.caption, design: .monospaced))
-                    .multilineTextAlignment(.trailing)
-                    .foregroundColor(zsignPath == nil ? .red : .secondary)
-            }
-        } header: {
-            Text("签名后端")
-        } footer: {
-            Text(zsignPath == nil
-                 ? "未检测到 zsign，重签会失败。请确认 ReSign 是通过 Sileo/Zebra 安装的（deb 会一并安装 zsign）。"
-                 : "zsign 以独立进程运行，签名结果与原版 ReProvision 一致。")
-        }
-    }
-
     // MARK: - 系统操作
 
     private var systemSection: some View {
@@ -661,11 +632,9 @@ struct SettingsView: View {
         }
     }
 
-    private func refreshEnvironment() {
+    /// v1.1.160：签名后端（zsign 路径/状态）已统一展示在「健康状态」页，设置页不再重复拉取。
+    private func refreshAccountOnly() {
         account.refreshAccountState()
-        BridgeClient.shared.fetchEnvironment { snapshot in
-            zsignPath = snapshot.zsignPath
-        }
     }
 
     private func refreshLogFileSize() {
