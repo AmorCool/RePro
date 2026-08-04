@@ -102,16 +102,20 @@ static int gBacklightToken = 0;
 static time_t     gResignStartTime = 0;       // 本次续签开始时间
 static BOOL       gResignInProgress = NO;     // 是否有续签正在进行
 
-// ─── 内存看门狗（v1.1.150：RootHide 拦截器泄漏自救，方案A）────────────────
+// ─── 内存看门狗（v1.1.150+：RootHide 拦截器泄漏自救，方案A）────────────────
 // 背景：RootHide 的 systemhook/XPC 拦截器在常驻进程里持续泄漏内存，本 daemon
 // 曾被实测涨到 3.6~5.1GB（Jetsam physicalPages.internal 实锤）。daemon 自身
 // 代码无大分配点，无法从代码层面止住泄漏 → 只能「定期自检、超限主动重启」：
 // launchd 配了 KeepAlive=true，退出后立刻拉起新进程，泄漏随旧进程一起释放。
-// 1.5GB 上限：正常 daemon 常驻 <100MB，签一次名峰值也就几百 MB，1.5GB 远超
-// 正常水位；签名进行中（gResignInProgress）不退出，避免打断签名。
+// 🔴 v1.1.151 阈值 1.5GB → 400MB：用户实测「装完过一段时间设备慢慢变卡」——
+// 根因是触发线太高：泄漏从 <100MB 涨到 1.5GB 的整个过程都在白白占用物理内存
+// （iPhone 12 仅 4GB RAM，1GB 泄漏已让系统负重 → Jetsam 杀后台 → 卡顿），
+// 等涨到 1.5GB 才动手已经太晚。400MB = 正常常驻（<100MB）的 4 倍余量；
+// daemon 只负责拉起 App 调度（zsign 是 App 子进程），自身峰值远低于此。
+// 签名进行中（gResignInProgress）不退出，避免打断签名。
 // 前向声明：s_log 定义在下方（C99 要求先声明后使用）
 static void s_log(NSString *fmt, ...);
-static const uint64_t kMemWatchdogLimit = 1500ULL * 1024 * 1024;  // 1.5 GB
+static const uint64_t kMemWatchdogLimit = 400ULL * 1024 * 1024;  // 400 MB
 
 static void s_memWatchdogTick(void) {
     task_vm_info_data_t info;
@@ -123,14 +127,14 @@ static void s_memWatchdogTick(void) {
     if (info.phys_footprint <= kMemWatchdogLimit) {
         // 日常每 30 分钟（6 个 tick）记录一次水位，便于在日志里观察泄漏曲线
         static int quiet = 0;
-        if (++quiet >= 6) { quiet = 0; s_log(@"内存看门狗: 当前 %.0f MB（上限 1500 MB）", mb); }
+        if (++quiet >= 6) { quiet = 0; s_log(@"内存看门狗: 当前 %.0f MB（上限 400 MB）", mb); }
         return;
     }
     if (gResignInProgress) {
         s_log(@"内存看门狗: %.0f MB 已超上限，但续签进行中，下轮再检查", mb);
         return;
     }
-    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB 超 1.5GB 上限 → 主动退出，launchd 将立即重新拉起", mb);
+    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB 超 400MB 上限 → 主动退出，launchd 将立即重新拉起", mb);
     s_log(@"   （这是针对 RootHide 拦截器内存泄漏的自救：旧进程释放后泄漏清零，不影响续签调度）");
     if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
     exit(0);
@@ -144,7 +148,7 @@ static void s_startMemWatchdog(void) {
                               5 * 60 * NSEC_PER_SEC, 10 * NSEC_PER_SEC);
     dispatch_source_set_event_handler(wd, ^{ s_memWatchdogTick(); });
     dispatch_resume(wd);
-    s_log(@"内存看门狗已启动（每 5 分钟自检，超 1.5GB 主动重启，签名中不退出）");
+    s_log(@"内存看门狗已启动（每 5 分钟自检，超 400MB 主动重启，签名中不退出）");
 }
 
 // ─── 崩溃循环检测（v1.1.150，方案C）──────────────────────────────────
@@ -1393,7 +1397,7 @@ int main(int argc, char *argv[]) {
     // v1.1.150：崩溃循环检测（方案C）——10 分钟内反复被拉起 → 告警疑似 RootHide hook 问题
     s_checkCrashLoop();
 
-    // v1.1.150：内存看门狗（方案A）——超 1.5GB 主动退出，清 RootHide 拦截器泄漏
+    // v1.1.150/151：内存看门狗（方案A）——超 400MB 主动退出，清 RootHide 拦截器泄漏
     s_startMemWatchdog();
 
     // v1.1.67：启动时自检自身 entitlement + namespace（每次触发也会再打印）
