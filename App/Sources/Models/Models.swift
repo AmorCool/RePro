@@ -21,6 +21,12 @@ enum BlacklistSource: String {
 
 /// 界面层使用的应用快照。数据全部来自 RPVBridge（Vendor/ReProvision），
 /// 这里不再做任何本地持久化，所以不需要 Codable。
+
+/// 应用图标解码缓存（InstalledApp 是 struct，无法在内部缓存可变状态；
+/// 用全局 NSCache 以 bundleID 为键缓存解码后的 UIImage，避免列表滚动时
+/// 每帧都 UIImage(data:) 重新解码同一份 PNG 数据导致卡顿）
+private let iconCache = NSCache<NSString, UIImage>()
+
 struct InstalledApp: Identifiable, Hashable {
     let bundleIdentifier: String
     let displayName: String
@@ -44,15 +50,13 @@ struct InstalledApp: Identifiable, Hashable {
     /// 这样列表刷新后 SwiftUI 仍能把同一个应用对上号。
     var id: String { bundleIdentifier }
 
-    /// 缓存解码后的图标（避免列表滚动时每帧都 UIImage(data:) 重新解码 PNG）
+    /// 解码后的图标（带全局 NSCache：避免列表滚动时每帧都 UIImage(data:) 重新解码 PNG）
     /// SwiftUI 的 List 在滚动时会反复调用此属性，不缓存会导致明显卡顿。
-    private var _cachedIcon: UIImage?
-
     var icon: UIImage? {
-        if let cached = _cachedIcon { return cached }
+        if let cached = iconCache.object(forKey: bundleIdentifier as NSString) { return cached }
         guard let data = iconData else { return nil }
-        let decoded = UIImage(data: data)
-        _cachedIcon = decoded
+        guard let decoded = UIImage(data: data) else { return nil }
+        iconCache.setObject(decoded, forKey: bundleIdentifier as NSString)
         return decoded
     }
 
@@ -220,6 +224,13 @@ struct RegisteredAppID: Identifiable, Hashable {
     let applicationName: String     // App 名称
     let applicationExpiryDate: Date?
 
+    /// 静态 formatter 复用（超过 30 天显示具体日期用；避免每次调用都创建 DateFormatter）
+    private static let mediumFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f
+    }()
+
     var id: String { identifier }
 
     /// 距过期还剩几天；已过期返回负数，无日期返回 nil
@@ -269,12 +280,7 @@ struct RegisteredAppID: Identifiable, Hashable {
         if days < 0 { return "已过期 \(abs(days)) 天" }
         if days == 0 { return "今天过期" }
         if days <= 30 { return "\(days) 天后过期" }
-        // 超过 30 天显示具体日期（静态 formatter 复用）
-        static let mediumFmt: DateFormatter = {
-            let f = DateFormatter()
-            f.dateStyle = .medium
-            return f
-        }()
+        // 超过 30 天显示具体日期（静态 formatter 复用，见类型级 mediumFmt）
         if let expiry = applicationExpiryDate { return RegisteredAppID.mediumFmt.string(from: expiry) }
         return "未知"
     }

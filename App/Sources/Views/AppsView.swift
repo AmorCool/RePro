@@ -378,8 +378,9 @@ struct AppsView: View {
 
 // MARK: - 徽标辅助
 
-/// 通用胶囊徽标（与 pill 等价，统一命名）
-private func badge(_ text: String, color: Color) -> some View {
+/// 通用胶囊徽标（注意：不能叫 badge，否则与 SwiftUI 的 View.badge() 实例方法冲突，
+/// 在 View 上下文里调用会解析到实例方法导致编译错误）
+private func reproBadge(_ text: String, color: Color) -> some View {
     Text(text)
         .font(.caption2)
         .padding(.horizontal, 6)
@@ -391,7 +392,7 @@ private func badge(_ text: String, color: Color) -> some View {
 
 /// 通用胶囊徽标（保留旧名兼容）
 private func pill(_ text: String, color: Color) -> some View {
-    badge(text, color: color)
+    reproBadge(text, color: color)
 }
 
 /// 证书 / Apple ID 来源徽标（依据 embedded.mobileprovision 到期时间判定：
@@ -404,7 +405,7 @@ private func signingSourcePill(_ app: InstalledApp) -> some View {
     case .appleID: (color, text) = (.blue, "Apple ID")
     case .unknown: (color, text) = (.secondary, "未知")
     }
-    return badge(text, color: color)
+    return reproBadge(text, color: color)
 }
 
 // MARK: - 公共行组件（三个 RowView 共用，消除三份拷贝）
@@ -433,16 +434,16 @@ private struct ExpiryBadgeView: View {
     var body: some View {
         if let daysLeft = app.daysUntilExpiry {
             if daysLeft < 0 {
-                badge("已过期", color: .red)
+                reproBadge("已过期", color: .red)
             } else if daysLeft <= 3 {
-                badge("\(daysLeft) 天后过期", color: .orange)
+                reproBadge("\(daysLeft) 天后过期", color: .orange)
             } else {
-                badge("有效 (\(daysLeft) 天)", color: .green)
+                reproBadge("有效 (\(daysLeft) 天)", color: .green)
             }
         } else if app.hasEmbeddedProvision {
-            badge("到期时间未知", color: .secondary)
+            reproBadge("到期时间未知", color: .secondary)
         } else {
-            badge("无描述文件", color: .secondary)
+            reproBadge("无描述文件", color: .secondary)
         }
     }
 }

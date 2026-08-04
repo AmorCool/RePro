@@ -46,18 +46,22 @@ func DaemonLogDefaultPath() -> String {
     return "/var/jb/var/log/reprorefresh_at.log"
 }
 
+/// daemon 日志文件大小上限（2 MB），超出后截断重建（见 daemonLogWrite 轮转逻辑）
+private let maxDaemonLogSize: Int64 = 2 * 1024 * 1024
+/// 轮转检查计数器（daemonLogWrite 每 ~100 行 stat 一次文件大小；Swift 函数内不允许 static 局部变量，用文件级全局）
+private var daemonLogWriteCount: Int = 0
+
 /// 同步写入一行到 daemon 日志（在 LogManager.append 中调用）
 /// 内置 2 MB 轮转：超出后截断保留后半段，避免长期运行撑满磁盘
 private func daemonLogWrite(ts: String, source: String, message: String) {
     guard let f = gDaemonLogFile else { return }
 
     // 每写入 ~100 行检查一次文件大小（避免每次都 stat 的开销）
-    static var writeCount: Int = 0
-    writeCount += 1
-    if writeCount % 100 == 1, let path = gDaemonLogPath {
+    daemonLogWriteCount += 1
+    if daemonLogWriteCount % 100 == 1, let path = gDaemonLogPath {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
            let size = attrs[.size] as? Int64,
-           size > LogManager.maxDaemonLogSize {
+           size > maxDaemonLogSize {
             // 截断：关闭当前文件 → 重开（fopen "w" 清空）→ 写入轮转标记
             fclose(f)
             gDaemonLogFile = nil
@@ -128,9 +132,6 @@ class LogManager: ObservableObject {
         f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return f
     }()
-
-    // daemon 日志文件大小上限（2 MB），超出后截断保留后半段
-    private static let maxDaemonLogSize: Int64 = 2 * 1024 * 1024
 
     private func append(level: LogLevel, message: String, source: String) {
         let now = Date()
