@@ -22,6 +22,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <dispatch/dispatch.h>
 
 #include <spawn.h>
 #include <sys/wait.h>
@@ -295,12 +296,71 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 
 #pragma mark - fix-cellular（国行越狱后修复蜂窝数据无法联网）
 
-// 原理（逆向 cn.tinyapps.Renet 实测路径）：国行越狱后蜂窝失效 = iOS 的 App 蜂窝/WiFi
-// 数据使用策略被重置。修复 = 遍历已安装应用，把每个应用的蜂窝/WiFi 策略设为「始终允许」
-// （SettingsCellular 私有框架 PSAppDataUsagePolicyCache 的
-// -setUsagePoliciesForBundle:cellular:wifi:），随后重启 SpringBoard 生效。
-// 在 root helper 里做：无需 App entitlements（com.apple.CommCenter.fine-grained 等），
-// root 权限直接调私有框架。
+// 原理（重新逆向 cn.tinyapps.Renet v1.2.2 + ZIKCellularAuthorization 实测）：
+// 国行越狱后蜂窝失效 = iOS 的 App 蜂窝/WiFi 数据使用策略被重置。
+// Renet 反汇编确认三时代 API：
+//   iOS 11/12：PSAppDataUsagePolicyCache -setUsagePoliciesForBundle:cellular:wifi:（传 1,1）
+//   iOS 17+ ：PSAppDataUsagePolicyCache -setPolicies:completion:
+//   🔴 底层通用：CoreTelephony 私有 C 函数
+//       _CTServerConnectionCreateOnTargetQueue / _CTServerConnectionSetCellularUsagePolicy
+//       —— Settings 里每个 App 的蜂窝开关底层就是它，全 iOS 版本存在。
+//   Renet 的 __LINKEDIT 也导入了 _CTServerConnectionSetCellularUsagePolicy。
+// 本 helper 路径：①CoreTelephony C 函数（主，全版本通用）②SettingsCellular ObjC（备）。
+// 在 root helper 里做：无需 App entitlements，root 权限直接调私有框架。
+
+typedef CFTypeRef (*CTServerConnectionCreateIMP)(CFAllocatorRef, NSString *,
+                                                 dispatch_queue_t, void *);
+typedef int (*CTServerConnectionSetPolicyIMP)(CFTypeRef, NSString *, NSDictionary *);
+
+/// 主路径：CoreTelephony 私有 C 函数（全 iOS 版本通用）
+/// 参考 ZIKCellularAuthorization 实测：字典固定 @{@"kCTCellularUsagePolicyDataAllowed": @YES}
+static int RPVHelperFixCellularViaCTServer(NSArray<NSString *> *bundleIDs) {
+    void *ctHandle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony",
+                            RTLD_NOW);
+    if (!ctHandle) {
+        RPVHelperLog(@"fix-cellular(CT): 无法加载 CoreTelephony.framework");
+        return 11;
+    }
+
+    // dlsym 两个私有 C 函数（Mach-O 导出符号带前导下划线）
+    CTServerConnectionCreateIMP createConn =
+        (CTServerConnectionCreateIMP)dlsym(ctHandle, "_CTServerConnectionCreateOnTargetQueue");
+    CTServerConnectionSetPolicyIMP setPolicy =
+        (CTServerConnectionSetPolicyIMP)dlsym(ctHandle, "_CTServerConnectionSetCellularUsagePolicy");
+    if (!createConn || !setPolicy) {
+        RPVHelperLog(@"fix-cellular(CT): dlsym 失败 createConn=%p setPolicy=%p",
+                     createConn, setPolicy);
+        return 12;
+    }
+
+    // 伪装成「设置」App 创建连接（ZIK 实测技巧）
+    CFTypeRef conn = createConn(kCFAllocatorDefault, @"com.apple.Preferences",
+                                dispatch_get_main_queue(), NULL);
+    if (!conn) {
+        RPVHelperLog(@"fix-cellular(CT): _CTServerConnectionCreateOnTargetQueue 返回空");
+        return 13;
+    }
+
+    int okCount = 0;
+    NSDictionary *allow = @{ @"kCTCellularUsagePolicyDataAllowed": @YES };
+    for (NSString *bid in bundleIDs) {
+        @try {
+            int r = setPolicy(conn, bid, allow);
+            okCount++;
+            if (r != 0 && r != 1) {
+                RPVHelperLog(@"fix-cellular(CT): %@ 返回 %d", bid, r);
+            }
+        } @catch (NSException *e) {
+            RPVHelperLog(@"fix-cellular(CT): %@ 设置异常: %@", bid, e.reason);
+        }
+    }
+    RPVHelperLog(@"fix-cellular(CT): 成功设置 %d/%lu 个应用", okCount,
+                 (unsigned long)bundleIDs.count);
+
+    if (conn) CFRelease(conn);
+    dlclose(ctHandle);
+    return 0;
+}
 
 /// 枚举已安装应用 bundle id：多路径尝试安装记录 + 容器 metadata 兜底 + /Applications 兜底。
 /// 注意：iOS 15+ com.apple.mobile.installation.plist 已不存在；容器真实路径是
@@ -364,16 +424,22 @@ static NSArray<NSString *> *RPVHelperEnumerateBundleIDs(void) {
     return ids;
 }
 
-static int RPVHelperFixCellular(void) {
-    RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
-
-    NSArray<NSString *> *bundleIDs = RPVHelperEnumerateBundleIDs();
-    RPVHelperLog(@"fix-cellular: 共 %lu 个应用", (unsigned long)bundleIDs.count);
-    if (bundleIDs.count == 0) {
-        RPVHelperLog(@"fix-cellular 失败：枚举不到任何应用");
-        return 3;
+/// 重启 SpringBoard 使策略生效（root 直接 killall；先试 rootfs 路径再试 /var/jb）
+static void RPVHelperRestartSpringBoard(void) {
+    RPVHelperLog(@"fix-cellular: 重启 SpringBoard 使策略生效");
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
+        execl("/var/jb/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
+        _exit(127);
     }
+    if (pid > 0) {
+        waitpid(pid, NULL, 0);
+    }
+}
 
+/// 备路径：SettingsCellular 私有框架 PSAppDataUsagePolicyCache（iOS 17 方法 setPolicies:completion:）
+static int RPVHelperFixCellularViaSettingsCellular(NSArray<NSString *> *bundleIDs) {
     // 加载 SettingsCellular 私有框架，拿 PSAppDataUsagePolicyCache
     Class cacheClass = NSClassFromString(@"PSAppDataUsagePolicyCache");
     if (!cacheClass) {
@@ -383,7 +449,7 @@ static int RPVHelperFixCellular(void) {
         }
     }
     if (!cacheClass) {
-        RPVHelperLog(@"fix-cellular 失败：找不到 PSAppDataUsagePolicyCache（SettingsCellular 私有框架未加载）");
+        RPVHelperLog(@"fix-cellular(ObjC): 找不到 PSAppDataUsagePolicyCache（SettingsCellular 私有框架未加载）");
         return 4;
     }
 
@@ -392,7 +458,7 @@ static int RPVHelperFixCellular(void) {
         cache = [[cacheClass alloc] init];
     }
     if (!cache) {
-        RPVHelperLog(@"fix-cellular 失败：PSAppDataUsagePolicyCache 实例化失败");
+        RPVHelperLog(@"fix-cellular(ObjC): PSAppDataUsagePolicyCache 实例化失败");
         return 5;
     }
 
@@ -421,14 +487,14 @@ static int RPVHelperFixCellular(void) {
         SEL s = NSSelectorFromString(selName);
         if ([cache respondsToSelector:s]) {
             setPolicy = s;
-            RPVHelperLog(@"fix-cellular: 命中候选选择器 %@", selName);
+            RPVHelperLog(@"fix-cellular(ObjC): 命中候选选择器 %@", selName);
             break;
         }
     }
 
     // 第二轮：dump 全部实例方法，智能匹配「多参数策略」方法（排除属性 setter）
     if (!setPolicy) {
-        RPVHelperLog(@"fix-cellular: 硬编码候选均未命中，dump PSAppDataUsagePolicyCache 全部实例方法：");
+        RPVHelperLog(@"fix-cellular(ObjC): 硬编码候选均未命中，dump PSAppDataUsagePolicyCache 全部实例方法：");
         unsigned int mc = 0;
         Method *methods = class_copyMethodList(cacheClass, &mc);
         for (unsigned int i = 0; i < mc; i++) {
@@ -441,7 +507,7 @@ static int RPVHelperFixCellular(void) {
             if (!setPolicy && strncmp(selName, "set", 3) == 0 && nArgs >= 4 &&
                 (strstr(selName, "Policies") || strstr(selName, "UsagePolicies"))) {
                 setPolicy = method_getName(m);
-                RPVHelperLog(@"fix-cellular: 自动匹配到 %s", selName);
+                RPVHelperLog(@"fix-cellular(ObjC): 自动匹配到 %s", selName);
             }
             // 同时找到 fetch/policies 探查方法
             if (!fetchPolicy &&
@@ -453,7 +519,7 @@ static int RPVHelperFixCellular(void) {
     }
 
     if (!setPolicy) {
-        RPVHelperLog(@"fix-cellular 失败：PSAppDataUsagePolicyCache 无可用策略设置方法（见上方 dump）");
+        RPVHelperLog(@"fix-cellular(ObjC): PSAppDataUsagePolicyCache 无可用策略设置方法（见上方 dump）");
         return 6;
     }
 
@@ -478,11 +544,11 @@ static int RPVHelperFixCellular(void) {
                     [finv getReturnValue:&ret];
                     samplePolicy = (__bridge id)ret;
                 }
-                RPVHelperLog(@"fix-cellular: %s(%@) 返回 %@ (类型:%@)",
+                RPVHelperLog(@"fix-cellular(ObjC): %s(%@) 返回 %@ (类型:%@)",
                     sel_getName(fetchPolicy), testBid, samplePolicy, [samplePolicy class]);
             }
         } @catch (NSException *e) {
-            RPVHelperLog(@"fix-cellular: 探查策略格式异常: %@", e.reason);
+            RPVHelperLog(@"fix-cellular(ObjC): 探查策略格式异常: %@", e.reason);
         }
     }
 
@@ -498,12 +564,12 @@ static int RPVHelperFixCellular(void) {
         for (NSString *bid in bundleIDs) dict[bid] = @1;
         policiesArg = [dict copy];
     }
-    RPVHelperLog(@"fix-cellular: 构造策略参数字典 %lu 项", (unsigned long)[(NSDictionary *)policiesArg count]);
+    RPVHelperLog(@"fix-cellular(ObjC): 构造策略参数字典 %lu 项", (unsigned long)[(NSDictionary *)policiesArg count]);
 
     // ── 调用策略设置方法 ──
     NSMethodSignature *sig = [cache methodSignatureForSelector:setPolicy];
     if (!sig) {
-        RPVHelperLog(@"fix-cellular 失败：无法获取 %s 的方法签名", sel_getName(setPolicy));
+        RPVHelperLog(@"fix-cellular(ObjC): 无法获取 %s 的方法签名", sel_getName(setPolicy));
         return 7;
     }
 
@@ -535,7 +601,7 @@ static int RPVHelperFixCellular(void) {
             didTry = YES;
         }
     } @catch (NSException *e) {
-        RPVHelperLog(@"fix-cellular: 批量设置异常: %@（将逐 bundle 重试）", e.reason);
+        RPVHelperLog(@"fix-cellular(ObjC): 批量设置异常: %@（将逐 bundle 重试）", e.reason);
         okCount = 0;
         didTry = NO;
     }
@@ -566,11 +632,11 @@ static int RPVHelperFixCellular(void) {
                 [inv2 invoke];
                 okCount++;
             } @catch (NSException *e) {
-                RPVHelperLog(@"fix-cellular: %@ 设置异常: %@", bid, e.reason);
+                RPVHelperLog(@"fix-cellular(ObjC): %@ 设置异常: %@", bid, e.reason);
             }
         }
     }
-    RPVHelperLog(@"fix-cellular: 成功设置 %d/%lu 个应用", okCount, (unsigned long)bundleIDs.count);
+    RPVHelperLog(@"fix-cellular(ObjC): 成功设置 %d/%lu 个应用", okCount, (unsigned long)bundleIDs.count);
 
     // 持久化（flush / save 等私有方法存在则调用一次）
     for (NSString *selName in @[@"flush", @"save", @"writeToDisk"]) {
@@ -580,23 +646,35 @@ static int RPVHelperFixCellular(void) {
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             [cache performSelector:s];
 #pragma clang diagnostic pop
-            RPVHelperLog(@"fix-cellular: 已调用 %@ 持久化策略", selName);
+            RPVHelperLog(@"fix-cellular(ObjC): 已调用 %@ 持久化策略", selName);
             break;
         }
     }
 
-    // 重启 SpringBoard 生效（root 直接 killall；先试 rootfs 路径再试 /var/jb）
-    RPVHelperLog(@"fix-cellular: 重启 SpringBoard 使策略生效");
-    pid_t pid = fork();
-    if (pid == 0) {
-        execl("/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
-        execl("/var/jb/usr/bin/killall", "killall", "SpringBoard", (char *)NULL);
-        _exit(127);
-    }
-    if (pid > 0) {
-        waitpid(pid, NULL, 0);
+    return 0;
+}
+
+static int RPVHelperFixCellular(void) {
+    RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
+
+    NSArray<NSString *> *bundleIDs = RPVHelperEnumerateBundleIDs();
+    RPVHelperLog(@"fix-cellular: 共 %lu 个应用", (unsigned long)bundleIDs.count);
+    if (bundleIDs.count == 0) {
+        RPVHelperLog(@"fix-cellular 失败：枚举不到任何应用");
+        return 3;
     }
 
+    // ── 主路径：CoreTelephony 私有 C 函数（全 iOS 版本通用，Renet/ZIK 均用）──
+    int ctRet = RPVHelperFixCellularViaCTServer(bundleIDs);
+    if (ctRet != 0) {
+        RPVHelperLog(@"fix-cellular: CoreTelephony 路径失败(code=%d)，回退 SettingsCellular ObjC 路径", ctRet);
+        int objcRet = RPVHelperFixCellularViaSettingsCellular(bundleIDs);
+        if (objcRet != 0) {
+            RPVHelperLog(@"fix-cellular: SettingsCellular 路径也失败(code=%d)，仍重启 SpringBoard", objcRet);
+        }
+    }
+
+    RPVHelperRestartSpringBoard();
     RPVHelperLog(@"fix-cellular 完成");
     return 0;
 }
