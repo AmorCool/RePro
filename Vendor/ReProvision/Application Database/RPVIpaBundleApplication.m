@@ -96,7 +96,7 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
         [url getResourceValue:&isUb forKey:NSURLIsUbiquitousItemKey error:nil];
         if (isUb.boolValue) {
             // 触发 iCloud 下载，并**等待下载完成**再拷贝，否则下方 copyItemAtURL: 可能拷到占位符。
-            // （RootHide 下 App 在 overlay namespace，isUb 一般为 NO，会落到 importdaemon 走 rootfs 处理。）
+            // （RootHide 下 App 在 overlay namespace，isUb 一般为 NO，iCloud 导入不受支持。）
             if ([[NSFileManager defaultManager] respondsToSelector:@selector(startDownloadingUbiquitousItemAtURL:error:)]) {
                 NSError *dlErr = nil;
                 [[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&dlErr];
@@ -109,9 +109,8 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
     if (!tmp) tmp = @"/tmp";
 
     // RootHide：App 的 NSTemporaryDirectory() 落在 jbroot overlay namespace，
-    // 而拷贝兜底（repro-importdaemon）跑在真实 rootfs 命名空间，两边看不到对方的
-    // 路径。统一落到真实共享路径 /var/mobile/Library/RePro/imports/<uuid>（App 与
-    // rootfs daemon 都能读写，正是 profiledaemon 用的 IPC 目录），避免路径对不上。
+    // 直接拷贝到共享路径 /var/mobile/Library/RePro/imports/<uuid>（App 可读写，
+    // 正是 profiledaemon 用的 IPC 目录），避免路径在 namespace 间对不上。
     BOOL isRootHide = RPVIsRootHideEnvironment();
     NSString *baseDir = isRootHide ? @"/var/mobile/Library/RePro/imports" : tmp;
 
@@ -144,12 +143,9 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
         }
     }
 
-    // Final fallback: hand the raw path to the daemon copy handler. On rootless/rootful
-    // this is repro-helper (setuid root) doing the copy. On RootHide it's repro-importdaemon
-    // (launchd 在系统级 rootfs 命名空间拉起) —— 因为 App 及其 posix_spawn 出的
-    // helper 都在 jbroot overlay namespace 内，读不到 iCloud 真实路径；只有跑在真实
-    // rootfs 的 LaunchDaemon 能读真实 /var/mobile/Library/Mobile Documents 下的文件，
-    // 把它拷到真实共享路径 /var/mobile/Library/RePro/imports/（App 也能读回）。
+    // Final fallback: hand the raw path to the daemon copy handler.
+    // v1.1.157：repro-importdaemon 已删除，拷贝兜底统一为 repro-helper（setuid root）
+    // 执行 copy；RootHide 下 iCloud 真实路径在 overlay 外读不到，导入会失败（场景已废弃）。
     if (!ok && _rpvDaemonFileCopyHandler && [url isFileURL] && [url path].length > 0) {
         ok = _rpvDaemonFileCopyHandler([url path], dest);
     }

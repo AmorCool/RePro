@@ -21,8 +21,8 @@ private final class IPAFilePicker: NSObject, UIDocumentPickerDelegate {
         // .icloud 占位符活体 URL 导致「无法读取这个 .ipa」。
         // 同时这种模式下选择器右上角有「打开」按钮、文件带圆形勾选框，点击→勾选→打开的交互明确，
         // 不会出现 open 模式「点了没反应」的问题（用户实测反馈）。
-        // 注：RootHide 下 App 跑在 overlay namespace，读不到 iCloud/真实路径，仍由 repro-importdaemon
-        // 在 rootfs 命名空间拷贝，RPVIpaBundleApplication 已有兜底；非 RootHide 由 repro-helper 拷贝。
+        // 注：v1.1.157 起 repro-importdaemon 已删除，拷贝兜底统一由 repro-helper 执行；
+        // RootHide 下 iCloud 导入场景已废弃（overlay 内读不到 iCloud 真实路径）。
         var types: [UTType] = []
         if let ipa = UTType(filenameExtension: "ipa") { types.append(ipa) }
         types.append(.archive)

@@ -22,3 +22,6 @@ Thumbs.db
 *.bak
 *~
 .tmp/
+
+# 项目记忆（v1.1.157：不再进仓库，本地保留）
+.workbuddy/

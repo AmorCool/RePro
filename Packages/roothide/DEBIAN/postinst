@@ -59,15 +59,6 @@ if [ -f "$DAEMON" ]; then
 	echo "profile daemon: $(ls -l "$DAEMON")"
 fi
 
-# IPA 导入守护进程：root:wheel + 0755（由 launchd 在系统级 rootfs 命名空间拉起，
-# 负责读真实 iCloud 文件并拷到真实共享路径，绕过 App 的 jbroot overlay namespace）
-IMPORTD="/usr/libexec/repro-importdaemon"
-if [ -f "$IMPORTD" ]; then
-	chown root:wheel "$IMPORTD" 2>/dev/null || true
-	chmod 0755 "$IMPORTD" 2>/dev/null || true
-	echo "import daemon: $(ls -l "$IMPORTD")"
-fi
-
 # 描述文件 IPC 共享目录：必须 mobile 可写（App 以 mobile 身份写描述文件，
 # daemon 以 root 读取）。建为 mobile:mobile 0755，避免 root 创建的目录导致
 # App 写入 Permission denied（这正是 v1.1.25 重签失败的根因）。
@@ -164,11 +155,6 @@ load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist" \
 load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist" \
             "jp.soh.reprovision.profiledaemon" \
             "profiledaemon (system context, outside App namespace)"
-
-# 加载 importdaemon LaunchDaemon（系统级 rootfs 命名空间，读真实 iCloud 文件）
-load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.importdaemon.plist" \
-            "jp.soh.reprovision.importdaemon" \
-            "importdaemon (system context, reads real iCloud files)"
 
 # Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）
 echo "Reloading application cache"
