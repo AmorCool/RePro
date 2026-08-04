@@ -91,6 +91,7 @@ static const NSTimeInterval kResignCooldown = 24 * 3600;
 static const NSInteger  kMaxThresholdDays = 6;
 
 static FILE     *gLogFile   = NULL;
+static NSString *sLogPath   = nil;   // v1.1.152：实际写入的文件路径（调试/--status 用）
 static NSTimer  *gTimer     = nil;
 static time_t    gLastFire  = 0;
 static BOOL      gUpdateQueuedForUnlock = NO;
@@ -122,20 +123,31 @@ static void s_memWatchdogTick(void) {
     mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
     kern_return_t kr = task_info(mach_task_self(), TASK_VM_INFO,
                                  (task_info_t)&info, &cnt);
-    if (kr != KERN_SUCCESS) return;
+    if (kr != KERN_SUCCESS) {
+        // ★ v1.1.152：task_info 失败也记 NSLog（防止"静默失败"——之前 2.87GB 时
+        // 看门狗日志 0 字节，可能就是 task_info 失败且 s_log 写文件失败导致完全无感）
+        NSLog(@"[repro-signingd] 内存看门狗: task_info 失败 kr=%d（不会主动退出）", kr);
+        return;
+    }
     double mb = (double)info.phys_footprint / (1024.0 * 1024.0);
+    double physMb = (double)info.phys_mem / (1024.0 * 1024.0);
+    double internalMb = (double)info.internal / (1024.0 * 1024.0);
     if (info.phys_footprint <= kMemWatchdogLimit) {
-        // 日常每 30 分钟（6 个 tick）记录一次水位，便于在日志里观察泄漏曲线
+        // 日常每 6 个 tick（约 30 分钟）记录一次水位，便于在日志里观察泄漏曲线
         static int quiet = 0;
-        if (++quiet >= 6) { quiet = 0; s_log(@"内存看门狗: 当前 %.0f MB（上限 400 MB）", mb); }
+        if (++quiet >= 6) { quiet = 0;
+            s_log(@"内存看门狗: phys_footprint=%.0fMB phys_mem=%.0fMB internal=%.0fMB（上限 400MB）",
+                  mb, physMb, internalMb);
+        }
         return;
     }
     if (gResignInProgress) {
         s_log(@"内存看门狗: %.0f MB 已超上限，但续签进行中，下轮再检查", mb);
         return;
     }
-    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB 超 400MB 上限 → 主动退出，launchd 将立即重新拉起", mb);
-    s_log(@"   （这是针对 RootHide 拦截器内存泄漏的自救：旧进程释放后泄漏清零，不影响续签调度）");
+    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB (phys_mem=%.0f internal=%.0f) 超 400MB 上限 → 主动退出，launchd 将立即重新拉起",
+          mb, physMb, internalMb);
+    s_log(@"   （针对 RootHide 容器内拦截器/资源句柄累积的自救：旧进程释放后泄漏清零）");
     if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
     exit(0);
 }
@@ -144,11 +156,16 @@ static void s_startMemWatchdog(void) {
     static dispatch_source_t wd = NULL;
     if (wd) return;
     wd = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(wd, dispatch_time(DISPATCH_TIME_NOW, 5 * 60 * NSEC_PER_SEC),
+    // ★ v1.1.152：首次触发从 5 分钟改成 30 秒。
+    // 根因：iOS 17 launchd 对 LaunchDaemon 判 "inefficient" 主动 SIGTERM，
+    // daemon 生命周期可能 < 5 分钟（exponential throttling 越拉越慢），
+    // 原 5 分钟首次检查根本来不及触发；30 秒首次能让短生命周期 daemon 也有早期保护。
+    // 后续保持 5 分钟间隔（任务轻，CPU 影响可忽略）。
+    dispatch_source_set_timer(wd, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC),
                               5 * 60 * NSEC_PER_SEC, 10 * NSEC_PER_SEC);
     dispatch_source_set_event_handler(wd, ^{ s_memWatchdogTick(); });
     dispatch_resume(wd);
-    s_log(@"内存看门狗已启动（每 5 分钟自检，超 400MB 主动重启，签名中不退出）");
+    s_log(@"内存看门狗已启动（30 秒首次自检，之后每 5 分钟；超 400MB 主动重启，签名中不退出）");
 }
 
 // ─── 崩溃循环检测（v1.1.150，方案C）──────────────────────────────────
@@ -210,7 +227,11 @@ static void s_log(NSString *fmt, ...) {
     char ts[64]; strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
     s_ensure_log_valid();
     if (gLogFile) { fprintf(gLogFile, "[%s] %s\n", ts, s.UTF8String); fflush(gLogFile); }
+    // ★ v1.1.152：写文件失败时仍强制 NSLog 多次（iOS 17 launchd 下 stdout
+    // 可能被丢，但 NSLog 走 ASL/os_log 系统服务，至少在 syslog -w 或 Console.app 能看到）
     NSLog(@"[repro-signingd] %@", s);
+    // 写文件失败时额外打 stderr（plink --status 这类场景能直接看到）
+    if (!gLogFile) fprintf(stderr, "[repro-signingd] [%s] %s\n", ts, s.UTF8String);
 }
 
 static void s_open_log(void) {
@@ -222,12 +243,33 @@ static void s_open_log(void) {
     }
     if (!jb) jb = @"/var/jb";
     dir = [jb stringByAppendingPathComponent:@"var/log"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
-    NSString *p = [dir stringByAppendingPathComponent:@"reprorefresh_at.log"];
-    gLogFile = fopen(p.UTF8String, "a");
-    if (gLogFile) chmod(p.UTF8String, 0666);
-    if (!gLogFile) NSLog(@"[repro-signingd] 无法打开 %@", p);
+
+    // ★ v1.1.152 fallback 链：iOS 17 RootHide 容器化下 fopen("a") 可能写不出
+    // （实测：/var/jb/var/log/reprorefresh_at.log mtime=安装时间，size=0）。
+    // 按真实可写性顺序尝试 3 个候选路径，任意一个成功就 break。
+    NSArray<NSString *> *candidates = @[
+        [dir stringByAppendingPathComponent:@"reprorefresh_at.log"],   // 原路径：jbroot 容器内
+        @"/var/mobile/Library/Logs/RePro/reprorefresh_at.log",        // 真实 syslog 旁路
+        @"/tmp/reprorefresh_at.log",                                   // 最后兜底（重启清空）
+    ];
+    for (NSString *p in candidates) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:[p stringByDeletingLastPathComponent]
+                                  withIntermediateDirectories:YES
+                                                   attributes:@{NSFilePosixPermissions:@0755}
+                                                        error:nil];
+        gLogFile = fopen(p.UTF8String, "a");
+        if (gLogFile) {
+            chmod(p.UTF8String, 0666);
+            s_logPath = p;  // 记录成功路径，s_log 失败时打印
+            return;
+        }
+    }
+    // 三条路径全部失败 → 留 NSLog 警告，但 s_log 仍能 NSLog 输出
+    NSLog(@"[repro-signingd] ⚠️ 无法打开任何日志文件路径（候选：%@），仅写系统日志", candidates);
 }
+
+/// 当前实际写入的日志文件路径（s_open_log 成功后赋值，调试用）
+static NSString *sLogPath = nil;
 
 /// 运行 shell 命令并取 stdout（用于读取自身 entitlement）
 static NSString *s_run_cmd(NSString *cmd) {

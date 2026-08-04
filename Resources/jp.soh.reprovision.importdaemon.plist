@@ -17,7 +17,13 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>POSIXSpawnType</key>
-    <string>Interactive</string>
-  </dict>
+    <!-- v1.1.152：移除 POSIXSpawnType=Interactive 改默认 Background 类型。
+         + 加 ThrottleInterval 30s（v1.1.150 signingd 才有，importdaemon 漏了） -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>MemoryLimit</key>
+    <integer>30</integer>
+</dict>
 </plist>

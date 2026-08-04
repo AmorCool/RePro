@@ -19,7 +19,17 @@
 	<integer>30</integer>
 	<key>UserName</key>
 	<string>root</string>
-	<key>POSIXSpawnType</key>
-	<string>Interactive</string>
+	<!-- v1.1.152：移除 POSIXSpawnType=Interactive 改默认 Background 类型。
+	     Interactive spawn 在 iOS 17 launchd 下容易被判 "inefficient" 主动 SIGTERM；
+	     实测在 iPhone 11 (4GB) 上 3 个 daemon 全部立即被杀 + 指数退避越拉越慢。
+	     Background 类型让 launchd 知道这是后台守护，不强制要求"持续产生 IPC"。 -->
+	<!-- v1.1.152：显式声明 ProcessType=Background + MemoryLimit=50MB。
+	     默认 daemon category jetsam memory limit 仅 6MB（iPhone 11 实测），
+	     一旦 Roothide 容器内 minor 波动就超限被 jetsam 杀；
+	     提到 50MB 给正常 rootfs 守护足够空间（纯 C daemon 峰值 < 30MB）。 -->
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>MemoryLimit</key>
+	<integer>50</integer>
 </dict>
 </plist>

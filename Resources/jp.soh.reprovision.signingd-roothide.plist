@@ -26,7 +26,12 @@
 	<integer>30</integer>
 	<key>UserName</key>
 	<string>root</string>
-	<key>POSIXSpawnType</key>
-	<string>Interactive</string>
+	<!-- v1.1.152：见 Resources/jp.soh.reprovision.signingd.plist 注释
+	     （移除 Interactive 改 Background + 加 MemoryLimit=50MB 防 iOS 17
+	      launchd "inefficient" 判定 + 6MB jetsam 限额过严）。 -->
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>MemoryLimit</key>
+	<integer>50</integer>
 </dict>
 </plist>
