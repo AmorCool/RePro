@@ -538,15 +538,18 @@ struct SettingsView: View {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        nextResignTimeText = fmt.string(from: next)
 
         let remain = next.timeIntervalSinceNow
         if remain > 0 {
+            nextResignTimeText = fmt.string(from: next)
             let totalSec = Int(remain)
             let mins = totalSec / 60
             let secs = totalSec % 60
             nextResignCountdownText = mins > 0 ? "约 \(mins) 分 \(secs) 秒后触发" : "\(secs) 秒后触发"
         } else {
+            // v1.1.130：过期/已触发后不再显示过去的完整时间（易误读），
+            // 显示「等待 daemon 调度…」——daemon 启动时会按过期处理并立即续签
+            nextResignTimeText = "等待 daemon 调度…"
             nextResignCountdownText = "即将触发…"
         }
     }
