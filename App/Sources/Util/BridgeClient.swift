@@ -124,17 +124,25 @@ final class BridgeClient: ObservableObject {
 
     func fetchInstalledApps(completion: @escaping (Result<[InstalledApp], Error>) -> Void) {
         bridge.fetchInstalledApps { [weak self] infos, error in
+            // v1.1.159：原代码在 weak 闭包里直接 self! 强解包——单例虽不会为 nil，
+            // 但一旦释放就是必崩点；且失败路径必须调 completion，否则调用方
+            // withCheckedContinuation 永不恢复 → 界面卡死。
+            guard let self else {
+                completion(.failure(NSError(domain: "com.reprovision", code: -1,
+                                            userInfo: [NSLocalizedDescriptionKey: "BridgeClient 已释放"])))
+                return
+            }
             if let error = error {
                 completion(.failure(error))
                 return
             }
             let apps = infos.map(InstalledApp.init(info:))
             // 顺带刷新通知用的名字表（超上限时清空重建，防止长期运行后只增不减）
-            if self!.appNameCache.count > BridgeClient.maxAppNameCacheSize {
-                self!.appNameCache.removeAll()
+            if self.appNameCache.count > BridgeClient.maxAppNameCacheSize {
+                self.appNameCache.removeAll()
             }
             for app in apps {
-                self?.appNameCache[app.bundleIdentifier] = app.displayName
+                self.appNameCache[app.bundleIdentifier] = app.displayName
             }
             completion(.success(apps))
         }

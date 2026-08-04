@@ -254,6 +254,7 @@ NSString *const REProtocolVersion = @"QH65B2";
         // Do a request to listTeams.action to check that the user is a member of a team
         [self listTeamsWithCompletionHandler:^(NSError *error, NSDictionary *plist) {
             NSArray *teams = [plist objectForKey:@"teams"];
+            if (![teams isKindOfClass:[NSArray class]]) teams = nil;   // v1.1.159：非数组归一化为 nil，防 for-in 闪退
 
             if (!teams) {
                 // Error of some kind?
@@ -305,6 +306,7 @@ NSString *const REProtocolVersion = @"QH65B2";
         // Do a request to listTeams.action to check that the user is a member of a team
         [self listTeamsWithCompletionHandler:^(NSError *error, NSDictionary *plist) {
             NSArray *teams = [plist objectForKey:@"teams"];
+            if (![teams isKindOfClass:[NSArray class]]) teams = nil;   // v1.1.159：非数组归一化为 nil，防 for-in 闪退
 
             if (!teams) {
                 // Error of some kind?
@@ -352,6 +354,7 @@ NSString *const REProtocolVersion = @"QH65B2";
         // Do a request to listTeams.action to check that the user is a member of a team
         [self listTeamsWithCompletionHandler:^(NSError *error, NSDictionary *plist) {
             NSArray *teams = [plist objectForKey:@"teams"];
+            if (![teams isKindOfClass:[NSArray class]]) teams = nil;   // v1.1.159：非数组归一化为 nil，防 for-in 闪退
 
             if (!teams) {
                 // Error of some kind?
@@ -393,6 +396,7 @@ NSString *const REProtocolVersion = @"QH65B2";
         }
 
         NSArray *teams = [plist objectForKey:@"teams"];
+        if (![teams isKindOfClass:[NSArray class]]) teams = nil;   // v1.1.159：非数组归一化为 nil，防 for-in 闪退
         if (!teams) {
             completionHandler(error, @"");
             return;
@@ -582,6 +586,7 @@ NSString *const REProtocolVersion = @"QH65B2";
         }
 
         NSArray *provisioningProfiles = [plist objectForKey:@"provisioningProfiles"];
+        if (![provisioningProfiles isKindOfClass:[NSArray class]]) provisioningProfiles = nil;   // v1.1.159：非数组归一化为 nil，防 for-in 闪退
 
         // We want the provisioning profile that has an appId that matches our provided bundle identifier.
         // Then, we take it's provisioningProfileId.

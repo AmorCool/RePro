@@ -1098,16 +1098,16 @@ static int s_printStatus(void) {
     s_report_self_entitlements();
     printf("\n");
 
-    // 1. daemon 是否在跑
+    // 1. daemon 状态（v1.1.159 适配短命模式：进程由 launchd 每 5 分钟拉起、做完即退，
+    //    时有时无属正常，不能再用「进程此刻是否存活」判断健康）
     NSString *pidStr = [NSString stringWithContentsOfFile:kPidPath
                                                  encoding:NSUTF8StringEncoding error:nil];
     pid_t dpid = pidStr ? (pid_t)[pidStr integerValue] : 0;
     if (dpid > 0 && kill(dpid, 0) == 0) {
-        printf("daemon 状态      : ✅ 运行中 (pid=%d)\n", dpid);
+        printf("daemon 状态      : ✅ 本轮进程运行中 (pid=%d)\n", dpid);
     } else {
-        printf("daemon 状态      : ❌ 未运行%s\n",
-               dpid > 0 ? "（pid 文件存在但进程已死）" : "");
-        printf("                   修复: launchctl kickstart -k system/jp.soh.reprovision.signingd\n");
+        printf("daemon 状态      : ⏸ 本轮进程未运行（短命模式正常——launchd 每 5 分钟拉起一轮）\n");
+        printf("                   判断健康请用下方「最近一次续签完成」；手动拉起: launchctl kickstart -k system/jp.soh.reprovision.signingd\n");
     }
 
     // 2. 当前配置

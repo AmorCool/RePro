@@ -381,7 +381,10 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
                 if (appPath) {
                     NSString *provPath = [appPath stringByAppendingString:@"/embedded.mobileprovision"];
                     NSDictionary *plist = [RPVApplication provisioningProfileAtPath:provPath];
-                    NSArray *teamIds = plist[@"TeamIdentifier"];
+                    // v1.1.159：TeamIdentifier 类型不可信（正常是 NSArray，异常时可能是
+                    // NSString/NSDictionary），强转后调用 firstObject 会 unrecognized selector 闪退。
+                    NSArray *teamIds = [plist[@"TeamIdentifier"] isKindOfClass:[NSArray class]]
+                        ? plist[@"TeamIdentifier"] : nil;
                     info.originalTeamID = [teamIds firstObject] ?: @"未知";
                 }
                 [results addObject:info];
@@ -969,9 +972,13 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
                     return;
                 }
 
-                NSArray *rawApps = dict[@"appIds"];
+                // v1.1.159：Apple 响应结构不可信（代理返回 HTML、会话过期等会让 appIds
+                // 缺失或变成其它类型），for-in 快速枚举非 NSArray 会
+                // countByEnumeratingWithState: unrecognized selector 闪退。
+                NSArray *rawApps = [dict[@"appIds"] isKindOfClass:[NSArray class]] ? dict[@"appIds"] : nil;
                 NSMutableArray<RPVRegisteredAppID *> *result = [NSMutableArray array];
                 for (NSDictionary *appDict in rawApps) {
+                    if (![appDict isKindOfClass:[NSDictionary class]]) continue;
                     RPVRegisteredAppID *appId = [[RPVRegisteredAppID alloc] initWithDictionary:appDict];
                     [result addObject:appId];
                 }
@@ -1018,9 +1025,11 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
                     return;
                 }
 
-                NSArray *dataArray = dict[@"data"];
+                // v1.1.159：同 fetchAppIDs —— data 缺失/非数组时快速枚举会闪退。
+                NSArray *dataArray = [dict[@"data"] isKindOfClass:[NSArray class]] ? dict[@"data"] : nil;
                 NSMutableArray<RPVCertificateInfo *> *result = [NSMutableArray array];
                 for (NSDictionary *certDict in dataArray) {
+                    if (![certDict isKindOfClass:[NSDictionary class]]) continue;
                     RPVCertificateInfo *cert = [[RPVCertificateInfo alloc] initWithDictionary:certDict];
                     [result addObject:cert];
                 }
@@ -1191,7 +1200,10 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     if (self) {
         _identifier = [dict[@"id"] copy] ?: @"";
 
-        NSDictionary *attrs = dict[@"attributes"];
+        // v1.1.159：attributes 缺失/非字典时强转调用下标会 unrecognized selector 闪退
+        // （Apple 证书列表字段结构异常时实测过崩溃）。
+        NSDictionary *attrs = [dict[@"attributes"] isKindOfClass:[NSDictionary class]]
+            ? dict[@"attributes"] : nil;
         _machineName = [attrs[@"machineName"] copy] ?: @"Unknown";
 
         // machineId：与本机 uuid 比对可判定这张证书是不是本机签发的。

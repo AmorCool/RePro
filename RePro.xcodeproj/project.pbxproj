@@ -1322,7 +1322,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.158;
+				MARKETING_VERSION = 1.1.159;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1380,7 +1380,7 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.158;
+				MARKETING_VERSION = 1.1.159;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
