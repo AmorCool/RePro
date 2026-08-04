@@ -130,14 +130,13 @@ static void s_memWatchdogTick(void) {
         return;
     }
     double mb = (double)info.phys_footprint / (1024.0 * 1024.0);
-    double physMb = (double)info.phys_mem / (1024.0 * 1024.0);
     double internalMb = (double)info.internal / (1024.0 * 1024.0);
     if (info.phys_footprint <= kMemWatchdogLimit) {
         // 日常每 6 个 tick（约 30 分钟）记录一次水位，便于在日志里观察泄漏曲线
         static int quiet = 0;
         if (++quiet >= 6) { quiet = 0;
-            s_log(@"内存看门狗: phys_footprint=%.0fMB phys_mem=%.0fMB internal=%.0fMB（上限 400MB）",
-                  mb, physMb, internalMb);
+            s_log(@"内存看门狗: phys_footprint=%.0fMB internal=%.0fMB（上限 400MB）",
+                  mb, internalMb);
         }
         return;
     }
@@ -145,8 +144,8 @@ static void s_memWatchdogTick(void) {
         s_log(@"内存看门狗: %.0f MB 已超上限，但续签进行中，下轮再检查", mb);
         return;
     }
-    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB (phys_mem=%.0f internal=%.0f) 超 400MB 上限 → 主动退出，launchd 将立即重新拉起",
-          mb, physMb, internalMb);
+    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB (internal=%.0f) 超 400MB 上限 → 主动退出，launchd 将立即重新拉起",
+          mb, internalMb);
     s_log(@"   （针对 RootHide 容器内拦截器/资源句柄累积的自救：旧进程释放后泄漏清零）");
     if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
     exit(0);
@@ -260,16 +259,13 @@ static void s_open_log(void) {
         gLogFile = fopen(p.UTF8String, "a");
         if (gLogFile) {
             chmod(p.UTF8String, 0666);
-            s_logPath = p;  // 记录成功路径，s_log 失败时打印
+            sLogPath = p;  // 记录成功路径，s_log 失败时打印
             return;
         }
     }
     // 三条路径全部失败 → 留 NSLog 警告，但 s_log 仍能 NSLog 输出
     NSLog(@"[repro-signingd] ⚠️ 无法打开任何日志文件路径（候选：%@），仅写系统日志", candidates);
 }
-
-/// 当前实际写入的日志文件路径（s_open_log 成功后赋值，调试用）
-static NSString *sLogPath = nil;
 
 /// 运行 shell 命令并取 stdout（用于读取自身 entitlement）
 static NSString *s_run_cmd(NSString *cmd) {
