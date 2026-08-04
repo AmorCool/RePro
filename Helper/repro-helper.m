@@ -307,7 +307,8 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
 //       _CTServerConnectionCreateOnTargetQueue / _CTServerConnectionSetCellularUsagePolicy
 //       —— Settings 里每个 App 的蜂窝开关底层就是它，全 iOS 版本存在。
 //   Renet 的 __LINKEDIT 也导入了 _CTServerConnectionSetCellularUsagePolicy。
-// 本 helper 路径：①CoreTelephony C 函数（主，全版本通用）②AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案，@try/@catch 兜底）。
+// 本 helper 路径：①CoreTelephony C 函数（主，全版本通用，仅处理非系统应用）
+// ②AppWirelessDataUsageManager（Preferences.framework，iOS 11 官方方案，@try/@catch 兜底）。
 // 在 root helper 里做：无需 App entitlements，root 权限直接调私有框架。
 
 typedef CFTypeRef (*CTServerConnectionCreateIMP)(CFAllocatorRef, NSString *,
@@ -534,22 +535,41 @@ static void RPVHelperFlushPreferences(void) {
 static int RPVHelperFixCellular(NSString *selfBid) {
     RPVHelperLog(@"fix-cellular 开始：枚举应用并重置蜂窝/WiFi 数据策略");
 
-    NSMutableArray<NSString *> *bundleIDs = [NSMutableArray arrayWithArray:RPVHelperEnumerateBundleIDs()];
+    NSMutableArray<NSString *> *allIDs = [NSMutableArray arrayWithArray:RPVHelperEnumerateBundleIDs()];
 
     // 🔴 自身修复：App 侧显式传入的 bundle id 无条件加入列表并优先处理。
     //    roothide 下 ReSign 装在 jbroot Applications 目录，枚举在 namespace 里
     //    看不到自身（v1.1.122 实测 246 个里没有 com.reprovision.repro）。
     if (selfBid.length > 0) {
-        BOOL alreadyIn = [bundleIDs containsObject:selfBid];
+        BOOL alreadyIn = [allIDs containsObject:selfBid];
         RPVHelperLog(@"fix-cellular: 自身 %@ 枚举到=%d（App 显式传入，无条件加入并优先）",
                      selfBid, alreadyIn);
-        [bundleIDs removeObject:selfBid];
-        [bundleIDs insertObject:selfBid atIndex:0]; // 放最前，CT 路径第一个设置
+        [allIDs removeObject:selfBid];
+        [allIDs insertObject:selfBid atIndex:0]; // 放最前，CT 路径第一个设置
     }
 
-    RPVHelperLog(@"fix-cellular: 共 %lu 个应用", (unsigned long)bundleIDs.count);
+    // 🔴 v1.1.145：过滤 com.apple.* 系统守护/应用。
+    // _CTServerConnectionSetCellularUsagePolicy 是对系统守护进程设置蜂窝策略的
+    // 私有 C 函数调用——越狱环境（尤其 roothide systemhook）下逐条对数百个系统
+    // daemon 调该函数会污染 CoreTelephony 内部状态、引发 roothide XPC 拦截 fault，
+    // 表现为「修复联网后前后台切换几次→杀后台→冷启动即 EXC_GUARD 闪退」。
+    // 修复只需针对越狱/旁加载应用（它们才是国行蜂窝权限丢失的受害者），系统应用
+    // 走设置→蜂窝网络即可管理。
+    NSMutableArray<NSString *> *bundleIDs = [NSMutableArray array];
+    NSUInteger skippedApple = 0;
+    for (NSString *bid in allIDs) {
+        if ([bid hasPrefix:@"com.apple."]) {
+            skippedApple++;
+        } else {
+            [bundleIDs addObject:bid];
+        }
+    }
+    RPVHelperLog(@"fix-cellular: 枚举 %lu 个（含 %lu 个 com.apple.* 已跳过），实际处理 %lu 个",
+                 (unsigned long)allIDs.count, (unsigned long)skippedApple,
+                 (unsigned long)bundleIDs.count);
+
     if (bundleIDs.count == 0) {
-        RPVHelperLog(@"fix-cellular 失败：枚举不到任何应用");
+        RPVHelperLog(@"fix-cellular 失败：枚举不到任何非系统应用");
         return 3;
     }
 

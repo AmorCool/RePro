@@ -216,7 +216,7 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
     NS_SWIFT_NAME(setExtensionImportOptions(removeExtensions:useMainProfile:));
 
 /// 修复越狱联网问题（国行蜂窝/WiFi 数据策略重置）。设置页「修复越狱联网问题」按钮调用，
-/// 同步拉起 repro-helper fix-cellular，重置全部应用蜂窝/WiFi 策略为「始终允许」并重启 SpringBoard。
+/// 同步拉起 repro-helper fix-cellular，重置第三方应用蜂窝/WiFi 策略为「始终允许」并刷新 cfprefsd。
 /// 仅手动触发，无 daemon 自动循环。completion 在主队列回调。
 - (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion
     NS_SWIFT_NAME(fixCellularData(completion:));

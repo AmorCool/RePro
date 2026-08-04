@@ -599,7 +599,7 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 #pragma mark - 越狱联网修复（国行蜂窝/WiFi 权限重置，手动入口）
 
 /// 设置里「修复越狱联网问题」按钮调用：同步拉起 repro-helper fix-cellular（CoreTelephony 路径），
-/// 重置全部应用蜂窝/WiFi 数据策略为「始终允许」并重启 SpringBoard 生效。
+/// 重置所有第三方应用蜂窝/WiFi 数据策略为「始终允许」并刷新偏好缓存（killall cfprefsd）生效。
 /// 仅手动触发，无 daemon 自动循环（避免之前 daemon 空转 killall SpringBoard 拖死系统）。
 - (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -620,7 +620,7 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
         NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.reprovision.repro";
         BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
         NSString *message = ok
-            ? @"已重置全部应用（含 ReSign 自身）的蜂窝/WiFi 数据策略为「始终允许」，SpringBoard 正在重启生效（界面会短暂重载）。"
+            ? @"已重置全部应用的蜂窝/WiFi 数据策略为「始终允许」。偏好缓存已刷新（cfprefsd），请稍等几秒后打开「设置 → 蜂窝网络」查看效果。"
             : @"修复失败，请稍后重试。";
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{

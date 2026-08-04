@@ -396,7 +396,7 @@ struct SettingsView: View {
                         Text("修复越狱联网问题")
                             .font(.body)
                             .foregroundColor(.primary)
-                        Text("越狱后部分插件及应用无法联网（国行「允许使用数据」授权丢失）时，重置所有应用的蜂窝/WiFi 数据策略为「始终允许」，并重启 SpringBoard 生效。")
+                        Text("越狱后部分插件及应用无法联网（国行「允许使用数据」授权丢失）时，重置所有第三方应用的蜂窝/WiFi 数据策略为「始终允许」并刷新偏好缓存（cfprefsd）生效。系统应用请通过「设置 → 蜂窝网络」手动管理。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
