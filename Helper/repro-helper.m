@@ -712,7 +712,8 @@ static void RPVHelperPrintUsage(void) {
             "用法:\n"
             "  repro-helper copy <源路径> <目标路径>\n"
             "  repro-helper install-profile <描述文件路径>\n"
-            "  repro-helper fix-cellular [自身bundleID]\n");
+            "  repro-helper fix-cellular [自身bundleID]   ← App 手动/登录静默入口\n"
+            "  repro-helper fix-inter [自身bundleID]      ← daemon 专用（修复联网+重启SpringBoard）\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -758,7 +759,10 @@ int main(int argc, char *argv[]) {
             return RPVHelperInstallProvisioningProfile([NSString stringWithUTF8String:argv[2]]);
         }
 
-        if ([command isEqualToString:@"fix-cellular"]) {
+        // fix-cellular = App 手动/登录静默入口；fix-inter = daemon 专用入口
+        // （v1.1.133：用户要求把「修复联网 + 重启 SpringBoard」独立成 fix-inter 由 daemon 调用，
+        //  退出码即真实结果：0=成功，非 0=失败——daemon 据此决定是否重试续签/延长间隔）。
+        if ([command isEqualToString:@"fix-cellular"] || [command isEqualToString:@"fix-inter"]) {
             if (argc < 2 || argc > 3) {
                 RPVHelperPrintUsage();
                 return 64;

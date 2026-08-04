@@ -165,6 +165,40 @@ static NSString *s_run_cmd(NSString *cmd) {
     return (out.length ? out : nil);
 }
 
+/// v1.1.133：运行命令并取退出码（helper 全程静默无 stdout，只能靠退出码判定成败）。
+static int s_run_cmd_status(NSString *cmd) {
+    NSString *full = [cmd stringByAppendingString:@"; echo __RPV_EXIT__:$?"];
+    NSString *out = s_run_cmd(full);
+    NSRange r = [out rangeOfString:@"__RPV_EXIT__:"];
+    if (r.location != NSNotFound) {
+        NSString *code = [out substringFromIndex:r.location + r.length];
+        code = [code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        return code.intValue;
+    }
+    return -1;
+}
+
+/// v1.1.133：探测网络是否真正可用（修复后验证，避免「误报修复成功」死循环）。
+/// 用 curl 访问 Apple captive 检测页（200/302/204 = 有网）。
+static BOOL s_networkAvailable(void) {
+    NSString *out = s_run_cmd(@"curl -s -m 4 -o /dev/null -w '%{http_code}' "
+                              @"https://captive.apple.com/hotspot-detect.html 2>/dev/null || echo 000");
+    return out.length >= 3 && ([out hasPrefix:@"200"] || [out hasPrefix:@"302"] || [out hasPrefix:@"204"]);
+}
+
+/// v1.1.133：等待网络恢复，最多 maxTries 次（每次间隔 10 秒）。
+static BOOL s_waitForNetwork(int maxTries) {
+    for (int i = 0; i < maxTries; i++) {
+        if (i > 0) sleep(10);
+        if (s_networkAvailable()) {
+            s_log(@"[联网修复] 网络探测通过（第 %d 次）", i + 1);
+            return YES;
+        }
+        s_log(@"[联网修复] 网络探测第 %d 次未通过，等待…", i + 1);
+    }
+    return NO;
+}
+
 /// 判断某个命令行工具是否在当前 PATH 可达（popen 用 /bin/sh，PATH 来自 launchd 环境）
 static BOOL s_tool_exists(NSString *name) {
     NSString *out = s_run_cmd([NSString stringWithFormat:
@@ -463,6 +497,14 @@ static NSInteger s_bypass3AppLimit(NSString *reason) {
 static void s_bypass3AppLimitIfEnabled(NSString *reason) {
     if (!s_bypassEnabled()) {
         s_log(@"3应用绕过[%@]: 设置未开启，跳过", reason);
+        return;
+    }
+    // 🔴 v1.1.133：网络未修复（fix-cellular-request 请求文件仍存在且新鲜）→ 跳过。
+    // 3 应用绕过是重活（枚举全部容器扫 xattr），且应在「真正修复好联网、续签成功」后
+    // 才做——App 侧 bypass 请求可能在修复期间到达，这里门控兜底。
+    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:kFixCellularReqPath];
+    if (req) {
+        s_log(@"3应用绕过[%@]: 存在未处理的联网修复请求 → 跳过（待修复后签名成功再做）", reason);
         return;
     }
     s_bypass3AppLimit(reason);
@@ -938,14 +980,29 @@ static NSString *s_resolveHelperPath(void) {
     return nil;
 }
 
+/// 🔴 v1.1.133 全局：修复是否正在执行（去重，防止 notify/signing-complete/文件轮询
+/// 三路触发导致 helper 执行两次、killall SpringBoard 两次）与连续失败计数。
+static BOOL gFixCellularRunning = NO;
+static int  gFixCellularFailCount = 0;
+
 /// 处理 App 的「续签网络失败 → 修复并立即重试」请求（后台线程执行，不阻塞 daemon）。
+/// v1.1.133 重构（用户要求）：
+///  · 独立调用 fix-inter（修复联网 + 重启 SpringBoard 专用命令）
+///  · 去重：gFixCellularRunning 互斥，三路触发只执行一次
+///  · 拿 helper 真实退出码 + 网络探测验证——**不再误报修复成功**
+///  · 网络未恢复 → 不 10 秒死循环：连续 3 次失败后停止自动重试（等正常调度）
 static void s_handleFixCellularRequest(void) {
+    if (gFixCellularRunning) {
+        s_log(@"[联网修复] 修复已在执行，跳过重复请求");
+        return;
+    }
     NSString *helper = s_resolveHelperPath();
     if (!helper) {
         s_log(@"[联网修复] 未找到 repro-helper，无法修复");
         return;
     }
     NSString *selfBid = kAppBundleID;
+    gFixCellularRunning = YES;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // 1) 等 App 退出（App 发请求后还会 notifySigningComplete 并 exit(0)）。
@@ -961,6 +1018,7 @@ static void s_handleFixCellularRequest(void) {
         time_t now = time(NULL);
         if (gResignInProgress && (now - gResignStartTime) < 120) {
             s_log(@"[联网修复] App 仍在续签，跳过修复请求（续签优先，修复可延后）");
+            gFixCellularRunning = NO;
             return;
         }
 
@@ -969,19 +1027,40 @@ static void s_handleFixCellularRequest(void) {
         //    （trigger 本就是 daemon 自己写的，续签已结束，删除安全）
         [[NSFileManager defaultManager] removeItemAtPath:kTriggerPath error:nil];
 
-        // 3) exec helper 修复（rootfs daemon 直接跑，killall SpringBoard 不影响自身）
-        NSString *cmd = [NSString stringWithFormat:@"'%@' fix-cellular '%@' 2>&1", helper, selfBid];
-        s_log(@"[联网修复] 执行 repro-helper fix-cellular …");
-        s_run_cmd(cmd);
+        // 3) 执行 fix-inter（修复联网 + 重启 SpringBoard 专用命令），拿真实退出码。
+        //    v1.1.133：不用 fix-cellular（那是 App 手动入口）；helper 全程静默，
+        //    成败只看退出码（0=CT 路径成功，非 0=失败）。
+        NSString *cmd = [NSString stringWithFormat:@"'%@' fix-inter '%@' 2>&1", helper, selfBid];
+        s_log(@"[联网修复] 执行 repro-helper fix-inter …");
+        int fixCode = s_run_cmd_status(cmd);
+        s_log(@"[联网修复] fix-inter 退出码=%d（0=策略设置成功）", fixCode);
 
-        // 4) 修复完成（helper 内部已 killall SpringBoard），等 SpringBoard/backboardd 就绪
-        s_log(@"[联网修复] 修复完成，等待 SpringBoard 重启就绪（5 秒）…");
+        // 4) helper 内部已 killall SpringBoard，等 SpringBoard/backboardd 就绪
+        s_log(@"[联网修复] 等待 SpringBoard 重启就绪（5 秒）…");
         sleep(5);
 
-        // 5) 立即重新调度续签：10 秒后触发（网络已修复，续签自动接续）
+        // 5) 🔴 网络验证——修复是否「真正恢复网络」，不再误报成功。
+        //    网络通了 → 10 秒后重试续签；没通 → 拉长间隔，连续 3 次失败停止自动重试
+        //    （避免一直 killall SpringBoard + 10 秒循环刷屏「似乎已断开互联网的连接」）。
+        BOOL netOK = s_waitForNetwork(3);   // 最多 3 次，间隔 10 秒
         dispatch_async(dispatch_get_main_queue(), ^{
-            s_reschedule(10);
-            s_log(@"[联网修复] 10 秒后重试续签");
+            if (netOK) {
+                gFixCellularFailCount = 0;
+                s_reschedule(10);
+                s_log(@"[联网修复] 网络已恢复 → 10 秒后重试续签");
+            } else {
+                gFixCellularFailCount++;
+                if (gFixCellularFailCount >= 3) {
+                    s_log(@"[联网修复] 连续 %d 次修复后网络仍未恢复 → 停止自动重试（等下一轮正常调度）",
+                          gFixCellularFailCount);
+                    sd_config c = s_cfg();
+                    s_reschedule((NSTimeInterval)c.minutes * 60.0);
+                } else {
+                    s_log(@"[联网修复] 网络尚未恢复（第 %d 次）→ 10 分钟后重试一次", gFixCellularFailCount);
+                    s_reschedule(600);
+                }
+            }
+            gFixCellularRunning = NO;
         });
     });
 }
@@ -1157,18 +1236,17 @@ static void s_manualResign(NSString *reason) {
 /// App 续签失败时写该文件并 notify daemon；notify 在 RootHide 下可能丢失，
 /// 这里文件轮询兜底——任何续签触发（定时器/解锁/亮屏/SIGHUP）都会先修再签。
 static BOOL s_consumeFixCellularRequestIfAny(void) {
-    NSString *reqPath = @"/var/mobile/Library/RePro/fix-cellular-request";
-    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:reqPath];
+    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:kFixCellularReqPath];
     if (!req) return NO;
     NSTimeInterval ts = [req[@"timestamp"] doubleValue];
     if (ts <= 0 || (time(NULL) - (time_t)ts) > 900) {
         // 过期/非法请求：清掉，不处理
-        [[NSFileManager defaultManager] removeItemAtPath:reqPath error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:kFixCellularReqPath error:nil];
         return NO;
     }
-    [[NSFileManager defaultManager] removeItemAtPath:reqPath error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:kFixCellularReqPath error:nil];
     s_log(@"[联网修复] 检测到待处理的修复请求（文件轮询兜底）→ 先修复再续签");
-    s_handleFixCellularRequest();
+    s_handleFixCellularRequest();   // 🔴 内部有 gFixCellularRunning 去重，三路触发只执行一次
     return YES;
 }
 
@@ -1257,9 +1335,15 @@ static void s_onSigningComplete(void) {
     [result writeToFile:kResultPath atomically:YES];
     chown(kResultPath.UTF8String, 501, 501);
 
-    // 续签重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
+    // 续签成功重装完成 → 解除免费账号 3 应用限制（installd 会在安装时重新打上 xattr）。
     // 通过合并计时器，2 秒后执行一次（让 installd 收尾，避免刚删又被写回）。
-    s_requestBypass(@"续签完成");
+    // 🔴 v1.1.133：只有续签**成功**才做 3 应用绕过——续签因网络失败时根本没签名，
+    // 做绕过是白费重活（且绕过执行前还会再查 fix-cellular-request 文件门控）。
+    if ([gLastResignStatus isEqualToString:@"成功"]) {
+        s_requestBypass(@"续签完成");
+    } else {
+        s_log(@"续签结果非成功 → 跳过 3 应用绕过（待修复联网后签名成功再做）");
+    }
 
     // 🔴 v1.1.131：修复请求文件兜底——App 续签因网络失败时写的 fix-cellular-request，
     // 若「com.reprovision.fix-cellular-request」notify 在 RootHide 下丢失，
