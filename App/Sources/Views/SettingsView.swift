@@ -695,6 +695,8 @@ struct SettingsView: View {
 
     /// 登录失败统一处理：网络/超时类错误自动重试（最多 loginMaxRetries 次）；
     /// 账号/密码类错误直接报错，不重试以免死循环。
+    /// v1.1.125：首次网络/超时失败时**静默执行越狱联网修复**（无任何提示、10 分钟防抖）。
+    /// 修复会重启 SpringBoard 使蜂窝策略生效 → App 进程随之结束，用户重新打开即可。
     private func handleLoginFailure(reason: String, retryCount: Int) {
         let lower = reason.lowercased()
         let isNetworkish = reason.contains("超时") || reason.contains("timeout") || reason.contains("timed out")
@@ -705,18 +707,43 @@ struct SettingsView: View {
         let isCredential = reason.contains("密码") || lower.contains("incorrect")
             || reason.contains("不正确") || reason.contains("app-specific")
             || reason.contains("验证") || reason.contains("2fa")
-        if isNetworkish && !isCredential && retryCount < loginMaxRetries {
-            let next = retryCount + 1
-            LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
-                self.attemptLogin(retryCount: next)
+        if isNetworkish && !isCredential {
+            // 首次网络失败：静默修复越狱联网（防抖 10 分钟）。修复重启 SpringBoard，
+            // App 会被系统杀掉，后续重试无意义，直接结束本次登录流程。
+            if retryCount == 0 && silentFixCellularOnNetworkError() {
+                LogManager.shared.info("Apple ID 登录网络异常 → 已静默触发越狱联网修复（SpringBoard 将重启，无提示）",
+                                       source: "SettingsView")
+                return
             }
-            return
+            if retryCount < loginMaxRetries {
+                let next = retryCount + 1
+                LogManager.shared.info("Apple ID 登录网络错误，自动重试 (\(next)/\(loginMaxRetries)): \(reason)", source: "SettingsView")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+                    self.attemptLogin(retryCount: next)
+                }
+                return
+            }
         }
         isLoggingIn = false
         loginSucceeded = false
         loginMessage = "登录失败: \(reason)"
         LogManager.shared.error("Apple ID 登录失败: \(reason)", source: "SettingsView")
+    }
+
+    /// 静默执行越狱联网修复（无任何 UI 提示）。返回是否真的触发了修复。
+    /// 防抖：10 分钟内不重复触发（避免登录失败就反复重启 SpringBoard）。
+    private func silentFixCellularOnNetworkError() -> Bool {
+        let d = UserDefaults.standard
+        let now = Date().timeIntervalSince1970
+        let last = d.double(forKey: "lastSilentFixCellularTime")
+        guard now - last > 600 else { return false }
+        d.set(now, forKey: "lastSilentFixCellularTime")
+
+        // 静默执行：无弹窗、无 ProgressView、无完成回调 UI
+        RPVBridge.sharedInstance().fixCellularData { _, _ in
+            // 修复会 killall SpringBoard，App 进程随之结束；这里不需要任何 UI 处理
+        }
+        return true
     }
 
     private func selectTeam(_ team: DeveloperTeam) {
