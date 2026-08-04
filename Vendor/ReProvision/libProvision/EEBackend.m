@@ -696,7 +696,9 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
                     NSLocalizedDescriptionKey: [NSString stringWithFormat:
                         @"IPA 的 bundle id 是「%@」，与当前 profile 的 bundle id「%@」不匹配。\n\n"
                         @"这两个是不同的应用，profile 不能跨 app 通用。请用「通配符 profile（TEAMID.*）」"
-                        @"或与该 IPA bundle id 一致的 profile 重新导入后再试。",
+                        @"或与该 IPA bundle id 一致的 profile 重新导入后再试。\n\n"
+                        @"提示：若该应用是别人签名后出现闪退（0xe8008015），签名本身未损坏，"
+                        @"重新导入原始 IPA 用匹配 profile 签名即可恢复。",
                         appCore, profCore],
                     @"appBundle": appBundle,
                     @"profBundle": profBundle,
@@ -995,6 +997,41 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
         applicationId = [applicationId stringByAppendingString:teamIdSuffix];
     }
     [infoplist setObject:applicationId forKey:@"CFBundleIdentifier"];
+
+    // ── fix-sign：旧 embedded.mobileprovision 与改写后 bundleID 不匹配时强制刷新 ──
+    // 现象（用户实报，repro_log_1785833481）：应用被别人用 lara 类工具签过，其自带的
+    // embedded.mobileprovision 的 App ID 带双 Team 后缀（TEAMID.com.x.TEAMID.TEAMID），
+    // 而本次签名已把 CFBundleIdentifier 改写为单后缀（TEAMID.com.x.TEAMID）→ 签名后的
+    // application-identifier 与旧 profile 不一致 → installd 0xe8008015 → 应用闪退。
+    // 这里在下载 profile 前检测到不匹配 → 删除旧 profile 并记日志，让下方流程按改写后的
+    // applicationId 重新下载匹配 profile（重签即修复，无需任何手动操作）。
+    if (!isExtension && isEmbeddedExists && teamId.length > 0) {
+        NSDictionary *oldProf = RZExtractProfilePlist(embeddedPath);
+        NSString *oldAid = oldProf[@"Entitlements"][@"application-identifier"];
+        NSString *oldTeam = [oldProf[@"TeamIdentifier"] isKindOfClass:[NSArray class]]
+            ? [(NSArray *)oldProf[@"TeamIdentifier"] firstObject] : nil;
+        BOOL needRefresh = NO;
+        if (oldAid.length > 0 && oldTeam.length > 0) {
+            NSString *(^stripTeam)(NSString *) = ^NSString *(NSString *s){
+                NSString *prefix = [oldTeam stringByAppendingString:@"."];
+                if ([s hasPrefix:prefix]) s = [s substringFromIndex:prefix.length];
+                NSString *suffix = [@"." stringByAppendingString:oldTeam];
+                while ([s hasSuffix:suffix]) s = [s substringToIndex:s.length - suffix.length];
+                return s;
+            };
+            NSString *oldCore = stripTeam(oldAid);          // 旧 profile 的 bundle core
+            NSString *newCore = stripTeam(applicationId);   // 本次改写后的 bundle core
+            // 注意：oldCore 可能比 newCore 多一个 Team 后缀层（lara 双后缀），
+            // 剥完后 oldCore 仍以「newCore.TEAM」结尾时视为同一 app 但 profile 过期 → 刷新。
+            needRefresh = ![oldCore isEqualToString:newCore];
+        }
+        if (needRefresh) {
+            NSLog(@"[fix-sign] 旧 embedded.mobileprovision 的 App ID(%@) 与本次 bundleID(%@) 不匹配"
+                  @" → 删除旧 profile，按新 id 强制重新下载匹配 profile", oldAid, applicationId);
+            [[NSFileManager defaultManager] removeItemAtPath:embeddedPath error:nil];
+            isEmbeddedExists = NO;
+        }
+    }
 
     NSError *error = nil;
     if (@available(iOS 11.0, *)) {
