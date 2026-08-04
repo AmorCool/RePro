@@ -179,11 +179,27 @@ static int s_run_cmd_status(NSString *cmd) {
 }
 
 /// v1.1.133：探测网络是否真正可用（修复后验证，避免「误报修复成功」死循环）。
-/// 用 curl 访问 Apple captive 检测页（200/302/204 = 有网）。
+/// v1.1.134：改多方法探测，任一成功即网络通——旧实现只 curl https://captive.apple.com，
+/// 在越狱 rootfs daemon 环境极易误判：rootfs curl 可能缺 CA 证书（TLS 握手失败）、
+/// captive.apple.com 国内可达性不稳定、daemon 精简 PATH 里 curl 可能不存在
+/// → 明明修好了也被判「没修好」→ 停止重试（用户反馈「修复了还是没用」）。
+/// 方法：①HTTPS captive.apple.com  ②HTTP baidu（国内必达，不依赖 CA）  ③ICMP ping 223.5.5.5
 static BOOL s_networkAvailable(void) {
-    NSString *out = s_run_cmd(@"curl -s -m 4 -o /dev/null -w '%{http_code}' "
-                              @"https://captive.apple.com/hotspot-detect.html 2>/dev/null || echo 000");
-    return out.length >= 3 && ([out hasPrefix:@"200"] || [out hasPrefix:@"302"] || [out hasPrefix:@"204"]);
+    NSString *https = s_run_cmd(@"curl -s -m 4 -o /dev/null -w '%{http_code}' "
+                                @"https://captive.apple.com/hotspot-detect.html 2>/dev/null || echo 000");
+    if (https.length >= 3 && ([https hasPrefix:@"200"] || [https hasPrefix:@"302"] || [https hasPrefix:@"204"])) {
+        return YES;
+    }
+    NSString *http = s_run_cmd(@"curl -s -m 4 -o /dev/null -w '%{http_code}' "
+                               @"http://www.baidu.com 2>/dev/null || echo 000");
+    if (http.length >= 3 && [http hasPrefix:@"200"]) {
+        return YES;
+    }
+    NSString *ping = s_run_cmd(@"ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 && echo OK || echo FAIL");
+    if ([ping hasPrefix:@"OK"]) {
+        return YES;
+    }
+    return NO;
 }
 
 /// v1.1.133：等待网络恢复，最多 maxTries 次（每次间隔 10 秒）。
@@ -191,10 +207,10 @@ static BOOL s_waitForNetwork(int maxTries) {
     for (int i = 0; i < maxTries; i++) {
         if (i > 0) sleep(10);
         if (s_networkAvailable()) {
-            s_log(@"[联网修复] 网络探测通过（第 %d 次）", i + 1);
+            s_log(@"[联网修复] 网络探测通过（第 %d 次，HTTPS/HTTP/ping 任一命中）", i + 1);
             return YES;
         }
-        s_log(@"[联网修复] 网络探测第 %d 次未通过，等待…", i + 1);
+        s_log(@"[联网修复] 网络探测第 %d 次未通过（HTTPS/HTTP/ping 均失败），等待…", i + 1);
     }
     return NO;
 }
@@ -1042,7 +1058,9 @@ static void s_handleFixCellularRequest(void) {
         // 5) 🔴 网络验证——修复是否「真正恢复网络」，不再误报成功。
         //    网络通了 → 10 秒后重试续签；没通 → 拉长间隔，连续 3 次失败停止自动重试
         //    （避免一直 killall SpringBoard + 10 秒循环刷屏「似乎已断开互联网的连接」）。
-        BOOL netOK = s_waitForNetwork(3);   // 最多 3 次，间隔 10 秒
+        //    v1.1.134：多方法探测（HTTPS/HTTP/ping）+ 窗口放宽到 4 次（最多 40 秒，
+        //    CommCenter 策略生效 + SpringBoard 重启后网络栈恢复需要时间）。
+        BOOL netOK = s_waitForNetwork(4);   // 最多 4 次，间隔 10 秒
         dispatch_async(dispatch_get_main_queue(), ^{
             if (netOK) {
                 gFixCellularFailCount = 0;
