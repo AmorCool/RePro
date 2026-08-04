@@ -280,7 +280,7 @@ struct SettingsView: View {
                         .onAppear { refreshNextResignTime() }
                     Text(nextResignCountdownText)
                         .font(.caption2)
-                        .foregroundColor(.tertiary)
+                        .foregroundStyle(.tertiary)
                 }
                 .task {
                     while !Task.isCancelled {
