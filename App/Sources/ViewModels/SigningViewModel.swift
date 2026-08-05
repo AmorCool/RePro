@@ -326,7 +326,7 @@ final class SigningViewModel: ObservableObject {
 
         LogManager.shared.info("开始批量重签（阈值 \(threshold) 天）", source: "SigningViewModel")
 
-        autoRevokeBeforeSigning { _ in [weak self] _ in
+        autoRevokeBeforeSigning { [weak self] _ in
             guard let self = self else { return }
             self.client.resignAllExpiring(thresholdDays: threshold) { result in
                 switch result {
@@ -348,7 +348,7 @@ final class SigningViewModel: ObservableObject {
 
         LogManager.shared.info("手动批量刷新签名（全部应用）", source: "SigningViewModel")
 
-        autoRevokeBeforeSigning { _ in [weak self] _ in
+        autoRevokeBeforeSigning { [weak self] _ in
             guard let self = self else { return }
             self.client.resignAllApplications { result in
                 switch result {

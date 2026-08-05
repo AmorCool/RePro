@@ -388,7 +388,7 @@ final class BridgeClient: ObservableObject {
 
         LogManager.shared.info("签名前自动撤销：正在拉取账号下的旧证书…", source: "BridgeClient")
         fetchCertificates { [weak self] result in
-            guard let self = self else { completion(); return }
+            guard let self = self else { completion(nil); return }
 
             switch result {
             case .success(let certs):
