@@ -874,6 +874,23 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
 
     [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
 
+    // v1.1.170：profiledaemon 已去 KeepAlive（iOS 17 短命化），不再常驻。
+    // 触发前必须先 kickstart 拉起（App 在 user/501 域，可直接 kickstart 本域守护）。
+    // 用 Apple 二进制 /bin/launchctl，避免 RootHide 把 spawn 重定向到 overlay。
+    {
+        pid_t kp = 0;
+        const char *argv[] = { "/bin/launchctl", "kickstart", "-k",
+                               "user/501/jp.soh.reprovision.profiledaemon", NULL };
+        int rc = posix_spawn(&kp, "/bin/launchctl", NULL, NULL, (char *const *)argv, NULL);
+        if (rc != 0) {
+            const char *argv2[] = { "/bin/launchctl", "kickstart", "-k",
+                                    "system/jp.soh.reprovision.profiledaemon", NULL };
+            posix_spawn(&kp, "/bin/launchctl", NULL, NULL, (char *const *)argv2, NULL);
+        } else {
+            int st = 0; waitpid(kp, &st, 0);
+        }
+    }
+
     // 发 notify 信号
     uint32_t status = notify_post("com.reprovision.profile-install-request");
     if (status != NOTIFY_STATUS_OK) {

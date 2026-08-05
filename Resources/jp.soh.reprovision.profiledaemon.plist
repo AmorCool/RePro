@@ -11,19 +11,25 @@
 		<string>_SafeMode=1</string>
 		<string>/usr/libexec/repro-profiledaemon</string>
 	</array>
-    <key>UserName</key>
+	<key>UserName</key>
     <string>root</string>
     <key>RunAtLoad</key>
     <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <!-- v1.1.152：移除 POSIXSpawnType=Interactive 改默认 Background 类型。
-         + 加 ThrottleInterval 30s（v1.1.150 signingd 才有，profiledaemon 漏了） -->
+    <!-- v1.1.170：去掉 KeepAlive（iOS 17 launchd 会把它判为 inefficient 并 SIGKILL，
+         与 signingd v1.1.155 短命化同理）。改由 StartCalendarInterval 每 5 分钟
+         拉起一轮；App 触发时走 launchctl kickstart + notify，处理完即退出。
+         这样进程不会被「常驻低 IPC 守护」机制杀掉，泄漏也无累积机会。 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>5</integer>
+    </dict>
+    <!-- v1.1.170：与 signingd 对齐的短命化配套参数 -->
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <key>ProcessType</key>
     <string>Background</string>
     <key>MemoryLimit</key>
-    <integer>30</integer>
+    <integer>50</integer>
 </dict>
 </plist>

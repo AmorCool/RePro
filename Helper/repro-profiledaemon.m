@@ -154,9 +154,39 @@ static NSString *CleanupExpiredProfiles(void) {
         (unsigned long)removed, (unsigned long)valid, (unsigned long)total];
 }
 
-// Writes the profile to the REAL managed-preferences directory and registers it
-// with the REAL profiled. Runs in the daemon's (non-namespaced) context.
-static NSString *InstallProfile(NSData *profileData) {    if (profileData.length == 0) {
+// 以「真实 rootfs 进程」身份执行一个 Apple 签名二进制（如 /bin/cp、/bin/killall）。
+//
+// 本 daemon 自身被 RootHide 按代码签名判定为 jbroot 进程：其 NSFileManager /
+// posix_spawn 的默认写入都落入 overlay 层，真实 /var/Managed Preferences/mobile
+// 收不到 → trustd 永远看不到 → App 启动闪退（0xe8008015）。
+//
+// 但 Apple 二进制（/bin/cp 等）以真实 rootfs 上下文运行，其落盘/信号都作用于
+// 真实 rootfs。故本 daemon 只负责准备数据，真正的写盘与通知交给 Apple 二进制完成。
+// （实测：launchctl 拉起 /bin/cp 能把文件写进真实 MPDir；真实 root 下
+//  killall -HUP profiled 返回 0。）
+static int spawn_real_root(const char *bin, const char *arg1, const char *arg2) {
+    if (!bin) return -1;
+    pid_t pid = 0;
+    const char *argv[4];
+    argv[0] = bin;
+    argv[1] = arg1 ?: (const char *)"";
+    argv[2] = arg2;   // 单参数命令传 NULL 即可（如不需要第 2 个参数时 caller 保证 arg2 有效）
+    argv[3] = NULL;
+    int rc = posix_spawn(&pid, bin, NULL, NULL, (char *const *)argv, NULL);
+    if (rc == 0) {
+        int status = 0;
+        waitpid(pid, &status, 0);
+        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+    return rc; // ENOENT 等
+}
+
+// Writes the profile to the REAL managed-preferences directory and asks the REAL
+// profiled to rescan. The actual file placement is delegated to /bin/cp (an
+// Apple-signed binary that runs in the real rootfs context); this daemon itself
+// is jbroot-namespaced and cannot write there directly.
+static NSString *InstallProfile(NSData *profileData) {
+    if (profileData.length == 0) {
         return @"ERR: empty profile data";
     }
 
@@ -170,25 +200,43 @@ static NSString *InstallProfile(NSData *profileData) {    if (profileData.length
         fileName = [sha stringByAppendingPathExtension:@"mobileprovision"];
     }
 
-    NSString *destDir = kManagedPrefsDir;
-    NSString *destPath = [destDir stringByAppendingPathComponent:fileName];
+    NSString *destPath = [kManagedPrefsDir stringByAppendingPathComponent:fileName];
 
-    NSError *writeErr = nil;
-    [[NSFileManager defaultManager] createDirectoryAtPath:destDir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
-    if (![profileData writeToFile:destPath options:NSDataWritingAtomic error:&writeErr]) {
-        return [NSString stringWithFormat:@"ERR: write to %@ failed: %@", destPath, writeErr];
+    // 2. 先把数据落到 IPC 目录（/var/mobile/Library/RePro，非 overlay，App/daemon/
+    //    真实 root 进程三者共享）。这是跨 namespace 的安全交接点：daemon 写、Apple
+    //    二进制 /bin/cp 读，二者看到的都是同一份真实文件。
+    EnsureIpcDirWritable();
+    NSString *stagePath = [kIpcDir stringByAppendingPathComponent:@"pending-install.mobileprovision"];
+    if (![profileData writeToFile:stagePath options:NSDataWritingAtomic error:nil]) {
+        return [NSString stringWithFormat:@"ERR: stage write failed: %@", stagePath];
     }
-    chmod([destPath fileSystemRepresentation], 0644);
-    RPVProfileDaemonLog(@"wrote profile to REAL path: %@", destPath);
 
-    // 2. Register with the real profiled via MCProfileConnection.
+    // 3. 用 Apple 二进制 /bin/cp 把文件拷到真实 MPDir（真实 rootfs 进程写入 → 落真实 rootfs）。
+    int rc = spawn_real_root("/bin/cp", [stagePath fileSystemRepresentation], [destPath fileSystemRepresentation]);
+    if (rc != 0) {
+        // 回退：部分环境 cp 在 /usr/bin
+        rc = spawn_real_root("/usr/bin/cp", [stagePath fileSystemRepresentation], [destPath fileSystemRepresentation]);
+    }
+    if (rc != 0) {
+        // 兜底：直接写（非 RootHide 环境 daemon 跑真实 rootfs 时可用；
+        // RootHide 下会落 overlay，仅作最后的尽力，不代表成功）
+        NSError *e = nil;
+        if (![profileData writeToFile:destPath options:NSDataWritingAtomic error:&e]) {
+            return [NSString stringWithFormat:@"ERR: cp(%d) 与直接写入均失败: %@", rc, e];
+        }
+        RPVProfileDaemonLog(@"⚠️ /bin/cp 失败(%d)，已退回直接写入（RootHide 下可能落 overlay）", rc);
+    } else {
+        RPVProfileDaemonLog(@"profile file placed at REAL path: %@ (cp rc=%d)", destPath, rc);
+    }
+    spawn_real_root("/bin/chmod", "0644", [destPath fileSystemRepresentation]);
+    spawn_real_root("/usr/bin/chmod", "0644", [destPath fileSystemRepresentation]);
+
+    // 4. MC 注册：RootHide 下为 overlay 假成功，作 best-effort；真实注册依赖下方
+    //    文件落盘 + profiled 重载。非 RootHide 环境这里是真实生效的。
     dlopen("/System/Library/PrivateFrameworks/ManagedConfiguration.framework/ManagedConfiguration", RTLD_LAZY);
     Class mcClass = objc_getClass("MCProfileConnection");
     if (!mcClass) {
-        RPVProfileDaemonLog(@"MCProfileConnection class unavailable; relying on file + SIGHUP");
+        RPVProfileDaemonLog(@"MCProfileConnection class unavailable; relying on file + profiled rescan");
     } else {
         id connection = [(id)mcClass performSelector:@selector(sharedConnection)];
         if (connection) {
@@ -216,23 +264,11 @@ static NSString *InstallProfile(NSData *profileData) {    if (profileData.length
         }
     }
 
-    // 3. Nudge the real profiled to reload so installd sees the new profile.
-    //    system() is unavailable on iOS; use posix_spawn to run killall -HUP.
-    @try {
-        pid_t pid = 0;
-        const char *argv[] = { "/usr/bin/killall", "-HUP", "profiled", NULL };
-        int rc = posix_spawn(&pid, "/usr/bin/killall", NULL, NULL,
-                             (char *const *)argv, NULL);
-        if (rc == 0) {
-            int status = 0;
-            waitpid(pid, &status, 0);
-            RPVProfileDaemonLog(@"killall -HUP profiled done (status %d)", status);
-        } else {
-            RPVProfileDaemonLog(@"posix_spawn killall failed: %d", rc);
-        }
-    } @catch (NSException *e) {
-        RPVProfileDaemonLog(@"SIGHUP threw: %@", e);
-    }
+    // 5. 通知真实 profiled 重新扫描 MPDir（Apple 二进制 /bin/killall，真实 rootfs
+    //    上下文可信号真实 profiled；实测真实 root 下返回 0）。
+    int kh = spawn_real_root("/bin/killall", "-HUP", "profiled");
+    if (kh != 0) kh = spawn_real_root("/usr/bin/killall", "-HUP", "profiled");
+    RPVProfileDaemonLog(@"killall -HUP profiled rc=%d", kh);
 
     return [NSString stringWithFormat:@"OK: profile installed to %@", destPath];
 }
