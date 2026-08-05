@@ -764,6 +764,17 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     return exitCode == 0;
 }
 
+/// v1.1.181：工具菜单（重建图标缓存 / 重新注册 App / 重启用户空间 / 重启设备）。
+/// 直接复用同步 helper 运行器，返回其退出码（0=成功）。
+- (int)runRootHelperWithArguments:(NSArray<NSString *> *)arguments {
+    NSString *helperPath = RPVResolvedRootHelperPath();
+    if (helperPath.length == 0) {
+        RPVDiagnostic(RPVDiagError, @"repro-helper", @"未找到 repro-helper，无法执行工具命令");
+        return -2;
+    }
+    return RPVRunRootHelper(helperPath, arguments) ? 0 : 1;
+}
+
 // 描述文件安装已对齐 test2：统一走 App 进程内 MCProfileConnection（见
 // RPVApplicationSigning._registerProvisioningProfileAtPath:），不再需要 notify/daemon IPC。
 
@@ -944,11 +955,25 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     // 真机上曾有 163 个文件），首次唤醒可能十几秒才轮到安装，15 秒明显不够。
     // v1.1.179：等待期间每 5 秒补发一次唤醒，防止请求恰好投在 daemon「即将空闲退出」
     // 的窗口里被吞掉（daemon 侧读到请求即原子消费，重发唤醒不会重复安装）。
+    // v1.1.181：前 30s 仅软唤醒（绝不让 -k 误杀正在装的 daemon）；
+    // 满 30s 仍无结果，说明 daemon 大概率已死 / 未被 launchctl 拉起，
+    // 此时强制重启是安全的（dead→restart，不会中断任何进行中的工作），
+    // 仅执行一次兜底，避免反复杀掉刚拉起、正在扫描的实例。
+    BOOL forceRestarted = NO;
     for (int i = 0; i < 600; i++) {
         usleep(100000); // 100ms
         if (i > 0 && i % 50 == 0) {
-            RPVKickstartProfileDaemonEx(NO); // 🔴 绝不能带 -k，否则会把正在装的 daemon 杀掉
+            BOOL force = NO;
+            if (!forceRestarted && i >= 300) {
+                force = YES;
+                forceRestarted = YES;
+            }
+            RPVKickstartProfileDaemonEx(force);
             notify_post("com.reprovision.profile-install-request");
+            if (force) {
+                RPVDiagnostic(RPVDiagInfo, @"profiledaemon",
+                              @"软唤醒 30s 无结果，升级为强制重启 daemon（仅一次兜底）");
+            }
         }
         NSString *result = [NSString stringWithContentsOfFile:kResultPath
                                                        encoding:NSUTF8StringEncoding
@@ -1081,12 +1106,26 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
     // 请求就悬在盘上没人处理，App 只能干等满 60 秒报「超时未返回」。
     // 补发唤醒只是重新发信号 / kickstart，**不重写请求文件**，
     // 而 daemon 侧读到请求即原子消费，因此不存在同一操作被执行两次的风险。
+    // v1.1.181：前 30s 仅软唤醒（绝不让 -k 误杀正在清理的 daemon）；
+    // 满 30s 仍无结果，说明 daemon 大概率已死 / 未被 launchctl 拉起，
+    // 此时强制重启是安全的（dead→restart，不会中断任何进行中的工作），
+    // 仅执行一次兜底，避免反复杀掉刚拉起、正在扫描的实例。
+    BOOL forceRestarted = NO;
     for (int i = 0; i < 600; i++) {
         usleep(100000); // 100ms
 
         if (i > 0 && i % 50 == 0) {
-            RPVKickstartProfileDaemonEx(NO); // 🔴 绝不能带 -k，否则会把正在清理的 daemon 杀掉
+            BOOL force = NO;
+            if (!forceRestarted && i >= 300) {
+                force = YES;
+                forceRestarted = YES;
+            }
+            RPVKickstartProfileDaemonEx(force);
             notify_post(kRPVManageNotifyName.UTF8String);
+            if (force) {
+                RPVDiagnostic(RPVDiagInfo, @"profiledaemon",
+                              @"软唤醒 30s 无结果，升级为强制重启 daemon（仅一次兜底）");
+            }
         }
 
         if (hasWork) {

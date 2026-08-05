@@ -256,6 +256,9 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 /// 返回 YES 表示成功找到并发送了信号。
 - (BOOL)respring;
 
+/// v1.1.181：系统状态页工具菜单用。同步拉起 repro-helper 执行任意子命令，返回退出码（0=成功，非 0=失败，<0=未找到 helper）。
+- (int)runRootHelperWithArguments:(NSArray<NSString *> *)arguments;
+
 #pragma mark 系统描述文件管理（v1.1.171）
 
 /// 读取 repro-profiledaemon 导出的系统描述文件清单快照。

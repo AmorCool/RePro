@@ -464,6 +464,11 @@ final class BridgeClient: ObservableObject {
     func respring() -> Bool {
         return bridge.respring()
     }
+
+    /// v1.1.181 工具菜单：执行 repro-helper 子命令（uicache / userspace-reboot / reboot-device 等），返回退出码（0 成功）。
+    func runRootHelper(arguments: [String]) -> Int {
+        return bridge.runRootHelper(withArguments: arguments)
+    }
 }
 
 // MARK: - RPVAppInfo -> InstalledApp

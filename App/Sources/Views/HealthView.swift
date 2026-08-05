@@ -10,8 +10,12 @@ import UIKit
 struct HealthView: View {
     @State private var snapshot: EnvironmentSnapshot?
     @State private var isLoading = false
-    /// 跳转文件管理器失败时的提示（同时兼作「路径已复制」的回执）
-    @State private var openHint: String?
+
+    // 工具菜单状态（v1.1.181）
+    @State private var showToolMenu = false
+    @State private var pendingReboot: PendingReboot = .none
+    /// 工具命令执行结果的回执提示
+    @State private var toolResult: String?
 
     var body: some View {
         NavigationView {
@@ -24,12 +28,63 @@ struct HealthView: View {
             }
             .navigationTitle("系统状态")
             .onAppear { refresh() }
-            .alert("打开文件管理器",
-                   isPresented: Binding(get: { openHint != nil },
-                                        set: { if !$0 { openHint = nil } })) {
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showToolMenu = true
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.body)
+                    }
+                    .accessibilityLabel("工具")
+                }
+            }
+            // 主工具菜单（参考 TrollStoreLite 三个 Utils + RebootTools 两个重启）
+            .confirmationDialog("工具", isPresented: $showToolMenu) {
+                Button("刷新状态") { refresh() }
+                Button("重启 SpringBoard") {
+                    if BridgeClient.shared.respring() {
+                        exit(0)
+                    } else {
+                        toolResult = "重启 SpringBoard 失败：未找到 SpringBoard 进程。"
+                    }
+                }
+                Button("重建图标缓存") { runHelper(["uicache", "-a"]) }
+                Button("重新注册 App") { runHelper(["uicache", "-p", "/Applications/ReSign.app"]) }
+                Button("重启用户空间") { pendingReboot = .userspace }
+                Button("重启设备", role: .destructive) { pendingReboot = .device }
+                Button("取消", role: .cancel) {}
+            }
+            // 重启类操作的二次确认（避免误触）
+            .confirmationDialog("确认", isPresented: Binding(get: { pendingReboot != .none },
+                                                            set: { if !$0 { pendingReboot = .none } })) {
+                switch pendingReboot {
+                case .userspace:
+                    Button("确定重启用户空间", role: .destructive) { runHelper(["userspace-reboot"]) }
+                    Button("取消", role: .cancel) { pendingReboot = .none }
+                case .device:
+                    Button("确定重启设备", role: .destructive) { runHelper(["reboot-device"]) }
+                    Button("取消", role: .cancel) { pendingReboot = .none }
+                case .none:
+                    EmptyView()
+                }
+            } message: {
+                switch pendingReboot {
+                case .userspace:
+                    Text("此操作会重启用户空间（不重启内核），正在运行的进程会被终止。")
+                case .device:
+                    Text("此操作会立即重启手机，未保存的数据可能丢失。")
+                case .none:
+                    Text("")
+                }
+            }
+            // 工具命令结果回执
+            .alert("操作结果",
+                   isPresented: Binding(get: { toolResult != nil },
+                                        set: { if !$0 { toolResult = nil } })) {
                 Button("好", role: .cancel) {}
             } message: {
-                Text(openHint ?? "")
+                Text(toolResult ?? "")
             }
         }
         .navigationViewStyle(.stack)
@@ -43,32 +98,10 @@ struct HealthView: View {
                       value: snapshot?.jailbreak.displayName ?? placeholder,
                       status: statusForJailbreak)
 
+            // v1.1.181：越狱根目录恢复为普通 HealthRow（默认色 + 绿色打勾），
+            // 路径完整显示（不截断、不限制行数），去掉 Footer 说明。
             if let root = snapshot?.jailbreakRoot, !root.isEmpty {
-                // RootHide 的 jbroot 是随机路径（/var/containers/Bundle/Application/
-                // .jbroot-XXXXXXXXXXXXXXXX），照着屏幕手抄进文件管理器极易出错，
-                // 干脆做成可点按，直接把 Filza 拉起来定位到这个目录。
-                Button {
-                    openInFileManager(root)
-                } label: {
-                    HStack(alignment: .top) {
-                        Text("越狱根目录")
-                            .foregroundColor(.primary)
-                        Spacer(minLength: 12)
-                        Text(root)
-                            .foregroundColor(.blue)
-                            .multilineTextAlignment(.trailing)
-                            .font(.callout)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.footnote)
-                            .foregroundColor(.blue)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("越狱根目录：\(root)")
-                .accessibilityHint("点按用 Filza 打开该目录")
+                HealthRow(label: "越狱根目录", value: root, status: .good)
             } else {
                 HealthRow(label: "越狱根目录",
                           value: snapshot?.jailbreakRoot ?? placeholder,
@@ -76,34 +109,7 @@ struct HealthView: View {
             }
         } header: {
             Text("越狱环境")
-        } footer: {
-            if let root = snapshot?.jailbreakRoot, !root.isEmpty {
-                Text("点按「越狱根目录」可用 Filza 打开该目录；未安装 Filza 时会把路径复制到剪贴板。")
-            }
         }
-    }
-
-    /// 用 Filza 打开指定目录。
-    /// Filza 注册的 scheme 是 `filza://view/<绝对路径>`。
-    /// 这里刻意**不用** `canOpenURL` —— 那要求在 Info.plist 的
-    /// LSApplicationQueriesSchemes 里预先登记 scheme，否则一律返回 false；
-    /// 直接 open 的 completion 同样能告诉我们有没有 App 接管，且没有登记要求。
-    private func openInFileManager(_ root: String) {
-        let encoded = root.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? root
-        guard let url = URL(string: "filza://view" + encoded) else {
-            copyPath(root, reason: "路径无法转换成 URL")
-            return
-        }
-        UIApplication.shared.open(url, options: [:]) { success in
-            if !success {
-                copyPath(root, reason: "未检测到 Filza（或它拒绝了跳转）")
-            }
-        }
-    }
-
-    private func copyPath(_ path: String, reason: String) {
-        UIPasteboard.general.string = path
-        openHint = "\(reason)。\n路径已复制到剪贴板：\n\(path)"
     }
 
     private var statusForJailbreak: HealthStatus {
@@ -226,6 +232,17 @@ struct HealthView: View {
         }
     }
 
+    /// 工具菜单执行 repro-helper 子命令，结果以 alert 回执。
+    /// reboot-device / userspace-reboot 会触发设备重启，alert 不会显示属正常。
+    private func runHelper(_ args: [String]) {
+        let code = BridgeClient.shared.runRootHelper(arguments: args)
+        if code == 0 {
+            toolResult = "操作成功执行（退出码 0）。"
+        } else {
+            toolResult = "操作失败（退出码 \(code)）。请确认设备已越狱且 root helper 正常。"
+        }
+    }
+
     // 静态 formatter 复用（refresh 每次调用都创建新 formatter，不必要）
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -301,4 +318,9 @@ struct HealthRow: View {
 
 enum HealthStatus {
     case good, bad, warning, unknown, neutral
+}
+
+/// v1.1.181：重启类工具的二次确认状态。
+enum PendingReboot: Equatable {
+    case none, userspace, device
 }

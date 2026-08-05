@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <sys/sysctl.h>
 #include <sys/proc.h>
+#include <sys/utsname.h>
 #include <signal.h>
 #include <string.h>
 #include <stdlib.h>
@@ -429,7 +430,134 @@ static void RPVHelperPrintUsage(void) {
             "  repro-helper fix-cellular <当前插件 bundle id>\n"
             "  repro-helper profiles-inventory <输出 plist 路径>\n"
             "  repro-helper profiles-cleanup\n"
-            "  repro-helper profiles-delete <文件名清单路径，每行一个>\n");
+            "  repro-helper profiles-delete <文件名清单路径，每行一个>\n"
+            "  repro-helper reboot-device\n"
+            "  repro-helper userspace-reboot\n"
+            "  repro-helper uicache <uicache 原生参数…>\n");
+}
+
+#pragma mark - 重启 / 用户空间重启 / uicache（v1.1.181 工具菜单）
+
+/// XPC 私有类型自前向声明，避免引入 xpc.h 的可用性告警；函数一律经 dlsym 取指针。
+typedef struct _xpc_connection_s *xpc_connection_t;
+typedef struct _xpc_object_s *xpc_object_t;
+typedef void (^xpc_handler_t)(xpc_object_t);
+
+/// 重启设备（移植自 RebootTools/RebootRootHelper）。
+/// 必须在 root 下执行（本工具已是 setuid 4755），reboot(0) 一句即可。
+static int RPVHelperRebootDevice(void) {
+    RPVHelperLog(@"reboot device");
+    sync();
+    reboot(0);
+    return 0; // 不会到达
+}
+
+/// 重启用户空间（移植自 RebootTools/RebootUserSpaceHelper）。
+/// 步骤：①unlink MemoryMaintenance 状态文件（否则不会重启）；②动态加载 libxpc，
+/// 向 com.apple.mmaintenanced 发 {cmd:5} XPC 消息触发用户态重启。
+static int RPVHelperRebootUserSpace(void) {
+    RPVHelperLog(@"reboot userspace");
+
+    struct utsname uts;
+    uname(&uts);
+    if (atoi(uts.release) >= 21) {
+        unlink("/private/var/mobile/Library/MemoryMaintenance/mmaintenanced");
+    } else {
+        unlink("/private/var/db/mmaintenanced");
+    }
+
+    void *lib = dlopen("/usr/lib/system/libxpc.dylib", RTLD_LAZY);
+    if (!lib) {
+        RPVHelperLog(@"userspace-reboot: dlopen libxpc 失败: %s", dlerror());
+        return -1;
+    }
+
+    xpc_connection_t (*p_xpc_connection_create_mach_service)(const char *, dispatch_queue_t, uint64_t) =
+        dlsym(lib, "xpc_connection_create_mach_service");
+    xpc_object_t (*p_xpc_dictionary_create)(const char *const *, const xpc_object_t *, size_t) =
+        dlsym(lib, "xpc_dictionary_create");
+    void (*p_xpc_dictionary_set_uint64)(xpc_object_t, const char *, uint64_t) =
+        dlsym(lib, "xpc_dictionary_set_uint64");
+    void (*p_xpc_connection_set_event_handler)(xpc_connection_t, xpc_handler_t) =
+        dlsym(lib, "xpc_connection_set_event_handler");
+    void (*p_xpc_connection_resume)(xpc_connection_t) =
+        dlsym(lib, "xpc_connection_resume");
+    xpc_object_t (*p_xpc_connection_send_message_with_reply_sync)(xpc_connection_t, xpc_object_t) =
+        dlsym(lib, "xpc_connection_send_message_with_reply_sync");
+
+    if (!p_xpc_connection_create_mach_service ||
+        !p_xpc_dictionary_create ||
+        !p_xpc_dictionary_set_uint64 ||
+        !p_xpc_connection_set_event_handler ||
+        !p_xpc_connection_resume ||
+        !p_xpc_connection_send_message_with_reply_sync) {
+        RPVHelperLog(@"userspace-reboot: dlsym 缺失符号");
+        dlclose(lib);
+        return -1;
+    }
+
+    xpc_connection_t conn = p_xpc_connection_create_mach_service("com.apple.mmaintenanced", NULL, 0);
+    if (!conn) {
+        RPVHelperLog(@"userspace-reboot: 创建 mmaintenanced 连接失败");
+        dlclose(lib);
+        return -1;
+    }
+
+    p_xpc_connection_set_event_handler(conn, ^(xpc_object_t event){});
+    p_xpc_connection_resume(conn);
+
+    xpc_object_t msg = p_xpc_dictionary_create(NULL, NULL, 0);
+    p_xpc_dictionary_set_uint64(msg, "cmd", 5);
+    p_xpc_connection_send_message_with_reply_sync(conn, msg);
+
+    dlclose(lib);
+    return 0; // 发送后即触发重启，通常不再返回
+}
+
+/// 透传参数调用设备端 uicache 重建/注册图标。
+/// 用法：repro-helper uicache <uicache 的原生参数…>
+///   uicache -a                           重建全部图标缓存
+///   uicache -p /Applications/ReSign.app  重新注册单个 App
+static int RPVHelperRunUicache(int argc, char *argv[]) {
+    static NSString *const kCandidatePaths[] = {
+        @"/usr/bin/uicache", @"/var/jb/usr/bin/uicache", nil
+    };
+    NSString *uicache = nil;
+    for (NSString *p in kCandidatePaths) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) { uicache = p; break; }
+    }
+    if (uicache.length == 0) {
+        RPVHelperLog(@"uicache 未找到（已尝试 /usr/bin、/var/jb/usr/bin）");
+        return 2;
+    }
+
+    // 收集 uicache 的原生参数（跳过 argv[0]=repro-helper、argv[1]=uicache）
+    NSMutableArray<NSString *> *args = [NSMutableArray array];
+    for (int i = 2; i < argc; i++) {
+        [args addObject:[NSString stringWithUTF8String:argv[i]]];
+    }
+
+    NSUInteger count = args.count;
+    const char **cargs = (const char **)calloc(count + 2, sizeof(char *));
+    if (!cargs) return -1;
+    cargs[0] = [uicache UTF8String];
+    for (NSUInteger i = 0; i < count; i++) {
+        cargs[i + 1] = [args[i] UTF8String];
+    }
+    cargs[count + 1] = NULL;
+
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, [uicache UTF8String], NULL, NULL, (char *const *)cargs, NULL);
+    free(cargs);
+    if (rc != 0) {
+        RPVHelperLog(@"uicache 启动失败: %d", rc);
+        return rc;
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    RPVHelperLog(@"uicache exit=%d (%@)", exitCode, [args componentsJoinedByString:@" "]);
+    return exitCode;
 }
 
 int main(int argc, char *argv[]) {
@@ -527,6 +655,20 @@ int main(int argc, char *argv[]) {
             // argv[2] = 当前插件自身 bundle id（App 侧传入，v1.1.146 必传）
             NSString *selfBid = [NSString stringWithUTF8String:argv[2]];
             return RPVHelperFixCellular(selfBid);
+        }
+
+        // v1.1.181：系统状态页工具菜单用。reboot/userspace-reboot 来自 RebootTools，
+        // uicache 来自 TrollStoreLite 系用法（重建图标缓存 / 重新注册 App）。
+        if ([command isEqualToString:@"reboot-device"]) {
+            return RPVHelperRebootDevice();
+        }
+
+        if ([command isEqualToString:@"userspace-reboot"]) {
+            return RPVHelperRebootUserSpace();
+        }
+
+        if ([command isEqualToString:@"uicache"]) {
+            return RPVHelperRunUicache(argc, argv);
         }
 
         RPVHelperLog(@"未知命令: %@", command);
