@@ -60,10 +60,76 @@ static NSString *RPVSha1OfData(NSData *data) {
     return [hex copy];
 }
 
+// ─── 过期描述文件清理（v1.1.167）──────────────────────────────────
+//
+// profile 文件名是内容 SHA1，每次重签（UUID/有效期变化）都会产生一个新文件，
+// 旧文件从不清理 → 长期堆积（用户实测 60+ 个）→ profiled 每次扫描全部 +
+// 旧 profile 与重签 App 的校验记录冲突 → 签名后闪退 / 「6 天却显示已过期」。
+// 过期的 profile 对任何 App 都无价值（App 的 embedded profile 过期 = App 本身
+// 也过期），可安全删除；未过期的全部保留，绝不误删。
+
+// 从 CMS 容器里提取 plist 字典（.mobileprovision 是二进制 PKCS#7，取 <plist> 段）
+static NSDictionary *ProfilePlistAtPath(NSString *path) {
+    NSError *err = nil;
+    NSString *s = [NSString stringWithContentsOfFile:path encoding:NSISOLatin1StringEncoding error:&err];
+    if (s.length == 0) return nil;
+    NSRange start = [s rangeOfString:@"<plist"];
+    if (start.location == NSNotFound) return nil;
+    NSRange searchRange = NSMakeRange(start.location, s.length - start.location);
+    NSRange end = [s rangeOfString:@"</plist>" options:0 range:searchRange];
+    if (end.location == NSNotFound) return nil;
+    NSInteger length = (NSInteger)(end.location + end.length) - (NSInteger)start.location;
+    if (length <= 0) return nil;
+    NSRange slice = NSMakeRange(start.location, (NSUInteger)length);
+    if (NSMaxRange(slice) > s.length) return nil;
+    NSData *data = [[s substringWithRange:slice] dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length == 0) return nil;
+    @try {
+        return [NSPropertyListSerialization propertyListWithData:data
+                                                         options:NSPropertyListImmutable
+                                                          format:nil
+                                                           error:nil];
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+
+/// 清理 /var/Managed Preferences/mobile 下所有已过期的 .mobileprovision。
+/// 调用时机：daemon 启动时 + 每次安装新 profile 后。
+static void CleanupExpiredProfiles(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *files = [fm contentsOfDirectoryAtPath:kManagedPrefsDir error:nil] ?: @[];
+    if (files.count == 0) return;
+
+    NSDate *now = [NSDate date];
+    NSUInteger removed = 0;
+    for (NSString *name in files) {
+        if (![name.pathExtension isEqualToString:@"mobileprovision"]) continue;
+        NSString *path = [kManagedPrefsDir stringByAppendingPathComponent:name];
+
+        NSDictionary *plist = ProfilePlistAtPath(path);
+        if (!plist) {
+            // 无法解析的损坏文件：留着只会让 profiled 反复报错，删掉
+            [fm removeItemAtPath:path error:nil];
+            removed++;
+            continue;
+        }
+        NSDate *expiry = plist[@"ExpirationDate"];
+        if (expiry && [expiry compare:now] == NSOrderedAscending) {
+            [fm removeItemAtPath:path error:nil];
+            removed++;
+        }
+    }
+
+    if (removed > 0) {
+        RPVProfileDaemonLog(@"已清理 %lu 个过期描述文件（剩余 %lu 个）",
+                            (unsigned long)removed, (unsigned long)(files.count - removed));
+    }
+}
+
 // Writes the profile to the REAL managed-preferences directory and registers it
 // with the REAL profiled. Runs in the daemon's (non-namespaced) context.
-static NSString *InstallProfile(NSData *profileData) {
-    if (profileData.length == 0) {
+static NSString *InstallProfile(NSData *profileData) {    if (profileData.length == 0) {
         return @"ERR: empty profile data";
     }
 
@@ -176,6 +242,9 @@ static void HandleRequest(void) {
                encoding:NSUTF8StringEncoding
                   error:nil];
     RPVProfileDaemonLog(@"result: %@", result);
+
+    // v1.1.167：装完新 profile 顺手清一次过期堆积（新文件已就位，删旧的绝对安全）
+    CleanupExpiredProfiles();
 }
 
 int main(int argc, char *argv[]) {
@@ -188,6 +257,9 @@ int main(int argc, char *argv[]) {
         EnsureIpcDirWritable();
         // Clean any stale result.
         [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
+
+        // v1.1.167：启动时清一次过期 profile 堆积（覆盖 daemon 未运行期间的累积）
+        CleanupExpiredProfiles();
 
         int token = 0;
         notify_register_dispatch(kNotifyName.UTF8String, &token,
