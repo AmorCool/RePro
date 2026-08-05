@@ -173,18 +173,27 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
         return 4;
     }
 
-    // v1.1.171：删掉过去的「双写 jbroot 物理视图」。
-    //  - rootless/rootful 下 jbroot 解析结果本来就等于同一个目录，纯属重复写；
-    //  - RootHide 下 profiled 实际读的是真实 rootfs 那份（这也是为什么后来引入了
-    //    rootfs LaunchDaemon repro-profiledaemon 来接管注册），jbroot 里那份既不生效、
-    //    又会变成第二个堆积点（实测设备 jbroot 目录里囤了 8 份没人用的旧描述文件）。
-    NSString *directory = RPVPSManagedPrefsDir;
-    NSString *destination = [directory stringByAppendingPathComponent:fileName];
-
+    // v1.1.173：重新启用「写入真实 rootfs 路径」——但本次走的是明确的
+    // /rootfs/private/var/Managed Preferences/mobile（不是含糊的「jbroot 物理视图」），
+    // 并由 RPVPSManagedPrefsDirs() 按 realpath 去重。原因：v1.1.171 删掉双写是基于
+    // 「profiledaemon 永远跑真实 rootfs」的假设；实测有设备 daemon 跑在 jbroot 命名空间，
+    // 其 /var/Managed Preferences/mobile 是 overlay 假目录，真实 rootfs 那份永远空着 →
+    // profiled/installd 读不到 → 设置无描述文件、目标 App 0xe8008015 秒退。明确写真实
+    // rootfs 路径即可根治，且配合稳定名 + 去重绝不会堆积。
+    // 注意：rootless/rootful 下 /rootfs/... 不存在，RPVPSManagedPrefsDirs 只会返回
+    // /var/... 一个目录，行为与 v1.1.171 一致，无副作用。
     NSFileManager *fileManager = [NSFileManager defaultManager];
-
-    BOOL okMain = RPVHelperWriteProfileToDir(data, fileName, directory, profilePath);
-    RPVHelperLog(@"写入 %@（App ID: %@）：%@", destination, appId ?: @"(未知)", okMain ? @"成功" : @"失败");
+    BOOL okMain = YES;
+    NSMutableString *writtenTo = [NSMutableString string];
+    for (NSString *directory in RPVPSManagedPrefsDirs()) {
+        NSString *destination = [directory stringByAppendingPathComponent:fileName];
+        if (RPVHelperWriteProfileToDir(data, fileName, directory, profilePath)) {
+            [writtenTo appendFormat:@" %@", destination];
+        } else {
+            okMain = NO;
+        }
+    }
+    RPVHelperLog(@"写入（App ID: %@）：%@ %@", appId ?: @"(未知)", writtenTo, okMain ? @"成功" : @"部分失败");
 
     // 注意：RootHide 下描述文件的主注册已由 App 进程自身经 MCProfileConnection 完成
     // （App 带 profiled-access，以 mobile 身份调 MC 落【本地库】，与能正常工作的 test2源码
@@ -205,10 +214,12 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
     RPVHelperRefreshProfiled();
 
     // 取证诊断：清理后目录里还剩多少份，以及本文件是否确实在位。
+    NSString *primaryDir = RPVPSManagedPrefsDir;
+    NSString *primaryDest = [primaryDir stringByAppendingPathComponent:fileName];
     NSError *lsErr = nil;
-    NSArray *existing = [fileManager contentsOfDirectoryAtPath:directory error:&lsErr];
+    NSArray *existing = [fileManager contentsOfDirectoryAtPath:primaryDir error:&lsErr];
     if (lsErr) {
-        RPVHelperLog(@"读取描述文件目录失败 %@: %@", directory, lsErr);
+        RPVHelperLog(@"读取描述文件目录失败 %@: %@", primaryDir, lsErr);
     } else {
         NSUInteger profileCount = 0;
         for (NSString *n in existing) {
@@ -216,11 +227,11 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
         }
         RPVHelperLog(@"清理后目录现有 %lu 份描述文件；本文件在位：%@",
                      (unsigned long)profileCount,
-                     [fileManager fileExistsAtPath:destination] ? @"是" : @"否");
+                     [fileManager fileExistsAtPath:primaryDest] ? @"是" : @"否");
     }
 
     if (okMain) {
-        RPVHelperLog(@"描述文件已安装：%@", destination);
+        RPVHelperLog(@"描述文件已安装：%@", writtenTo);
         return 0;
     }
     RPVHelperLog(@"警告：文件写入失败，描述文件未能注册（App MC 也未成功时请检查 App 日志）");

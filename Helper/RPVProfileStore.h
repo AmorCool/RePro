@@ -35,9 +35,66 @@
 #include <signal.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
-/// 系统描述文件库（真实路径）
+/// 系统描述文件库（默认路径）
 static NSString *const RPVPSManagedPrefsDir = @"/var/Managed Preferences/mobile";
+
+/// RootHide 下真实 rootfs 的描述文件库路径。
+/// jbroot 命名空间里 /var/Managed Preferences/mobile 是 overlay 假目录，iOS 的
+/// profiled/installd（真实 rootfs）读不到；真实库在 /rootfs/private/var/Managed
+/// Preferences/mobile。若此路径存在，所有写/清/列/删操作都要同时覆盖它，确保无论
+/// daemon 跑在哪个命名空间，profile 都能落到 profiled 真正读取的目录。
+static NSString *const RPVPSManagedPrefsDirRealRootFS =
+    @"/rootfs/private/var/Managed Preferences/mobile";
+
+/// 返回需要操作的所有目标目录（已按 realpath 去重）。
+/// 真实 rootfs 进程里 /var/... 与 /rootfs/private/var/... 指向同一 inode，
+/// 去重后只处理一次，不会重复写/重复列。jbroot 命名空间里两者是不同目录，都处理。
+static inline NSArray<NSString *> *RPVPSManagedPrefsDirs(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray<NSString *> *candidates = @[ RPVPSManagedPrefsDir, RPVPSManagedPrefsDirRealRootFS ];
+    NSMutableArray<NSString *> *dirs = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSString *d in candidates) {
+        if (![fm fileExistsAtPath:d]) continue;
+        char rp[PATH_MAX];
+        NSString *key = d;
+        if (realpath(d.fileSystemRepresentation, rp) != NULL && strlen(rp) > 0) {
+            key = [NSString stringWithUTF8String:rp];
+        }
+        if ([seen containsObject:key]) continue;  // 同一 inode 只处理一次
+        [seen addObject:key];
+        [dirs addObject:d];
+    }
+    if (dirs.count == 0) [dirs addObject:RPVPSManagedPrefsDir];
+    return dirs;
+}
+
+/// 把 profile 写到所有目标目录（稳定名，先删后写覆盖），返回主目标路径用于日志。
+/// 真实 rootfs 进程里两目录同源 → 只写一份；jbroot 进程里两目录不同 → 写两份，
+/// 其中 /rootfs/... 那份正是 profiled 能读到的真实库。
+static inline NSString *RPVPSWriteProfileToDirs(NSData *data, NSString *fileName) {
+    if (data.length == 0 || fileName.length == 0) return nil;
+    NSString *primary = nil;
+    for (NSString *dir in RPVPSManagedPrefsDirs()) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSError *e = nil;
+        if (![fm fileExistsAtPath:dir]) {
+            [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&e];
+        }
+        NSString *dest = [dir stringByAppendingPathComponent:fileName];
+        // v1.1.171：稳定名必须「先删后写」，否则新签内容会被旧文件挡掉
+        [fm removeItemAtPath:dest error:nil];
+        if ([data writeToFile:dest options:NSDataWritingAtomic error:&e]) {
+            chmod(dest.fileSystemRepresentation, 0644);
+            if (!primary) primary = dest;
+        } else {
+            RPVPSLog(@"写入 %@ 失败: %@", dest, e.localizedDescription ?: @"未知错误");
+        }
+    }
+    return primary;
+}
 
 static inline void RPVPSLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 static inline void RPVPSLog(NSString *fmt, ...) {
@@ -172,11 +229,14 @@ static inline void RPVPSNudgeProfiled(void) {
 /// 解析不出 application-identifier 的一律保留，绝不误删。
 /// ⚠️ 只处理 *.mobileprovision —— 该目录里还有系统自带的 com.apple.*.plist
 ///    （真机实测有 11 个），碰一下就出事。
-static inline NSString *RPVPSCleanup(void) {
+/// 清理单个目录（过期 + 按 App ID 去重）。多目录时每个目录独立清理，
+/// 绝不跨目录比较——否则可能把真实 rootfs 目录里的有效副本当成「重复」误删。
+static inline void RPVPSCleanupInDir(NSString *dir,
+                                      NSUInteger *total,
+                                      NSUInteger *removedExpired,
+                                      NSUInteger *removedDup) {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *files = [fm contentsOfDirectoryAtPath:RPVPSManagedPrefsDir error:nil] ?: @[];
-
-    NSUInteger total = 0, removedExpired = 0, removedDup = 0;
+    NSArray *files = [fm contentsOfDirectoryAtPath:dir error:nil] ?: @[];
     NSDate *now = [NSDate date];
 
     NSMutableDictionary<NSString *, NSMutableDictionary *> *winners = [NSMutableDictionary dictionary];
@@ -184,24 +244,23 @@ static inline NSString *RPVPSCleanup(void) {
 
     for (NSString *name in files) {
         if (![name.pathExtension isEqualToString:@"mobileprovision"]) continue;
-        total++;
-        NSString *path = [RPVPSManagedPrefsDir stringByAppendingPathComponent:name];
+        (*total)++;
+        NSString *path = [dir stringByAppendingPathComponent:name];
 
         NSDictionary *plist = RPVPSPlistAtPath(path);
         if (!plist) {
-            // 解析不了的损坏文件留着只会让 profiled 反复报错
-            if ([fm removeItemAtPath:path error:nil]) removedExpired++;
+            if ([fm removeItemAtPath:path error:nil]) (*removedExpired)++;
             continue;
         }
 
         NSDate *expiry = RPVPSDateOfPlist(plist, @"ExpirationDate");
         if (expiry && [expiry compare:now] == NSOrderedAscending) {
-            if ([fm removeItemAtPath:path error:nil]) removedExpired++;
+            if ([fm removeItemAtPath:path error:nil]) (*removedExpired)++;
             continue;
         }
 
         NSString *appId = RPVPSAppIdOfPlist(plist);
-        if (appId.length == 0) continue;   // 判定不了归属，保守保留
+        if (appId.length == 0) continue;
 
         NSDate *created = RPVPSDateOfPlist(plist, @"CreationDate");
         NSDate *mtime = [[fm attributesOfItemAtPath:path error:nil] fileModificationDate];
@@ -222,7 +281,7 @@ static inline NSString *RPVPSCleanup(void) {
 
         BOOL newWins = NO;
         if (isStable != curStable) {
-            newWins = isStable;                       // 稳定名优先
+            newWins = isStable;
         } else if (created && curCreated) {
             newWins = ([created compare:curCreated] == NSOrderedDescending);
         } else if (created && !curCreated) {
@@ -243,16 +302,23 @@ static inline NSString *RPVPSCleanup(void) {
     }
 
     for (NSString *path in pendingDelete) {
-        if ([fm removeItemAtPath:path error:nil]) removedDup++;
+        if ([fm removeItemAtPath:path error:nil]) (*removedDup)++;
     }
+}
 
-    NSUInteger removed = removedExpired + removedDup;
+/// 清理系统描述文件库（所有目标目录，每目录独立去重）。
+static inline NSString *RPVPSCleanup(void) {
+    NSUInteger total = 0, removedExpired = 0, removedDup = 0;
+    for (NSString *dir in RPVPSManagedPrefsDirs()) {
+        NSUInteger t = 0, re = 0, rd = 0;
+        RPVPSCleanupInDir(dir, &t, &re, &rd);
+        total += t; removedExpired += re; removedDup += rd;
+    }
+    NSUInteger kept = (total >= (removedExpired + removedDup)) ? total - removedExpired - removedDup : 0;
     return [NSString stringWithFormat:
-        @"清理完成：删除过期/损坏 %lu 个、重复 %lu 个；原有 %lu 个，现保留 %lu 个（对应 %lu 个 App）",
+        @"清理完成：删除过期/损坏 %lu 个、重复 %lu 个；原有 %lu 个，现保留 %lu 个",
         (unsigned long)removedExpired, (unsigned long)removedDup,
-        (unsigned long)total,
-        (unsigned long)(total >= removed ? total - removed : 0),
-        (unsigned long)winners.count];
+        (unsigned long)total, (unsigned long)kept];
 }
 
 #pragma mark - 清单导出
@@ -263,33 +329,40 @@ static inline NSString *RPVPSCleanup(void) {
 static inline NSUInteger RPVPSWriteInventory(NSString *outPath) {
     if (outPath.length == 0) return 0;
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *files = [fm contentsOfDirectoryAtPath:RPVPSManagedPrefsDir error:nil] ?: @[];
 
     NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-    for (NSString *name in files) {
-        if (![name.pathExtension isEqualToString:@"mobileprovision"]) continue;
-        NSString *path = [RPVPSManagedPrefsDir stringByAppendingPathComponent:name];
-        NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
-        NSDictionary *plist = RPVPSPlistAtPath(path);
+    NSMutableSet<NSString *> *seenAppIds = [NSMutableSet set];  // 跨目录按 appId 去重展示
+    for (NSString *dir in RPVPSManagedPrefsDirs()) {
+        NSArray *files = [fm contentsOfDirectoryAtPath:dir error:nil] ?: @[];
+        for (NSString *name in files) {
+            if (![name.pathExtension isEqualToString:@"mobileprovision"]) continue;
+            NSString *path = [dir stringByAppendingPathComponent:name];
+            NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
+            NSDictionary *plist = RPVPSPlistAtPath(path);
 
-        NSString *appId = RPVPSAppIdOfPlist(plist) ?: @"";
-        id nameVal = plist[@"Name"];
-        id uuidVal = plist[@"UUID"];
-        NSDate *created = RPVPSDateOfPlist(plist, @"CreationDate");
-        NSDate *expiry  = RPVPSDateOfPlist(plist, @"ExpirationDate");
+            NSString *appId = RPVPSAppIdOfPlist(plist) ?: @"";
+            // 同一 App 在两个目录都有副本时，清单里只列一次
+            if (appId.length > 0 && [seenAppIds containsObject:appId]) continue;
+            if (appId.length > 0) [seenAppIds addObject:appId];
 
-        NSMutableDictionary *item = [NSMutableDictionary dictionary];
-        item[@"fileName"]     = name;
-        item[@"appId"]        = appId;
-        item[@"displayName"]  = [nameVal isKindOfClass:[NSString class]] ? nameVal : @"";
-        item[@"uuid"]         = [uuidVal isKindOfClass:[NSString class]] ? uuidVal : @"";
-        item[@"sizeBytes"]    = attrs[NSFileSize] ?: @(0);
-        item[@"isStableName"] = @([name isEqualToString:(RPVPSStableNameForAppId(appId) ?: @"")]);
-        item[@"parsed"]       = @(plist != nil);
-        if (created) item[@"creationDate"] = created;
-        if (expiry)  item[@"expirationDate"] = expiry;
-        if (attrs[NSFileModificationDate]) item[@"modifiedDate"] = attrs[NSFileModificationDate];
-        [items addObject:item];
+            id nameVal = plist[@"Name"];
+            id uuidVal = plist[@"UUID"];
+            NSDate *created = RPVPSDateOfPlist(plist, @"CreationDate");
+            NSDate *expiry  = RPVPSDateOfPlist(plist, @"ExpirationDate");
+
+            NSMutableDictionary *item = [NSMutableDictionary dictionary];
+            item[@"fileName"]     = name;
+            item[@"appId"]        = appId;
+            item[@"displayName"]  = [nameVal isKindOfClass:[NSString class]] ? nameVal : @"";
+            item[@"uuid"]         = [uuidVal isKindOfClass:[NSString class]] ? uuidVal : @"";
+            item[@"sizeBytes"]    = attrs[NSFileSize] ?: @(0);
+            item[@"isStableName"] = @([name isEqualToString:(RPVPSStableNameForAppId(appId) ?: @"")]);
+            item[@"parsed"]       = @(plist != nil);
+            if (created) item[@"creationDate"] = created;
+            if (expiry)  item[@"expirationDate"] = expiry;
+            if (attrs[NSFileModificationDate]) item[@"modifiedDate"] = attrs[NSFileModificationDate];
+            [items addObject:item];
+        }
     }
 
     NSDictionary *root = @{ @"generatedAt": [NSDate date],
@@ -300,7 +373,6 @@ static inline NSUInteger RPVPSWriteInventory(NSString *outPath) {
                                                              options:0
                                                                error:nil];
     if (data.length > 0 && [data writeToFile:outPath options:NSDataWritingAtomic error:nil]) {
-        // 让 App（mobile）读得到
         chown(outPath.fileSystemRepresentation, 501, 501);
         chmod(outPath.fileSystemRepresentation, 0644);
     }
@@ -328,8 +400,12 @@ static inline NSString *RPVPSDeleteNames(NSArray<NSString *> *fileNames) {
             skipped++;
             continue;
         }
-        NSString *path = [RPVPSManagedPrefsDir stringByAppendingPathComponent:fn];
-        if ([fm removeItemAtPath:path error:nil]) removed++; else skipped++;
+        // 每个目标目录都尝试删一次（两个目录都删干净，避免残留副本）
+        for (NSString *dir in RPVPSManagedPrefsDirs()) {
+            NSString *path = [dir stringByAppendingPathComponent:fn];
+            if ([fm fileExistsAtPath:path] && [fm removeItemAtPath:path error:nil]) removed++;
+        }
+        if (removed == 0) skipped++;
     }
 
     return [NSString stringWithFormat:@"OK: 已删除 %lu 个描述文件%@",

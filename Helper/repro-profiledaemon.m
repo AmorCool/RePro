@@ -143,14 +143,11 @@ static NSString *InstallProfile(NSData *profileData) {
         RPVProfileDaemonLog(@"⚠️ 解析不出 application-identifier，退回内容 SHA1 命名：%@", fileName);
     }
 
-    NSString *destPath = [RPVPSManagedPrefsDir stringByAppendingPathComponent:fileName];
-
-    NSError *writeError = nil;
-    if (![profileData writeToFile:destPath options:NSDataWritingAtomic error:&writeError]) {
-        return [NSString stringWithFormat:@"ERR: 写入 %@ 失败: %@", destPath, writeError.localizedDescription ?: @"未知错误"];
+    NSString *destPath = RPVPSWriteProfileToDirs(profileData, fileName);
+    if (destPath.length == 0) {
+        return [NSString stringWithFormat:@"ERR: 写入 %@ 失败（所有目标目录均不可写）", fileName];
     }
-    chmod(destPath.fileSystemRepresentation, 0644);
-    RPVProfileDaemonLog(@"描述文件已写入真实路径：%@", destPath);
+    RPVProfileDaemonLog(@"描述文件已写入：%@", destPath);
 
     // MC 注册：daemon 在真实域，这里连的是真实 profiled，属于正规注册路径。
     // 即使失败也不致命，文件落盘 + profiled 重扫同样能生效。
