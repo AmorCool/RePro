@@ -621,7 +621,7 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
         NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.reprovision.repro";
         BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
         NSString *message = ok
-            ? @"已修复当前插件 ReSign 的蜂窝/WiFi 数据策略为「始终允许」。偏好缓存已刷新（cfprefsd），请稍等几秒后打开「设置 → 蜂窝网络」查看效果。"
+            ? @"已修复当前插件联网"
             : @"修复失败，请稍后重试。";
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
