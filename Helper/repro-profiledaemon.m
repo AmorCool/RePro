@@ -181,6 +181,11 @@ static int spawn_real_root(const char *bin, const char *arg1, const char *arg2) 
     return rc; // ENOENT 等
 }
 
+// 前向声明：EnsureIpcDirWritable 在文件后续才定义，InstallProfile 先调用它。
+// C99 不允许隐式函数声明，必须在此处先声明（否则编译报
+// "call to undeclared function 'EnsureIpcDirWritable'"）。
+static void EnsureIpcDirWritable(void);
+
 // Writes the profile to the REAL managed-preferences directory and asks the REAL
 // profiled to rescan. The actual file placement is delegated to /bin/cp (an
 // Apple-signed binary that runs in the real rootfs context); this daemon itself
