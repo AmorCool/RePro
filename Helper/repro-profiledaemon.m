@@ -194,8 +194,39 @@ static void HandleRequest(void) {
     __sync_fetch_and_add(&g_busy, 1);
 
     EnsureIpcDirWritable();
+
+    // 🔴 v1.1.172 修复：同一个 notify 会同时触发 notify_register_dispatch 回调、
+    //    xpc_set_event_stream_handler 回调，外加 main() 启动时的 fileExists 检查，
+    //    可能一前一后调用 HandleRequest 两次。第一次读到 profile 并「原子消费」
+    //    （改名移走原始文件），第二次看到文件已空；此时若结果文件里已经是成功，
+    //    说明安装其实已完成，绝不能拿 ERR 覆盖成功结果——否则 App 会误判安装失败、
+    //    用户手动撤销刚装好的 profile，目标 App 打开即 0xe8008015 秒退。
+    NSString *consumedPath = [kProfileData stringByAppendingPathExtension:@"consumed"];
     NSData *profileData = [NSData dataWithContentsOfFile:kProfileData];
-    if (profileData.length == 0) {
+
+    if (profileData.length > 0) {
+        // 原子消费：移走原始文件，后续触发读到的是空，不会重复安装同一份
+        [[NSFileManager defaultManager] removeItemAtPath:consumedPath error:nil];
+        if (![[NSFileManager defaultManager] moveItemAtPath:kProfileData
+                                                     toPath:consumedPath
+                                                      error:nil]) {
+            RPVProfileDaemonLog(@"⚠️ 消费 %@ 失败，原地处理", kProfileData);
+        } else {
+            NSData *moved = [NSData dataWithContentsOfFile:consumedPath];
+            if (moved.length > 0) profileData = moved;
+        }
+    } else {
+        // 没有数据。可能是（a）App 真的没写；或（b）已被上一次触发消费走。
+        // 若结果文件里已经是成功，说明安装其实已完成，直接返回，绝不覆盖。
+        NSString *existing = [NSString stringWithContentsOfFile:kResultPath
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:nil];
+        if (existing.length > 0 && [existing hasPrefix:@"OK"]) {
+            RPVProfileDaemonLog(@"%@ 无数据，但已有成功结果，跳过（防竞态覆盖）", kProfileData);
+            g_lastActivity = [NSDate timeIntervalSinceReferenceDate];
+            __sync_fetch_and_sub(&g_busy, 1);
+            return;
+        }
         RPVProfileDaemonLog(@"%@ 无数据", kProfileData);
         [@"ERR: 没有待安装的描述文件数据" writeToFile:kResultPath
                                           atomically:YES
@@ -205,6 +236,7 @@ static void HandleRequest(void) {
         __sync_fetch_and_sub(&g_busy, 1);
         return;
     }
+
     RPVProfileDaemonLog(@"开始处理描述文件安装（%lu 字节）", (unsigned long)profileData.length);
 
     NSString *result = InstallProfile(profileData);
@@ -220,8 +252,8 @@ static void HandleRequest(void) {
                  encoding:NSUTF8StringEncoding
                     error:nil];
 
-    // 请求已消费，删掉投递文件，避免 daemon 下次启动重复安装同一份旧 profile
-    [[NSFileManager defaultManager] removeItemAtPath:kProfileData error:nil];
+    // 请求已消费，删掉 .consumed 暂存，避免残留
+    [[NSFileManager defaultManager] removeItemAtPath:consumedPath error:nil];
 
     WriteInventory();
 
