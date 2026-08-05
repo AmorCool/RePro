@@ -1280,9 +1280,6 @@ int main(int argc, char *argv[]) {
         s_requestBypass(@"App 签名完成");
     });
 
-    // 本轮先清一次 3 应用标记（覆盖 daemon 未运行期间新装/重签的应用）
-    s_requestBypass(@"daemon 启动");
-
     // ── 核心：立即执行一轮到期检查 ──
     // （不再需要常驻定时器/解锁/亮屏监听——launchd 每 5 分钟拉起天然覆盖，
     //   设备深睡错过调度会在唤醒后立即补执行。）
@@ -1292,6 +1289,16 @@ int main(int argc, char *argv[]) {
         s_gracefulExit(0);
         return 0;
     }
+
+    // 🔴 v1.1.166：3 应用标记清理移到「真正触发续签」之后执行。
+    // 旧版在 main 开头无条件 s_requestBypass(@"daemon 启动") —— daemon 每 5 分钟被
+    // launchd 拉起一次，即使冷却跳过（不续签）也遍历全部 App 容器清 xattr：
+    // /var/containers/Bundle/Application 是 data vault，递归遍历 + 每个 .app/.appex
+    // 一次 getxattr/removexattr，在 RootHide 下每次系统调用都被 launchdhook 拦截 →
+    // 持续 IO + XPC 拦截器活动累积 → 设备发热卡顿（用户实测「显示无需重签后手机慢慢
+    // 变热卡顿，只能重启」）。冷却跳过的轮次没有新安装/新签名，无需清理；
+    // 手动签名场景由 App 的 bypass-3app-request notify 即时覆盖，不依赖本轮启动清理。
+    s_requestBypass(@"daemon 启动（本轮触发续签）");
 
     // 已触发续签：等待 App 完成（signing-complete notify）或 5 分钟超时，避免进程常驻。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * 60 * NSEC_PER_SEC)),
