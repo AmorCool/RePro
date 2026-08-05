@@ -295,16 +295,36 @@ int main(int argc, char *argv[]) {
         // 通知时把本 job 拉起并把事件排进这个流。如果一直不取，事件会堆在流里，
         // launchd 可能反复重启 job。这里取出来顺带按名字直接处理一次，
         // 比等 notify_register_dispatch 回调更早（进程刚起来时通知已经发过了）。
-        xpc_set_event_stream_handler("com.apple.notifyd.matching", dispatch_get_main_queue(),
-                                     ^(xpc_object_t _Nonnull event) {
-            const char *name = xpc_dictionary_get_string(event, "Notification");
-            RPVProfileDaemonLog(@"launchd 事件流唤醒：%s", name ?: "(未知)");
-            if (name && strcmp(name, kNotifyName.UTF8String) == 0) {
-                HandleRequest();
+        //
+        // ⚠️ CI 实锤：iOS SDK 把 xpc_set_event_stream_handler 标了
+        // 「unavailable: not available on iOS」，直接调用编译不过。
+        // 但该符号在 iOS 的 libxpc 里确实存在（launchd 自己就在用），
+        // 所以改成 dlsym 运行时取——取到就用，取不到就退化成只靠
+        // notify_register_dispatch + 启动时全量扫描，主流程不受影响。
+        {
+            // 形参这里不用 xpc_handler_t（它同样可能被 SDK 在 iOS 上屏蔽），
+            // 直接写等价的 block 类型 void(^)(xpc_object_t)。
+            typedef void (*RPVXPCSetEventStreamHandler)(const char *stream,
+                                                        dispatch_queue_t queue,
+                                                        void (^handler)(xpc_object_t));
+            RPVXPCSetEventStreamHandler setStream =
+                (RPVXPCSetEventStreamHandler)dlsym(RTLD_DEFAULT, "xpc_set_event_stream_handler");
+            if (setStream) {
+                setStream("com.apple.notifyd.matching", dispatch_get_main_queue(),
+                          ^(xpc_object_t _Nonnull event) {
+                    const char *name = xpc_dictionary_get_string(event, "Notification");
+                    RPVProfileDaemonLog(@"launchd 事件流唤醒：%s", name ?: "(未知)");
+                    if (name && strcmp(name, kNotifyName.UTF8String) == 0) {
+                        HandleRequest();
+                    } else {
+                        HandleManageRequests();
+                    }
+                });
             } else {
-                HandleManageRequests();
+                RPVProfileDaemonLog(@"xpc_set_event_stream_handler 不可用，"
+                                    @"退化为 notify 回调 + 启动全量扫描");
             }
-        });
+        }
 
         // 启动时若已有挂起请求（App 先写文件再 kickstart 的常见顺序），立刻处理
         if ([[NSFileManager defaultManager] fileExistsAtPath:kProfileData]) {
