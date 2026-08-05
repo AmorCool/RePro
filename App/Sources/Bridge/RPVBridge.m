@@ -858,7 +858,20 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 ///    所以这里 spawn 成功与否都不能当作前提，真正的保底是 daemon plist 里的
 ///    LaunchEvents(com.apple.notifyd.matching)：只要 notify_post，launchd 自己会拉起。
 ///    这个函数只是让唤醒更快一点（省掉 notifyd 事件流的调度延迟）。
-static void RPVKickstartProfileDaemon(void) {
+/// forceRestart=YES 走 `kickstart -k`（先杀掉在跑的实例再拉起）；NO 只在未运行时拉起。
+///
+/// 🔴🔴 v1.1.180 血的教训：`kickstart -k` 里的 `-k` 就是 **kill**。
+/// v1.1.179 为了防「请求恰好投在 daemon 即将空闲退出的窗口里被吞掉」，
+/// 在等待结果的循环里每 5 秒补发一次唤醒 —— 却沿用了带 `-k` 的版本，
+/// 等于**每 5 秒把正在干活的 daemon 杀一次**。
+/// 真机上描述文件多达 163 份，daemon 启动全量扫描就要十几秒：
+/// 5 秒被杀 → 重启从头扫 → 又 5 秒被杀 …… 永远做不完，最后照样 60 秒超时。
+/// 更致命的是 daemon 侧「读到请求即原子消费（改名 .consumed）」——
+/// 一旦在消费之后、写结果之前被杀，这次请求就彻底蒸发：
+/// 描述文件根本没装进真实库，App 那头却只看到一句超时，
+/// 正是「签名成功、App 却 0xe8008015 秒退」的成因之一。
+/// 所以补发唤醒**必须**用不带 `-k` 的版本：活着就让它把活干完，死了才拉新实例。
+static void RPVKickstartProfileDaemonEx(BOOL forceRestart) {
     // roothide 把 jbroot 下的 LaunchDaemons 加载在 user/501 域（真机 launchctl print 已确认），
     // rootless/rootful 则在 system 域，两个都试一次。
     static const char *kLaunchctlPaths[] = { "/bin/launchctl", "/usr/bin/launchctl" };
@@ -868,7 +881,9 @@ static void RPVKickstartProfileDaemon(void) {
     for (int p = 0; p < 2; p++) {
         for (int d = 0; d < 2; d++) {
             pid_t kp = 0;
-            const char *argv[] = { kLaunchctlPaths[p], "kickstart", "-k", kDomains[d], NULL };
+            const char *argvKill[] = { kLaunchctlPaths[p], "kickstart", "-k", kDomains[d], NULL };
+            const char *argvSoft[] = { kLaunchctlPaths[p], "kickstart", kDomains[d], NULL };
+            const char **argv = forceRestart ? argvKill : argvSoft;
             if (posix_spawn(&kp, kLaunchctlPaths[p], NULL, NULL,
                             (char *const *)argv, NULL) != 0) {
                 break; // 这个 launchctl 路径不存在，换下一个
@@ -880,6 +895,10 @@ static void RPVKickstartProfileDaemon(void) {
         }
     }
 }
+
+/// 首次触发仍用强制重启：此刻请求刚写盘、daemon 要么没跑要么正在死，
+/// 杀掉重来能立刻拿到一个干净实例；真正危险的是「干活途中被杀」，那条路走上面的软唤醒。
+static void RPVKickstartProfileDaemon(void) { RPVKickstartProfileDaemonEx(YES); }
 
 static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     if (profilePath.length == 0) return NO;
@@ -928,7 +947,7 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     for (int i = 0; i < 600; i++) {
         usleep(100000); // 100ms
         if (i > 0 && i % 50 == 0) {
-            RPVKickstartProfileDaemon();
+            RPVKickstartProfileDaemonEx(NO); // 🔴 绝不能带 -k，否则会把正在装的 daemon 杀掉
             notify_post("com.reprovision.profile-install-request");
         }
         NSString *result = [NSString stringWithContentsOfFile:kResultPath
@@ -1066,7 +1085,7 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
         usleep(100000); // 100ms
 
         if (i > 0 && i % 50 == 0) {
-            RPVKickstartProfileDaemon();
+            RPVKickstartProfileDaemonEx(NO); // 🔴 绝不能带 -k，否则会把正在清理的 daemon 杀掉
             notify_post(kRPVManageNotifyName.UTF8String);
         }
 
