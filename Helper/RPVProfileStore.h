@@ -37,6 +37,15 @@
 #include <stdlib.h>
 #include <limits.h>
 
+static inline void RPVPSLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+static inline void RPVPSLog(NSString *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+    NSLog(@"[repro-profiles] %@", msg);
+}
+
 /// 系统描述文件库（默认路径）
 static NSString *const RPVPSManagedPrefsDir = @"/var/Managed Preferences/mobile";
 
@@ -94,15 +103,6 @@ static inline NSString *RPVPSWriteProfileToDirs(NSData *data, NSString *fileName
         }
     }
     return primary;
-}
-
-static inline void RPVPSLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
-static inline void RPVPSLog(NSString *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
-    va_end(args);
-    NSLog(@"[repro-profiles] %@", msg);
 }
 
 #pragma mark - 基础工具
