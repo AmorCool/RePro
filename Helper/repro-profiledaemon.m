@@ -68,10 +68,8 @@ static NSString *RPVSha1OfData(NSData *data) {
 // 过期的 profile 对任何 App 都无价值（App 的 embedded profile 过期 = App 本身
 // 也过期），可安全删除；未过期的全部保留，绝不误删。
 
-// 从 CMS 容器里提取 plist 字典（.mobileprovision 是二进制 PKCS#7，取 <plist> 段）
-static NSDictionary *ProfilePlistAtPath(NSString *path) {
-    NSError *err = nil;
-    NSString *s = [NSString stringWithContentsOfFile:path encoding:NSISOLatin1StringEncoding error:&err];
+// 从 .mobileprovision（二进制 PKCS#7，取 <plist> 段）解析出 plist 字典。
+static NSDictionary *ProfilePlistFromString(NSString *s) {
     if (s.length == 0) return nil;
     NSRange start = [s rangeOfString:@"<plist"];
     if (start.location == NSNotFound) return nil;
@@ -94,17 +92,45 @@ static NSDictionary *ProfilePlistAtPath(NSString *path) {
     }
 }
 
+static NSDictionary *ProfilePlistAtPath(NSString *path) {
+    NSString *s = [NSString stringWithContentsOfFile:path encoding:NSISOLatin1StringEncoding error:nil];
+    return ProfilePlistFromString(s);
+}
+
+static NSDictionary *ProfilePlistOfData(NSData *data) {
+    NSString *s = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    return ProfilePlistFromString(s);
+}
+
+// v1.1.169 根治堆积：同一 App 用 profile 自带的 application-identifier 派生「稳定文件名」，
+// 而非内容 SHA1。重签同一 App 时文件名恒定 → 直接覆盖旧档，从根上不产生堆积
+//（不再依赖「每次下载的 profile 内容恰好相同」）。解析不到时退回内容 SHA1，绝不阻断安装。
+// 通配符 profile（TEAMID.*）多 App 共享同一名，但通配符 profile 内容本就一致，覆盖无副作用。
+static NSString *StableProfileFileName(NSData *profileData) {
+    NSDictionary *plist = ProfilePlistOfData(profileData);
+    if (!plist) return nil;
+    NSString *appId = nil;
+    id ai = plist[@"Entitlements"][@"application-identifier"];
+    if ([ai isKindOfClass:[NSString class]]) appId = ai;
+    if (appId.length == 0) return nil;
+    // application-identifier 已含 Team 前缀（TEAMID.com.x），对单 App 唯一。
+    NSString *sha = RPVSha1OfData([appId dataUsingEncoding:NSUTF8StringEncoding]);
+    if (sha.length == 0) return nil;
+    return [sha stringByAppendingPathExtension:@"mobileprovision"];
+}
+
 /// 清理 /var/Managed Preferences/mobile 下所有已过期的 .mobileprovision。
 /// 调用时机：daemon 启动时 + 每次安装新 profile 后。
-static void CleanupExpiredProfiles(void) {
+/// 返回人类可读的清理摘要（即使未删除也返回，便于回写结果文件让 App 日志可见）。
+static NSString *CleanupExpiredProfiles(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray *files = [fm contentsOfDirectoryAtPath:kManagedPrefsDir error:nil] ?: @[];
-    if (files.count == 0) return;
 
+    NSUInteger total = 0, removed = 0, valid = 0;
     NSDate *now = [NSDate date];
-    NSUInteger removed = 0;
     for (NSString *name in files) {
         if (![name.pathExtension isEqualToString:@"mobileprovision"]) continue;
+        total++;
         NSString *path = [kManagedPrefsDir stringByAppendingPathComponent:name];
 
         NSDictionary *plist = ProfilePlistAtPath(path);
@@ -118,13 +144,14 @@ static void CleanupExpiredProfiles(void) {
         if (expiry && [expiry compare:now] == NSOrderedAscending) {
             [fm removeItemAtPath:path error:nil];
             removed++;
+        } else {
+            valid++;
         }
     }
 
-    if (removed > 0) {
-        RPVProfileDaemonLog(@"已清理 %lu 个过期描述文件（剩余 %lu 个）",
-                            (unsigned long)removed, (unsigned long)(files.count - removed));
-    }
+    return [NSString stringWithFormat:
+        @"已清理 %lu 个过期/损坏描述文件，保留 %lu 个有效（目录共 %lu 个）",
+        (unsigned long)removed, (unsigned long)valid, (unsigned long)total];
 }
 
 // Writes the profile to the REAL managed-preferences directory and registers it
@@ -133,15 +160,18 @@ static NSString *InstallProfile(NSData *profileData) {    if (profileData.length
         return @"ERR: empty profile data";
     }
 
-    // 1. Write to the real managed-preferences directory.
-    NSString *sha = RPVSha1OfData(profileData);
-    if (sha.length == 0) {
-        return @"ERR: failed to compute SHA1 of profile";
+    // 1. 计算目标文件名：优先用「App 稳定名」（根治堆积），解析失败退回内容 SHA1。
+    NSString *fileName = StableProfileFileName(profileData);
+    if (fileName.length == 0) {
+        NSString *sha = RPVSha1OfData(profileData);
+        if (sha.length == 0) {
+            return @"ERR: failed to compute SHA1 of profile";
+        }
+        fileName = [sha stringByAppendingPathExtension:@"mobileprovision"];
     }
 
     NSString *destDir = kManagedPrefsDir;
-    NSString *destPath = [destDir stringByAppendingPathComponent:
-        [sha stringByAppendingPathExtension:@"mobileprovision"]];
+    NSString *destPath = [destDir stringByAppendingPathComponent:fileName];
 
     NSError *writeErr = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:destDir
@@ -237,14 +267,18 @@ static void HandleRequest(void) {
     RPVProfileDaemonLog(@"handling profile install (%lu bytes)", (unsigned long)profileData.length);
 
     NSString *result = InstallProfile(profileData);
-    [result writeToFile:kResultPath
-             atomically:YES
-               encoding:NSUTF8StringEncoding
-                  error:nil];
     RPVProfileDaemonLog(@"result: %@", result);
 
-    // v1.1.167：装完新 profile 顺手清一次过期堆积（新文件已就位，删旧的绝对安全）
-    CleanupExpiredProfiles();
+    // v1.1.169：装完新 profile 顺手清一次过期堆积，并把清理摘要回写结果文件
+    //（App 侧会读 result 文件记入 repro_log，清理动作从此对用户在 App 日志可见）。
+    NSString *cleanup = CleanupExpiredProfiles();
+    RPVProfileDaemonLog(@"%@", cleanup);
+
+    NSString *combined = [result stringByAppendingFormat:@"; %@", cleanup];
+    [combined writeToFile:kResultPath
+               atomically:YES
+                 encoding:NSUTF8StringEncoding
+                    error:nil];
 }
 
 int main(int argc, char *argv[]) {
@@ -258,8 +292,9 @@ int main(int argc, char *argv[]) {
         // Clean any stale result.
         [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
 
-        // v1.1.167：启动时清一次过期 profile 堆积（覆盖 daemon 未运行期间的累积）
-        CleanupExpiredProfiles();
+        // v1.1.169：启动时清一次过期 profile 堆积（覆盖 daemon 未运行期间的累积），结果记入日志。
+        NSString *startupCleanup = CleanupExpiredProfiles();
+        RPVProfileDaemonLog(@"%@", startupCleanup);
 
         int token = 0;
         notify_register_dispatch(kNotifyName.UTF8String, &token,
