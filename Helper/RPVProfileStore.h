@@ -194,38 +194,58 @@ static inline BOOL RPVPSRevokeProfileViaMC(NSString *uuid) {
     id connection = [(id)mcClass performSelector:@selector(sharedConnection)];
     if (!connection) { RPVPSLog(@"MCProfileConnection sharedConnection 为空"); return NO; }
 
-    // 候选删除方法名（不同 iOS 版本命名略有差异，逐个试探 respondsToSelector）。
+    // 先按已知候选方法名试探（不同 iOS 版本命名略有差异）。
     NSArray<NSString *> *candidates = @[
         @"removeProvisioningProfileWithIdentifier:outError:",
         @"removeProfileWithIdentifier:outError:",
         @"deleteProvisioningProfileWithIdentifier:outError:",
         @"removeProvisioningProfileWithIdentifier:",
     ];
+    SEL targetSel = NULL;
     for (NSString *name in candidates) {
-        SEL sel = NSSelectorFromString(name);
-        if (![connection respondsToSelector:sel]) continue;
-        NSMethodSignature *sig = [connection methodSignatureForSelector:sel];
-        if (!sig) continue;
-        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-        [inv setTarget:connection];
-        [inv setSelector:sel];
-        [inv setArgument:&uuid atIndex:2];  // 第 1 个实参（index 0/1 是 self/cmd）
-        NSError *__autoreleasing err = nil;
-        NSError *__autoreleasing *errPtr = &err;
-        if (sig.numberOfArguments > 3) [inv setArgument:&errPtr atIndex:3];
-        BOOL ret = NO;
-        @try {
-            [inv invoke];
-            if (sig.methodReturnLength == sizeof(BOOL)) [inv getReturnValue:&ret];
-            RPVPSLog(@"MC 注销(%@) → 返回 %d，错误：%@", name, ret, err ?: @"无");
-        } @catch (NSException *e) {
-            RPVPSLog(@"MC 注销(%@) 抛异常：%@", name, e);
-            continue;  // 试下一个候选
-        }
-        return ret;
+        SEL s = NSSelectorFromString(name);
+        if ([connection respondsToSelector:s]) { targetSel = s; break; }
     }
-    RPVPSLog(@"MCProfileConnection 无可用删除方法（已尝试 %lu 个候选）", (unsigned long)candidates.count);
-    return NO;
+    // 兜底：运行时反射，自动适配各 iOS 版本的删除方法名（避免硬编码漏匹配导致注销不生效）。
+    if (!targetSel) {
+        unsigned int mcount = 0;
+        Method *methods = class_copyMethodList([connection class], &mcount);
+        if (methods) {
+            for (unsigned int i = 0; i < mcount; i++) {
+                NSString *mname = NSStringFromSelector(method_getName(methods[i]));
+                if ([mname containsString:@"rovisioningProfile"] &&
+                    ([mname containsString:@"emove"] || [mname containsString:@"elete"])) {
+                    SEL s = method_getName(methods[i]);
+                    if ([connection respondsToSelector:s]) { targetSel = s; break; }
+                }
+            }
+            free(methods);
+        }
+    }
+    if (!targetSel) {
+        RPVPSLog(@"MCProfileConnection 无可用删除方法（候选 + 反射均未命中）");
+        return NO;
+    }
+    RPVPSLog(@"MC 注销选用方法: %@", NSStringFromSelector(targetSel));
+    NSMethodSignature *sig = [connection methodSignatureForSelector:targetSel];
+    if (!sig) { RPVPSLog(@"MC 注销方法无签名"); return NO; }
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:connection];
+    [inv setSelector:targetSel];
+    [inv setArgument:&uuid atIndex:2];  // 第 1 个实参（index 0/1 是 self/cmd）
+    NSError *__autoreleasing err = nil;
+    NSError *__autoreleasing *errPtr = &err;
+    if (sig.numberOfArguments > 3) [inv setArgument:&errPtr atIndex:3];
+    BOOL ret = NO;
+    @try {
+        [inv invoke];
+        if (sig.methodReturnLength == sizeof(BOOL)) [inv getReturnValue:&ret];
+        RPVPSLog(@"MC 注销(%@) → 返回 %d，错误：%@", NSStringFromSelector(targetSel), ret, err ?: @"无");
+    } @catch (NSException *e) {
+        RPVPSLog(@"MC 注销(%@) 抛异常：%@", NSStringFromSelector(targetSel), e);
+        return NO;
+    }
+    return ret;
 }
 
 static inline NSDate *RPVPSDateOfPlist(NSDictionary *plist, NSString *key) {

@@ -194,7 +194,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 提示横幅：用户中途打开 App 时，明确告知这是 daemon 后台续签、无需操作
         ResignProgress.shared.show(
             title: "ReSign 后台自动续签",
-            message: "Daemon 后台自动续签流程已开始，无需任何操作！请勿杀掉后台，但您可以退出此程序。"
+            message: ""
         )
         DaemonLogStart(DaemonLogDefaultPath())
 
@@ -268,8 +268,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 // 签名前自动撤销旧证书（与前台 SigningViewModel 共享同一套逻辑），
                 // 防止 "You already have a current Development certificate or a pending certificate request" 错误。
                 // v1.1.86 前此处直接调 resignAllExpiring 漏掉了撤销步骤 → 后台续签 CSR 冲突。
-                BridgeClient.shared.autoRevokeBeforeSigning { [weak self] in
+                BridgeClient.shared.autoRevokeBeforeSigning { [weak self] revokeError in
                     guard let self = self else { return }
+                    // v1.1.177：签名前自动撤销因网络断开失败 → 立即停止续签，
+                    // 不得误判为「所有应用剩余有效期充足」（表现为设置无描述文件、App 0xe8008015）。
+                    if let err = revokeError, self.isConnectivityError(err) {
+                        LogManager.shared.warning("未连接到互联网，停止续签操作", source: "AppDelegate")
+                        self.writeResignReport(result: "failed", detail: "未连接到互联网、停止续签操作", elapsed: 0)
+                        RPVSigningdNotify.notifySigningComplete()
+                        LogManager.shared.info("══════ 续签结束（未联网已停止），已回报 daemon ══════", source: "AppDelegate")
+                        DaemonLogStop()
+                        Thread.sleep(forTimeInterval: 0.5)
+                        if UIApplication.shared.applicationState == .background { exit(0) }
+                        return
+                    }
                     BridgeClient.shared.resignAllExpiring(thresholdDays: threshold) { [weak self] result in
                         guard let self = self else { return }
                         let elapsed = Date().timeIntervalSince(started)
@@ -353,6 +365,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
             return
         }
+    }
+
+    /// 判断错误是否为「网络断开 / 无法连接」类错误（NSURLError 域的连通性错误）。
+    private func isConnectivityError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorNotConnectedToInternet, NSURLErrorTimedOut,
+                 NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost,
+                 NSURLErrorNetworkConnectionLost, NSURLErrorDNSLookupFailed,
+                 NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted:
+                return true
+            default:
+                break
+            }
+        }
+        let desc = ns.localizedDescription
+        if desc.contains("似乎已断开") || desc.contains("not connected") ||
+           desc.contains("offline") || desc.contains("Could not connect") {
+            return true
+        }
+        return false
     }
 
     /// 发送续签完成 / 失败通知

@@ -370,10 +370,10 @@ final class BridgeClient: ObservableObject {
     /// 签名前自动撤销所有旧证书，防止 CSR 冲突。
     /// 共享方法：AppDelegate 后台续签 / SigningViewModel 前台操作 统一调用同一套逻辑，
     /// 避免 v1.1.86 前台有撤销、后台漏撤销的不一致问题。
-    func autoRevokeBeforeSigning(completion: @escaping () -> Void) {
+    func autoRevokeBeforeSigning(completion: @escaping (Error?) -> Void) {
         guard UserDefaults.standard.object(forKey: "revokeCertBeforeSigning") as? Bool ?? true else {
             LogManager.shared.info("跳过签名前自动撤销（设置已关闭）", source: "BridgeClient")
-            completion()
+            completion(nil)
             return
         }
 
@@ -381,7 +381,7 @@ final class BridgeClient: ObservableObject {
         if let last = BridgeClient.lastRevokeTime,
            now.timeIntervalSince(last) < BridgeClient.revokeDedupWindow {
             LogManager.shared.info("跳过重复撤销证书（\(Int(now.timeIntervalSince(last)))s 内已撤销过）", source: "BridgeClient")
-            completion()
+            completion(nil)
             return
         }
         BridgeClient.lastRevokeTime = now
@@ -394,7 +394,7 @@ final class BridgeClient: ObservableObject {
             case .success(let certs):
                 guard !certs.isEmpty else {
                     LogManager.shared.info("签名前自动撤销：当前账号下无旧证书，无需撤销", source: "BridgeClient")
-                    completion()
+                    completion(nil)
                     return
                 }
 
@@ -425,7 +425,7 @@ final class BridgeClient: ObservableObject {
 
                 guard !targets.isEmpty else {
                     LogManager.shared.info("签名前自动撤销：账号下仅有本机证书，无需撤销，直接签名", source: "BridgeClient")
-                    completion()
+                    completion(nil)
                     return
                 }
 
@@ -446,12 +446,12 @@ final class BridgeClient: ObservableObject {
                 }
                 group.notify(queue: .main) {
                     LogManager.shared.info("签名前自动撤销完成，开始签名", source: "BridgeClient")
-                    completion()
+                    completion(nil)
                 }
 
             case .failure(let error):
-                LogManager.shared.warning("拉取证书列表失败，跳过自动撤销（不阻断签名）: \(error.localizedDescription)", source: "BridgeClient")
-                completion()
+                LogManager.shared.warning("拉取证书列表失败（联网异常），将上报上层停止续签: \(error.localizedDescription)", source: "BridgeClient")
+                completion(error)
             }
         }
     }

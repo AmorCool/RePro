@@ -204,7 +204,7 @@ final class SigningViewModel: ObservableObject {
         LogManager.shared.info("重签其他应用: \(app.bundleIdentifier)（原签名 TeamID: \(app.originalTeamID ?? "未知")）",
                                source: "SigningViewModel")
 
-        autoRevokeBeforeSigning {
+        autoRevokeBeforeSigning { _ in
             self.client.resign(bundleID: app.bundleIdentifier) { result in
                 self.markSigning(false, for: app.bundleIdentifier)
                 switch result {
@@ -290,7 +290,7 @@ final class SigningViewModel: ObservableObject {
     // MARK: - 签名前自动撤销证书
 
     /// 委托给 BridgeClient.shared.autoRevokeBeforeSigning（共享逻辑含去重、开关、日志）。
-    private func autoRevokeBeforeSigning(completion: @escaping () -> Void) {
+    private func autoRevokeBeforeSigning(completion: @escaping (Error?) -> Void) {
         client.autoRevokeBeforeSigning(completion: completion)
     }
 
@@ -301,7 +301,7 @@ final class SigningViewModel: ObservableObject {
         markSigning(true, for: app.bundleIdentifier)
         LogManager.shared.info("开始重签: \(app.bundleIdentifier)", source: "SigningViewModel")
 
-        autoRevokeBeforeSigning {
+        autoRevokeBeforeSigning { _ in
             self.client.resign(bundleID: app.bundleIdentifier) { result in
                 self.markSigning(false, for: app.bundleIdentifier)
                 switch result {
@@ -326,7 +326,7 @@ final class SigningViewModel: ObservableObject {
 
         LogManager.shared.info("开始批量重签（阈值 \(threshold) 天）", source: "SigningViewModel")
 
-        autoRevokeBeforeSigning { [weak self] in
+        autoRevokeBeforeSigning { _ in [weak self] _ in
             guard let self = self else { return }
             self.client.resignAllExpiring(thresholdDays: threshold) { result in
                 switch result {
@@ -348,7 +348,7 @@ final class SigningViewModel: ObservableObject {
 
         LogManager.shared.info("手动批量刷新签名（全部应用）", source: "SigningViewModel")
 
-        autoRevokeBeforeSigning { [weak self] in
+        autoRevokeBeforeSigning { _ in [weak self] _ in
             guard let self = self else { return }
             self.client.resignAllApplications { result in
                 switch result {
