@@ -497,20 +497,28 @@ static inline NSUInteger RPVPSWriteInventory(NSString *outPath) {
 static inline NSString *RPVPSDeleteNames(NSArray<NSString *> *fileNames) {
     if (fileNames.count == 0) return nil;
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSUInteger removed = 0, skipped = 0;
+    // 🔴 v1.1.179 统计口径修正：
+    //   旧版只有 removed / skipped 两个计数，而且判断写成 `if (removed == 0) skipped++`，
+    //   用的是**跨条目累计值**——一次删多个文件时，只要第一个删成功，后面全部没删中的
+    //   都不会被计入 skipped，统计从根上就是错的。
+    //   现在逐条统计，并把「文件名不合法」和「库里本来就没有这份」分开报：
+    //   后者绝大多数是因为它刚刚被自动清理（去重/删过期）先一步删掉了，
+    //   属于正常结果，不该让用户以为「删除失败」。
+    NSUInteger removed = 0, missing = 0, invalid = 0;
 
     NSMutableArray<NSString *> *revokeUUIDs = [NSMutableArray array];
     for (NSString *raw in fileNames) {
-        if (![raw isKindOfClass:[NSString class]]) { skipped++; continue; }
+        if (![raw isKindOfClass:[NSString class]]) { invalid++; continue; }
         NSString *fn = [raw stringByTrimmingCharactersInSet:
                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (fn.length == 0) continue;
         if ([fn containsString:@"/"] || [fn hasPrefix:@"."] ||
             ![fn.pathExtension isEqualToString:@"mobileprovision"]) {
-            skipped++;
+            invalid++;
             continue;
         }
         // 每个目标目录都尝试删一次（两个目录都删干净，避免残留副本）
+        NSUInteger hitDirs = 0;
         for (NSString *dir in RPVPSManagedPrefsDirs()) {
             NSString *path = [dir stringByAppendingPathComponent:fn];
             if ([fm fileExistsAtPath:path]) {
@@ -518,19 +526,31 @@ static inline NSString *RPVPSDeleteNames(NSArray<NSString *> *fileNames) {
                 NSData *data = [NSData dataWithContentsOfFile:path];
                 NSString *uuid = RPVPSUuidOfPlist(RPVPSPlistOfData(data));
                 if (uuid.length) [revokeUUIDs addObject:uuid];
-                if ([fm removeItemAtPath:path error:nil]) removed++;
+                if ([fm removeItemAtPath:path error:nil]) hitDirs++;
             }
         }
-        if (removed == 0) skipped++;
+        if (hitDirs > 0) {
+            removed++;   // 按「用户点名要删的描述文件份数」计，不按目录副本数
+            RPVPSLog(@"已删除 %@（命中 %lu 个目录副本）", fn, (unsigned long)hitDirs);
+        } else {
+            missing++;
+            RPVPSLog(@"删除 %@：库中已不存在（多半刚被自动清理先删掉了）", fn);
+        }
     }
 
     // 系统级注销：仅删文件 + SIGHUP profiled 不会让 iOS 17 的 profiled 从内存信任库真正
     // 移除（表现为爱思仍显示、目标 App 仍能打开），必须按 UUID 调 MCProfileConnection 删除。
     for (NSString *uuid in revokeUUIDs) RPVPSRevokeProfileViaMC(uuid);
 
-    return [NSString stringWithFormat:@"OK: 已删除 %lu 个描述文件%@",
-            (unsigned long)removed,
-            skipped ? [NSString stringWithFormat:@"（跳过 %lu 个）", (unsigned long)skipped] : @""];
+    NSMutableString *msg = [NSMutableString stringWithFormat:@"OK: 已删除 %lu 个描述文件",
+                            (unsigned long)removed];
+    if (missing) {
+        [msg appendFormat:@"；%lu 个已不在库中（自动清理已提前删除）", (unsigned long)missing];
+    }
+    if (invalid) {
+        [msg appendFormat:@"；%lu 个文件名不合法已跳过", (unsigned long)invalid];
+    }
+    return msg;
 }
 
 #endif /* RPVProfileStore_h */

@@ -923,8 +923,14 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     // 轮询结果文件（最多等 60 秒）。
     // v1.1.171：daemon 启动时会先做一次全量清理（解析目录内每个 .mobileprovision，
     // 真机上曾有 163 个文件），首次唤醒可能十几秒才轮到安装，15 秒明显不够。
+    // v1.1.179：等待期间每 5 秒补发一次唤醒，防止请求恰好投在 daemon「即将空闲退出」
+    // 的窗口里被吞掉（daemon 侧读到请求即原子消费，重发唤醒不会重复安装）。
     for (int i = 0; i < 600; i++) {
         usleep(100000); // 100ms
+        if (i > 0 && i % 50 == 0) {
+            RPVKickstartProfileDaemon();
+            notify_post("com.reprovision.profile-install-request");
+        }
         NSString *result = [NSString stringWithContentsOfFile:kResultPath
                                                        encoding:NSUTF8StringEncoding
                                                           error:nil];
@@ -1048,9 +1054,21 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
     RPVKickstartProfileDaemon();
     notify_post(kRPVManageNotifyName.UTF8String);
 
-    // 最多等 60 秒：daemon 启动时要解析目录内每个描述文件，首轮可能十几秒
+    // 最多等 60 秒：daemon 启动时要解析目录内每个描述文件，首轮可能十几秒。
+    //
+    // 🔴 v1.1.179：等待期间每 5 秒补发一次唤醒。
+    // daemon 是短命进程（空闲 60 秒自退）。请求若恰好投在它「马上要退」的窗口里，
+    // notify 会被那个正在死掉的进程收走，launchd 认为事件已被消费、不再拉起新实例，
+    // 请求就悬在盘上没人处理，App 只能干等满 60 秒报「超时未返回」。
+    // 补发唤醒只是重新发信号 / kickstart，**不重写请求文件**，
+    // 而 daemon 侧读到请求即原子消费，因此不存在同一操作被执行两次的风险。
     for (int i = 0; i < 600; i++) {
         usleep(100000); // 100ms
+
+        if (i > 0 && i % 50 == 0) {
+            RPVKickstartProfileDaemon();
+            notify_post(kRPVManageNotifyName.UTF8String);
+        }
 
         if (hasWork) {
             NSString *result = [NSString stringWithContentsOfFile:kRPVManageResultPath

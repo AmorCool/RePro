@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - 系统状态页
 //
@@ -9,6 +10,8 @@ import SwiftUI
 struct HealthView: View {
     @State private var snapshot: EnvironmentSnapshot?
     @State private var isLoading = false
+    /// 跳转文件管理器失败时的提示（同时兼作「路径已复制」的回执）
+    @State private var openHint: String?
 
     var body: some View {
         NavigationView {
@@ -21,6 +24,13 @@ struct HealthView: View {
             }
             .navigationTitle("系统状态")
             .onAppear { refresh() }
+            .alert("打开文件管理器",
+                   isPresented: Binding(get: { openHint != nil },
+                                        set: { if !$0 { openHint = nil } })) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(openHint ?? "")
+            }
         }
         .navigationViewStyle(.stack)
     }
@@ -28,15 +38,72 @@ struct HealthView: View {
     // MARK: 越狱环境
 
     private var jailbreakSection: some View {
-        Section("越狱环境") {
+        Section {
             HealthRow(label: "环境类型",
                       value: snapshot?.jailbreak.displayName ?? placeholder,
                       status: statusForJailbreak)
 
-            HealthRow(label: "越狱根目录",
-                      value: snapshot?.jailbreakRoot ?? placeholder,
-                      status: .neutral)
+            if let root = snapshot?.jailbreakRoot, !root.isEmpty {
+                // RootHide 的 jbroot 是随机路径（/var/containers/Bundle/Application/
+                // .jbroot-XXXXXXXXXXXXXXXX），照着屏幕手抄进文件管理器极易出错，
+                // 干脆做成可点按，直接把 Filza 拉起来定位到这个目录。
+                Button {
+                    openInFileManager(root)
+                } label: {
+                    HStack(alignment: .top) {
+                        Text("越狱根目录")
+                            .foregroundColor(.primary)
+                        Spacer(minLength: 12)
+                        Text(root)
+                            .foregroundColor(.blue)
+                            .multilineTextAlignment(.trailing)
+                            .font(.callout)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.footnote)
+                            .foregroundColor(.blue)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("越狱根目录：\(root)")
+                .accessibilityHint("点按用 Filza 打开该目录")
+            } else {
+                HealthRow(label: "越狱根目录",
+                          value: snapshot?.jailbreakRoot ?? placeholder,
+                          status: .neutral)
+            }
+        } header: {
+            Text("越狱环境")
+        } footer: {
+            if let root = snapshot?.jailbreakRoot, !root.isEmpty {
+                Text("点按「越狱根目录」可用 Filza 打开该目录；未安装 Filza 时会把路径复制到剪贴板。")
+            }
         }
+    }
+
+    /// 用 Filza 打开指定目录。
+    /// Filza 注册的 scheme 是 `filza://view/<绝对路径>`。
+    /// 这里刻意**不用** `canOpenURL` —— 那要求在 Info.plist 的
+    /// LSApplicationQueriesSchemes 里预先登记 scheme，否则一律返回 false；
+    /// 直接 open 的 completion 同样能告诉我们有没有 App 接管，且没有登记要求。
+    private func openInFileManager(_ root: String) {
+        let encoded = root.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? root
+        guard let url = URL(string: "filza://view" + encoded) else {
+            copyPath(root, reason: "路径无法转换成 URL")
+            return
+        }
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                copyPath(root, reason: "未检测到 Filza（或它拒绝了跳转）")
+            }
+        }
+    }
+
+    private func copyPath(_ path: String, reason: String) {
+        UIPasteboard.general.string = path
+        openHint = "\(reason)。\n路径已复制到剪贴板：\n\(path)"
     }
 
     private var statusForJailbreak: HealthStatus {

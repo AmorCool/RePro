@@ -262,7 +262,15 @@ private struct CertificateRowView: View {
                     .padding(6)
                     .background(Color.red.opacity(0.08))
                     .cornerRadius(8)
+                    // 命中区域限定在这块红底胶囊本身
+                    .contentShape(Rectangle())
                 }
+                // 🔴 v1.1.179 修复「没点撤销也弹撤销确认窗」：
+                // SwiftUI 的 List 行里如果只有一个 Button，系统会把**整行**当成这个
+                // Button 的触发区域（默认 cell 级 button style），于是点证书名、点序列号、
+                // 点行内任何空白都会触发 onRevoke → pendingRevokeCert 被赋值 → 弹窗。
+                // 改成 borderless 后，行不再整体代理点击，只有按钮自身可点。
+                .buttonStyle(.borderless)
                 .padding(.leading, 8)
             }
         }

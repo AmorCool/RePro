@@ -274,6 +274,12 @@ static void HandleManageRequests(void) {
         [parts addObject:[@"OK: " stringByAppendingString:CleanupProfiles()]];
     }
 
+    // 🔴 v1.1.179：清单必须在结果文件**之前**写。
+    // App 侧是「轮询到结果串就立刻去读清单快照」，旧版顺序是先写结果再写清单，
+    // 中间那几百毫秒 App 读到的是删除前的旧清单 —— 表现为「明明删了，列表还在」。
+    // 反过来先刷清单再回结果，App 拿到结果时清单必定已是最新，竞态消失。
+    WriteInventory();
+
     if (parts.count > 0) {
         RPVPSNudgeProfiled();
         NSString *combined = [parts componentsJoinedByString:@"; "];
@@ -284,8 +290,6 @@ static void HandleManageRequests(void) {
                         error:nil];
         chown(kManageResultPath.fileSystemRepresentation, 501, 501);
     }
-
-    WriteInventory();
 
     g_lastActivity = [NSDate timeIntervalSinceReferenceDate];
     __sync_fetch_and_sub(&g_busy, 1);
@@ -299,9 +303,26 @@ int main(int argc, char *argv[]) {
         EnsureIpcDirWritable();
         [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
 
-        // 启动即清一次，覆盖 daemon 未运行期间累积的过期与重复文件
-        NSString *startupCleanup = CleanupProfiles();
-        RPVProfileDaemonLog(@"启动清理 → %@", startupCleanup);
+        // 🔴🔴 v1.1.179 关键顺序修复：启动清理必须给「挂起请求」让路。
+        //
+        // 旧版无条件先跑 CleanupProfiles()，而它会按 application-identifier 去重、
+        // 删过期。可 daemon 是短命进程（空闲 60 秒自退），用户在 App 里点「删除某份
+        // 描述文件」时它多半已经退出 —— launchd 重新拉起后，启动清理**抢在**删除请求
+        // 之前跑，把用户点名要删的那份（往往正是重复/过期的那份）先删掉了；
+        // 随后处理删除请求时文件已不在，于是回报「已删除 0 个（跳过 1 个）」。
+        // 用户看到的就是「日志说没删除、列表里那份却确实没了」的自相矛盾。
+        //
+        // 现在：有挂起请求就先办请求，办完再补跑清理；没有请求才走原来的启动清理。
+        NSFileManager *bootFM = [NSFileManager defaultManager];
+        BOOL hasPendingRequest = [bootFM fileExistsAtPath:kProfileData] ||
+                                 [bootFM fileExistsAtPath:kDeleteRequestPath] ||
+                                 [bootFM fileExistsAtPath:kCleanupRequestPath];
+        if (!hasPendingRequest) {
+            // 启动即清一次，覆盖 daemon 未运行期间累积的过期与重复文件
+            RPVProfileDaemonLog(@"启动清理 → %@", CleanupProfiles());
+        } else {
+            RPVProfileDaemonLog(@"检测到挂起请求，启动清理推迟到请求处理之后");
+        }
 
         g_lastActivity = [NSDate timeIntervalSinceReferenceDate];
 
@@ -362,6 +383,12 @@ int main(int argc, char *argv[]) {
         // 无论有没有安装请求，启动都刷新一次清单并消费管理请求
         HandleManageRequests();
 
+        // 挂起请求已经办完，这时才补跑常规清理（见上方顺序修复说明）
+        if (hasPendingRequest) {
+            RPVProfileDaemonLog(@"请求已处理，补跑启动清理 → %@", CleanupProfiles());
+            WriteInventory();
+        }
+
         // 短命化：空闲满 kIdleExitSeconds 就退出。iOS 17 launchd 会把长驻低 IPC
         // 守护判为 inefficient 直接 SIGKILL，常驻毫无意义（详见 signingd 改造）。
         dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -372,6 +399,29 @@ int main(int argc, char *argv[]) {
                                   (uint64_t)(1 * NSEC_PER_SEC));
         dispatch_source_set_event_handler(timer, ^{
             if (g_busy > 0) return;                       // 正在装，别退
+
+            // 🔴 v1.1.179：每轮先兜底扫一遍盘上的挂起请求，再考虑退出。
+            //
+            // 竞态实录（用户日志 18:02:47「超时未返回」就是它）：App 恰好在 daemon
+            // 「空闲已满 60 秒、马上要退」的窗口里投递请求并 notify_post，通知被这个
+            // 正在死掉的进程收下 —— launchd 认为已有实例消费过事件，不会再拉起新实例，
+            // 请求就那样悬在磁盘上没人管，App 只能干等满 60 秒报超时。
+            //
+            // 加上这层轮询后：只要 daemon 还活着就一定会看到请求文件；
+            // 即使通知彻底丢失，最多 5 秒也会被捞起来处理，不再依赖通知可靠送达。
+            NSFileManager *tickFM = [NSFileManager defaultManager];
+            if ([tickFM fileExistsAtPath:kProfileData]) {
+                RPVProfileDaemonLog(@"轮询发现挂起的安装请求，立即处理");
+                HandleRequest();
+                return;
+            }
+            if ([tickFM fileExistsAtPath:kDeleteRequestPath] ||
+                [tickFM fileExistsAtPath:kCleanupRequestPath]) {
+                RPVProfileDaemonLog(@"轮询发现挂起的管理请求，立即处理");
+                HandleManageRequests();
+                return;
+            }
+
             NSTimeInterval idle = [NSDate timeIntervalSinceReferenceDate] - g_lastActivity;
             if (idle >= kIdleExitSeconds) {
                 RPVProfileDaemonLog(@"空闲 %.0f 秒，正常退出", idle);
