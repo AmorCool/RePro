@@ -517,11 +517,9 @@ static int RPVHelperRebootUserSpace(void) {
 ///   uicache -a                           重建全部图标缓存
 ///   uicache -p /Applications/ReSign.app  重新注册单个 App
 static int RPVHelperRunUicache(int argc, char *argv[]) {
-    static NSString *const kCandidatePaths[] = {
-        @"/usr/bin/uicache", @"/var/jb/usr/bin/uicache", nil
-    };
+    NSArray<NSString *> *candidates = @[ @"/usr/bin/uicache", @"/var/jb/usr/bin/uicache" ];
     NSString *uicache = nil;
-    for (NSString *p in kCandidatePaths) {
+    for (NSString *p in candidates) {
         if ([[NSFileManager defaultManager] fileExistsAtPath:p]) { uicache = p; break; }
     }
     if (uicache.length == 0) {
