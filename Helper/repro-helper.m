@@ -438,10 +438,8 @@ static void RPVHelperPrintUsage(void) {
 
 #pragma mark - 重启 / 用户空间重启 / uicache（v1.1.181 工具菜单）
 
-/// XPC 私有类型自前向声明，避免引入 xpc.h 的可用性告警；函数一律经 dlsym 取指针。
-typedef struct _xpc_connection_s *xpc_connection_t;
-typedef struct _xpc_object_s *xpc_object_t;
-typedef void (^xpc_handler_t)(xpc_object_t);
+/// XPC 类型（xpc_connection_t / xpc_object_t / xpc_handler_t）由 SDK 的 xpc/xpc.h 提供
+/// （经 Foundation 引入），此处不再重复定义；函数一律经 dlsym 取指针，避免链接期耦合。
 
 /// 重启设备（移植自 RebootTools/RebootRootHelper）。
 /// 必须在 root 下执行（本工具已是 setuid 4755），reboot(0) 一句即可。
