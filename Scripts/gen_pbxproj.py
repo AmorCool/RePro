@@ -26,7 +26,7 @@ OUTPUT = os.path.join(PROJECT_ROOT, "RePro.xcodeproj", "project.pbxproj")
 # ---------------------------------------------------------------------------
 TARGET_NAME = "ReSign"
 BUNDLE_ID = "com.reprovision.repro"
-MARKETING_VERSION = "1.1.164"
+MARKETING_VERSION = "1.1.165"
 CURRENT_PROJECT_VERSION = "57"
 DEPLOYMENT_TARGET = "16.0"
 BRIDGING_HEADER = "App/Sources/Bridge/ReSign-Bridging-Header.h"

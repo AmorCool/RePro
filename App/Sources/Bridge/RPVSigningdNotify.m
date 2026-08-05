@@ -37,7 +37,25 @@
         &_token,
         dispatch_get_main_queue(),
         ^(int unused) {
-            NSLog(@"[ReSign] 收到 repro-signingd 续签信号（daemon 后台拉起失败降级路径）→ 忽略，由 daemon 下个周期重试");
+            // 🔴 v1.1.165：不再忽略。根因：App 进程已存在时（用户打开过挂后台），daemon 的
+            // SBS 后台唤醒不会重走 didFinishLaunching → App 侧 isDaemonTriggeredResign
+            // 永不执行 → 续签静默失败（用户实测「触发了刷新但没自动续签」）。
+            // 这里作为【进程内触发路径】：检查 daemon 本轮写的 auto-resign-trigger 是否
+            // 新鲜（180s 窗口）。新鲜 → 通知 AppDelegate 走静默续签（AppDelegate 内部有
+            // 24h 冷却 + 防重入）；不新鲜（trigger 已被冷启动路径消费/删除）→ 忽略，
+            // 天然防双触发。
+            //
+            // ⚠️ v1.1.144 曾为避免「进前台就重签」的内存暴涨而整条砍掉本通道；现在触发源
+            // 是 daemon 周期（24h 冷却 + 每 5 分钟最多一轮），频率完全可控，不会重蹈覆辙。
+            NSDictionary *trigger = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/RePro/auto-resign-trigger"];
+            NSNumber *ts = trigger[@"timestamp"];
+            if (ts && [[NSDate date] timeIntervalSince1970] - [ts doubleValue] < 180.0) {
+                NSLog(@"[ReSign] daemon 续签信号 + trigger 新鲜 → 请求 AppDelegate 执行静默续签");
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"com.reprovision.daemon-request-resign"
+                                                                    object:nil];
+            } else {
+                NSLog(@"[ReSign] 收到 daemon 续签信号但 trigger 缺失/已过期（可能已被冷启动路径消费），忽略");
+            }
         });
 }
 

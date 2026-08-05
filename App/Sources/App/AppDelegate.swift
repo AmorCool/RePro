@@ -97,6 +97,30 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in self?.syncConfigSilent() }
+
+        // 🔴 v1.1.165：daemon 的【进程内触发路径】。App 进程已存在时（用户打开过挂后台），
+        // daemon 的 SBS 后台唤醒不重走 didFinishLaunching → isDaemonTriggeredResign 永不
+        // 执行 → 续签静默失败（用户实测「触发了刷新但没自动续签」）。RPVSigningdNotify
+        // 收到 daemon 的 schedule-resign 信号并确认 trigger 新鲜后发本通知，这里响应并执行
+        // 静默续签（与冷启动路径共用 startDaemonResign，内部有 24h 冷却 + banner）。
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("com.reprovision.daemon-request-resign"),
+            object: nil, queue: .main) { [weak self] _ in
+            self?.handleDaemonResignRequest()
+        }
+    }
+
+    /// v1.1.165：daemon 请求续签的进程内入口（App 已运行时）。
+    /// 冷启动路径（isDaemonTriggeredResign）已消费 trigger 后本入口不会被触发
+    /// （RPVSigningdNotify 检查 trigger 新鲜度），天然防双触发。
+    private func handleDaemonResignRequest() {
+        // 防重入：banner 显示中 = 已有续签在跑（冷启动拉起 / 用户手动重签）
+        guard !ResignProgress.shared.isResigning else {
+            LogManager.shared.info("已有续签进行中，忽略 daemon 的重复触发请求", source: "AppDelegate")
+            return
+        }
+        LogManager.shared.info("收到 daemon 进程内续签请求（App 已在运行）→ 执行静默续签", source: "AppDelegate")
+        startDaemonResign()
     }
 
     // MARK: - 静默续签（daemon 后台拉起，可能无 UI）
@@ -276,10 +300,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                              detail: "阈值内的到期应用已处理完毕",
                              elapsed: elapsed, trigger: "daemon-background-launch")
         case .failure(let e):
-            success = false
-            errorText = e.localizedDescription
-            LogManager.shared.warning("续签失败: \(errorText)", source: "AppDelegate")
-            writeResignReport(result: "failed", detail: errorText, elapsed: elapsed, trigger: "daemon-background-launch")
+            // v1.1.165：RPVErrorNoSigningRequired == 101（Vendor/ReProvision/Application
+            // Database/RPVErrors.h）不是失败——是所有应用剩余有效期都充足、无需重签。
+            // 旧版一律记 failed + 透传英文原文，用户误以为「续签失败」。
+            let isNoSigningRequired = (e as NSError).code == 101
+            success = isNoSigningRequired   // 视为成功（本次无需动作，冷却照常）
+            errorText = isNoSigningRequired ? "所有应用剩余有效期充足，无需重签" : e.localizedDescription
+            LogManager.shared.info(isNoSigningRequired
+                                   ? "续签检查完成：无需重签（所有应用剩余有效期充足）"
+                                   : "续签失败: \(errorText)",
+                                   source: "AppDelegate")
+            writeResignReport(result: isNoSigningRequired ? "skipped" : "failed",
+                             detail: errorText, elapsed: elapsed, trigger: "daemon-background-launch")
         }
 
         sendResignNotification(success: success, errorText: errorText)

@@ -917,9 +917,15 @@ static BOOL s_fire(void) {
     if (s_launchAppInBackground()) {
         s_log(@"触发续签 — 阈值 %ld 天（已唤醒 App）", (long)c.days);
     } else {
-        notify_post("com.reprovision.schedule-resign");
         s_log(@"触发续签 — 阈值 %ld 天（降级为 notify_post）", (long)c.days);
     }
+
+    // 🔴 v1.1.165：无论唤醒成败都 notify_post。根因：App 进程已存在时（用户打开过
+    // 挂后台），SBS 后台唤醒不会重走 didFinishLaunching → App 侧的 isDaemonTriggeredResign
+    // 永不执行 → 续签静默失败（用户实测「触发了刷新但没自动续签」）。
+    // 现在 notify 作为进程内触发通道：App 收到后检查本 trigger 文件的新鲜度（180s）决定
+    // 是否执行静默续签；冷启动路径已消费 trigger 时新鲜度检查自然失败，不会双触发。
+    notify_post("com.reprovision.schedule-resign");
     return YES;
 }
 
