@@ -16,17 +16,45 @@
     <key>RunAtLoad</key>
     <true/>
     <!-- v1.1.170：去掉 KeepAlive（iOS 17 launchd 会把它判为 inefficient 并 SIGKILL，
-         与 signingd v1.1.155 短命化同理）。改由 StartCalendarInterval 每 5 分钟
-         拉起一轮；App 触发时走 launchctl kickstart + notify，处理完即退出。
-         这样进程不会被「常驻低 IPC 守护」机制杀掉，泄漏也无累积机会。 -->
+         与 signingd v1.1.155 短命化同理）。
+         v1.1.171 更正：StartCalendarInterval{Minute:5} 的语义是「每小时的第 5 分钟」
+         而不是「每 5 分钟」。这里就是要每小时兜底跑一轮（清理过期/重复描述文件、
+         刷新清单），日常安装完全靠 App 的 launchctl kickstart + notify 即时触发，
+         daemon 处理完空闲 60 秒即自行退出，不常驻。 -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Minute</key>
         <integer>5</integer>
     </dict>
-    <!-- v1.1.170：与 signingd 对齐的短命化配套参数 -->
+    <!-- 🔴 v1.1.171：notify 事件唤醒（短命化守护进程的命脉）
+         守护进程处理完就退出，App 发 notify 时它多半是死的。此前只靠 App 侧
+         posix_spawn(/bin/launchctl kickstart) 拉起，但真机实测真实 rootfs 内
+         /bin 只有 df、ps，/sbin 只有 launchd —— 系统里根本没有 launchctl，
+         那条路径只在 jbroot 视角下成立，不可依赖。
+         改用 launchd 原生的 XPC 事件流：注册 notifyd 匹配后，只要有人
+         notify_post 这两个名字，launchd 就会自动把本 job 拉起来。 -->
+    <key>LaunchEvents</key>
+    <dict>
+        <key>com.apple.notifyd.matching</key>
+        <dict>
+            <key>com.reprovision.profile-install-request</key>
+            <dict>
+                <key>Notification</key>
+                <string>com.reprovision.profile-install-request</string>
+            </dict>
+            <key>com.reprovision.profile-manage-request</key>
+            <dict>
+                <key>Notification</key>
+                <string>com.reprovision.profile-manage-request</string>
+            </dict>
+        </dict>
+    </dict>
+    <!-- v1.1.170：与 signingd 对齐的短命化配套参数
+         v1.1.171：30 → 10。本 job 是「按需唤醒 + 空闲 60 秒自退」，正常退出后
+         很可能几秒内就被下一次签名再次唤醒；30 秒节流会让 App 干等，
+         10 秒既能挡住崩溃风暴，又不至于拖慢签名流程。 -->
     <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <integer>10</integer>
     <key>ProcessType</key>
     <string>Background</string>
     <key>MemoryLimit</key>

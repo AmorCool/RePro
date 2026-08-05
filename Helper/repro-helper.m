@@ -32,6 +32,13 @@
 #include <string.h>
 #include <stdlib.h>
 
+// 系统描述文件库的命名/去重/清单/删除，与 repro-profiledaemon 共用同一份实现。
+// v1.1.171：helper 过去用「描述文件内容 SHA1」当文件名，每次重签内容都变 → 每次都新增
+// 一份 → 同一个 application-identifier 在库里堆几十上百份，profiled 挑中旧的那份去校验
+// 新签的 App → installd 报 0xe8008015、App 秒退（实测一台设备堆到 163 份只对应 3 个 App）。
+// 改用 sha1(application-identifier) 稳定名覆盖写，并在安装后跑一次去重清理，从源头杜绝堆积。
+#import "RPVProfileStore.h"
+
 #pragma mark - 日志
 
 /// v1.1.126：fix-cellular 命令开启 gHelperSilent 后全部静默（用户要求隐藏修复联网日志）。
@@ -94,76 +101,21 @@ static int RPVHelperCopyFile(NSString *srcPath, NSString *dstPath) {
 #pragma mark - 刷新 profiled
 
 /// 让 profiled 立刻重新扫描 /var/Managed Preferences/mobile/ 库。
-/// 优先用 killall（若存在）；RootHide 等没有 killall 的环境回退到 sysctl 枚举进程，
-/// 直接给 profiled 发 SIGHUP（纯系统调用，不依赖任何外部二进制，root 进程可用）。
+/// v1.1.171：不再找 killall——真实 rootfs（RootHide 的 /rootfs）里根本没有这个二进制，
+/// killall 只存在于 jbroot，helper 若脱离 overlay 就永远命中不到。统一走 RPVPSNudgeProfiled：
+/// sysctl(KERN_PROC_ALL) 枚举进程后直接 kill(pid, SIGHUP)，纯系统调用、零外部依赖。
 /// 发送后短暂等待，给 profiled 完成重新加载的时间。
 static void RPVHelperRefreshProfiled(void) {
-    // 1) 优先 killall（部分环境提供）
-    static const char *killallCandidates[] = {
-        "/var/jb/usr/bin/killall",
-        "/var/jb/bin/killall",
-        "/usr/bin/killall",
-        "/usr/local/bin/killall",
-        NULL
-    };
-    const char *killallPath = NULL;
-    for (int i = 0; killallCandidates[i]; i++) {
-        if (access(killallCandidates[i], X_OK) == 0) {
-            killallPath = killallCandidates[i];
-            break;
-        }
-    }
-    if (killallPath) {
-        pid_t pid = 0;
-        char *const kaArgv[] = { (char *)killallPath, (char *)"-HUP", (char *)"profiled", NULL };
-        if (posix_spawn(&pid, killallPath, NULL, NULL, kaArgv, NULL) == 0 && pid > 0) {
-            int status = 0;
-            waitpid(pid, &status, 0);
-        }
-        RPVHelperLog(@"已通过 killall 发送 SIGHUP 给 profiled");
-        usleep(400000);
-        return;
-    }
-
-    // 2) 回退：sysctl(KERN_PROC_ALL) 枚举，直接给名为 profiled 的进程发 SIGHUP
-    int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
-    size_t size = 0;
-    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0) {
-        RPVHelperLog(@"profiled 刷新失败：sysctl 取进程表大小失败");
-        return;
-    }
-    struct kinfo_proc *procs = malloc(size);
-    if (!procs) {
-        RPVHelperLog(@"profiled 刷新失败：无法分配内存");
-        return;
-    }
-    if (sysctl(mib, 3, procs, &size, NULL, 0) != 0) {
-        RPVHelperLog(@"profiled 刷新失败：sysctl 取进程表失败");
-        free(procs);
-        return;
-    }
-    int count = (int)(size / sizeof(struct kinfo_proc));
-    int signalled = 0;
-    for (int i = 0; i < count; i++) {
-        if (strcmp(procs[i].kp_proc.p_comm, "profiled") == 0) {
-            pid_t pid = procs[i].kp_proc.p_pid;
-            if (pid > 0 && kill(pid, SIGHUP) == 0) {
-                signalled++;
-            }
-        }
-    }
-    free(procs);
-    if (signalled > 0) {
-        RPVHelperLog(@"已通过 sysctl 向 %d 个 profiled 进程发送 SIGHUP", signalled);
-    } else {
-        RPVHelperLog(@"警告：未找到 profiled 进程，无法发送 SIGHUP（描述文件已写入，但 profiled 可能未加载）");
-    }
+    RPVPSNudgeProfiled();
     usleep(400000);
 }
 
 #pragma mark - 写描述文件到指定目录
 
-/// 把 profile 写到 dir/<sha1>.mobileprovision（dir 不存在则创建），返回是否成功。
+/// 把 profile 写到 dir/<稳定名>.mobileprovision（dir 不存在则创建），返回是否成功。
+/// v1.1.171：文件名改成按 application-identifier 派生的稳定名后，同一个 App 每次重签都是
+/// **同一个文件名**，因此这里必须「先删后写」覆盖旧内容——原来的 `if (!fileExists)` 会把
+/// 新签的描述文件直接丢掉，留下过期的旧内容，照样 0xe8008015。
 static BOOL RPVHelperWriteProfileToDir(NSData *data, NSString *fileName, NSString *dir, NSString *profilePath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSError *error = nil;
@@ -175,34 +127,19 @@ static BOOL RPVHelperWriteProfileToDir(NSData *data, NSString *fileName, NSStrin
         }
     }
     NSString *dest = [dir stringByAppendingPathComponent:fileName];
-    if (![fm fileExistsAtPath:dest]) {
-        if (![fm copyItemAtPath:profilePath toPath:dest error:&error]) {
-            RPVHelperLog(@"描述文件复制失败 %@: %@", dest, error);
-            return NO;
-        }
-        [fm setAttributes:@{NSFilePosixPermissions          : @(0644),
-                            NSFileOwnerAccountName          : @"root",
-                            NSFileGroupOwnerAccountName     : @"wheel"}
-                 ofItemAtPath:dest
-                        error:nil];
+    if ([fm fileExistsAtPath:dest]) {
+        [fm removeItemAtPath:dest error:nil];
     }
+    if (![fm copyItemAtPath:profilePath toPath:dest error:&error]) {
+        RPVHelperLog(@"描述文件复制失败 %@: %@", dest, error);
+        return NO;
+    }
+    [fm setAttributes:@{NSFilePosixPermissions          : @(0644),
+                        NSFileOwnerAccountName          : @"root",
+                        NSFileGroupOwnerAccountName     : @"wheel"}
+             ofItemAtPath:dest
+                    error:nil];
     return YES;
-}
-
-/// 解析本 helper 所在 jbroot 的物理真实目录下的 profile 库路径。
-/// helper 自身路径形如 /var/containers/Bundle/Application/.jbroot-XXXX/usr/libexec/repro-helper，
-/// 去掉末尾 /usr/libexec/repro-helper 即得 jbroot 根，拼 var/Managed Preferences/mobile。
-/// 在 RootHide 下 profiled 读的是「jbroot 内的这份」（被 overlay 重定向），
-/// 而本 helper 若因 entitlement 脱离了 overlay、写的是真实 /var/Managed Preferences/mobile/，
-/// 两者就不一致；双写 jbroot 物理目录即可命中 profiled 实际读取的位置。
-static NSString *RPVHelperJbrootProfileDir(void) {
-    NSArray *args = [[NSProcessInfo processInfo] arguments];
-    NSString *argv0 = args.count ? args[0] : @"";
-    NSString *p = [argv0 stringByDeletingLastPathComponent]; // .../usr/libexec
-    p = [p stringByDeletingLastPathComponent];               // .../usr
-    p = [p stringByDeletingLastPathComponent];               // .../.jbroot-XXXX
-    if (p.length == 0) return nil;
-    return [p stringByAppendingPathComponent:@"var/Managed Preferences/mobile"];
 }
 
 #pragma mark - install-profile
@@ -222,33 +159,32 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
         return 4;
     }
 
-    // 用内容 SHA1 做文件名，保证同一份 profile 不会重复堆积。
-    // profiled/MIS 会把库里每个 *.mobileprovision 都解析一遍，文件名本身无所谓。
-    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
-    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
-        [hex appendFormat:@"%02x", digest[i]];
+    // 文件名 = sha1(application-identifier)，同一个 App 无论重签多少次都落到同一个文件名，
+    // 直接覆盖旧内容 → 库里每个 App ID 永远只有一份。解析不出 App ID 时（理论上不会）
+    // 退回内容 SHA1，至少保证能写进去。
+    NSString *appId = RPVPSAppIdOfPlist(RPVPSPlistOfData(data));
+    NSString *fileName = RPVPSStableNameForData(data);
+    if (fileName.length == 0) {
+        RPVHelperLog(@"警告：解析不出 application-identifier，回退用内容 SHA1 命名");
+        fileName = [RPVPSSha1OfData(data) stringByAppendingPathExtension:@"mobileprovision"];
     }
-    NSString *fileName = [hex stringByAppendingPathExtension:@"mobileprovision"];
+    if (fileName.length == 0) {
+        RPVHelperLog(@"描述文件命名失败");
+        return 4;
+    }
 
-    // 双写两个视图，覆盖 RootHide 下 helper 与 profiled 命名空间不一致的问题：
-    //  - 视图A：本进程看到的 /var/Managed Preferences/mobile/（若 helper 因 entitlement
-    //    脱离了 overlay，这就是真实 rootfs；若仍在 overlay，则底层是 jbroot 内）
-    //  - 视图B：helper 所在 jbroot 的物理真实目录下的同名路径（profiled 在 RootHide 下
-    //    被 overlay 重定向，读的就是 jbroot 内的这份）—— 双写 B 即可命中 profiled 实际读取位置。
-    NSString *directory = @"/var/Managed Preferences/mobile";
+    // v1.1.171：删掉过去的「双写 jbroot 物理视图」。
+    //  - rootless/rootful 下 jbroot 解析结果本来就等于同一个目录，纯属重复写；
+    //  - RootHide 下 profiled 实际读的是真实 rootfs 那份（这也是为什么后来引入了
+    //    rootfs LaunchDaemon repro-profiledaemon 来接管注册），jbroot 里那份既不生效、
+    //    又会变成第二个堆积点（实测设备 jbroot 目录里囤了 8 份没人用的旧描述文件）。
+    NSString *directory = RPVPSManagedPrefsDir;
     NSString *destination = [directory stringByAppendingPathComponent:fileName];
-    NSString *jbrootDir = RPVHelperJbrootProfileDir();
-    NSString *jbrootDest = jbrootDir ? [jbrootDir stringByAppendingPathComponent:fileName] : nil;
 
     NSFileManager *fileManager = [NSFileManager defaultManager];
 
     BOOL okMain = RPVHelperWriteProfileToDir(data, fileName, directory, profilePath);
-    BOOL okJbroot = jbrootDest ? RPVHelperWriteProfileToDir(data, fileName, jbrootDir, profilePath) : NO;
-    RPVHelperLog(@"写入视图A(/var/Managed Preferences/mobile): %@；写入视图B(jbroot 物理): %@",
-                 okMain ? @"成功" : @"失败",
-                 jbrootDest ? (okJbroot ? @"成功" : @"失败") : @"跳过(无法解析 jbroot)");
+    RPVHelperLog(@"写入 %@（App ID: %@）：%@", destination, appId ?: @"(未知)", okMain ? @"成功" : @"失败");
 
     // 注意：RootHide 下描述文件的主注册已由 App 进程自身经 MCProfileConnection 完成
     // （App 带 profiled-access，以 mobile 身份调 MC 落【本地库】，与能正常工作的 test2源码
@@ -256,41 +192,35 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
     // 本 helper 不再自己调 MC：早期版本让 root+no-sandbox 的 helper 调 MC，结果同一份
     //  profile 被注册进 managed(MSM) 库（installd 不认）→ 0xe8008015；且 managed 注册会
     //  覆盖 App 在本地库的注册，反而把 installd 能读到的副本抹掉。故 helper 只做文件兜底层。
-    // 兜底：把 profile 文件写入真实 /var/Managed Preferences/mobile 并踢一下 profiled，
-    // 覆盖「某些 RootHide 版本把 App 的 MC XPC 也重定向到 overlay」的边界情况。
 
-    // 踢一下 profiled 让它立刻重新扫描（优先 killall，RootHide 无 killall 时回退 sysctl 直发 SIGHUP）。
+    // 安装后立刻去重：删掉过期/损坏的，以及同一个 App ID 的历史重复份
+    //（老版本留下的内容 SHA1 命名文件就是在这一步被清掉的）。
+    // 只处理 *.mobileprovision，系统自带的 com.apple.*.plist 一律不碰。
+    NSString *cleanupSummary = RPVPSCleanup();
+    if (cleanupSummary.length > 0) {
+        RPVHelperLog(@"描述文件库清理：%@", cleanupSummary);
+    }
+
+    // 踢一下 profiled 让它立刻重新扫描（sysctl 枚举后直发 SIGHUP，不依赖任何外部二进制）。
     RPVHelperRefreshProfiled();
 
-    // 取证诊断：列出两个视图的目录内 profile 数，确认是否写入成功
-    // （若两视图都写入成功但 installd 仍报 0xe8008015，则说明 profiled 读的是第三处路径，
-    //  需改为 root LaunchDaemon 注册）。
+    // 取证诊断：清理后目录里还剩多少份，以及本文件是否确实在位。
     NSError *lsErr = nil;
-    NSArray *existingA = [fileManager contentsOfDirectoryAtPath:directory error:&lsErr];
+    NSArray *existing = [fileManager contentsOfDirectoryAtPath:directory error:&lsErr];
     if (lsErr) {
-        RPVHelperLog(@"读取视图A目录失败 %@: %@", directory, lsErr);
+        RPVHelperLog(@"读取描述文件目录失败 %@: %@", directory, lsErr);
     } else {
-        RPVHelperLog(@"视图A 目录现有 %lu 个描述文件；本文件已写入：%@",
-                     (unsigned long)existingA.count,
+        NSUInteger profileCount = 0;
+        for (NSString *n in existing) {
+            if ([n.pathExtension isEqualToString:@"mobileprovision"]) profileCount++;
+        }
+        RPVHelperLog(@"清理后目录现有 %lu 份描述文件；本文件在位：%@",
+                     (unsigned long)profileCount,
                      [fileManager fileExistsAtPath:destination] ? @"是" : @"否");
     }
-    if (jbrootDest) {
-        NSError *lsErrB = nil;
-        NSArray *existingB = [fileManager contentsOfDirectoryAtPath:jbrootDir error:&lsErrB];
-        if (lsErrB) {
-            RPVHelperLog(@"读取视图B目录失败 %@: %@", jbrootDir, lsErrB);
-        } else {
-            RPVHelperLog(@"视图B 目录现有 %lu 个描述文件；本文件已写入：%@",
-                         (unsigned long)existingB.count,
-                         [fileManager fileExistsAtPath:jbrootDest] ? @"是" : @"否");
-        }
-    }
 
-    RPVHelperLog(@"描述文件已安装（视图A: %@ 视图B: %@）",
-                 destination, jbrootDest ? jbrootDest : @"(无)");
-
-    // 文件写入任一视图成功即视为兜底成功（主注册已由 App 完成）。
-    if (okMain || okJbroot) {
+    if (okMain) {
+        RPVHelperLog(@"描述文件已安装：%@", destination);
         return 0;
     }
     RPVHelperLog(@"警告：文件写入失败，描述文件未能注册（App MC 也未成功时请检查 App 日志）");
@@ -406,6 +336,77 @@ static int RPVHelperFixCellular(NSString *selfBid) {
     return 0;
 }
 
+#pragma mark - 描述文件管理（App「管理描述文件」界面用）
+
+/// v1.1.171：rootless / rootful 下没有 repro-profiledaemon（它只在 RootHide 包里装），
+/// App 的「管理描述文件」界面不能只靠 daemon IPC，否则这两套包上界面永远转圈。
+/// 这三个子命令让 App 直接同步拉起 setuid root 的 helper 完成同样的事——
+/// 逻辑与 daemon 完全一致（都调 RPVProfileStore.h 里的同一份实现），不会出现行为分歧。
+
+/// 结果文件路径与 daemon 用的是同一个，App 侧读取逻辑因此完全一致，不必分两套。
+static NSString *const kRPVHelperManageResultPath =
+    @"/var/mobile/Library/RePro/profile-manage-result";
+
+/// 把一次管理操作的结果串写给 App（root 写出的文件要 chown 回 mobile，App 才好读/删）。
+static void RPVHelperWriteManageResult(NSString *summary) {
+    if (summary.length == 0) summary = @"无操作";
+    NSString *dir = [kRPVHelperManageResultPath stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                             withIntermediateDirectories:YES attributes:nil error:nil];
+    [summary writeToFile:kRPVHelperManageResultPath atomically:YES
+                encoding:NSUTF8StringEncoding error:nil];
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions : @(0644),
+                                                    NSFileOwnerAccountID   : @(501),
+                                                    NSFileGroupOwnerAccountID : @(501)}
+                                     ofItemAtPath:kRPVHelperManageResultPath
+                                            error:nil];
+}
+
+/// 导出描述文件库清单到 outPath（plist）。
+static int RPVHelperProfilesInventory(NSString *outPath) {
+    if (outPath.length == 0) {
+        RPVHelperLog(@"profiles-inventory 缺少输出路径");
+        return 2;
+    }
+    NSUInteger n = RPVPSWriteInventory(outPath);
+    RPVHelperLog(@"profiles-inventory: 已导出 %lu 项 → %@", (unsigned long)n, outPath);
+    return 0;
+}
+
+/// 去重清理：删过期/损坏的，以及同一 application-identifier 的历史重复份。
+static int RPVHelperProfilesCleanup(void) {
+    NSString *summary = RPVPSCleanup();
+    RPVHelperLog(@"profiles-cleanup: %@", summary.length ? summary : @"无可清理项");
+    RPVHelperWriteManageResult(summary);
+    RPVHelperRefreshProfiled();
+    return 0;
+}
+
+/// 按文件名删除。listPath 是一个文本文件，每行一个文件名（不含路径）。
+/// 文件名合法性由 RPVPSDeleteNames 统一校验（不含 /、非 . 开头、必须 .mobileprovision 后缀），
+/// 防路径穿越，也保证系统自带的 com.apple.*.plist 绝不会被误删。
+static int RPVHelperProfilesDelete(NSString *listPath) {
+    if (listPath.length == 0) {
+        RPVHelperLog(@"profiles-delete 缺少清单路径");
+        return 2;
+    }
+    NSString *content = [NSString stringWithContentsOfFile:listPath encoding:NSUTF8StringEncoding error:nil];
+    if (content.length == 0) {
+        RPVHelperLog(@"profiles-delete 清单为空: %@", listPath);
+        return 3;
+    }
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSString *line in [content componentsSeparatedByString:@"\n"]) {
+        NSString *t = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (t.length > 0) [names addObject:t];
+    }
+    NSString *summary = RPVPSDeleteNames(names);
+    RPVHelperLog(@"profiles-delete: %@", summary.length ? summary : @"无操作");
+    RPVHelperWriteManageResult(summary);
+    RPVHelperRefreshProfiled();
+    return 0;
+}
+
 #pragma mark - 入口
 
 static void RPVHelperPrintUsage(void) {
@@ -414,7 +415,10 @@ static void RPVHelperPrintUsage(void) {
             "用法:\n"
             "  repro-helper copy <源路径> <目标路径>\n"
             "  repro-helper install-profile <描述文件路径>\n"
-            "  repro-helper fix-cellular <当前插件 bundle id>\n");
+            "  repro-helper fix-cellular <当前插件 bundle id>\n"
+            "  repro-helper profiles-inventory <输出 plist 路径>\n"
+            "  repro-helper profiles-cleanup\n"
+            "  repro-helper profiles-delete <文件名清单路径，每行一个>\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -458,6 +462,31 @@ int main(int argc, char *argv[]) {
                 return 64;
             }
             return RPVHelperInstallProvisioningProfile([NSString stringWithUTF8String:argv[2]]);
+        }
+
+        // 描述文件管理三件套（App「设置 → 管理描述文件」界面在 rootless/rootful 下走这里）
+        if ([command isEqualToString:@"profiles-inventory"]) {
+            if (argc != 3) {
+                RPVHelperPrintUsage();
+                return 64;
+            }
+            return RPVHelperProfilesInventory([NSString stringWithUTF8String:argv[2]]);
+        }
+
+        if ([command isEqualToString:@"profiles-cleanup"]) {
+            if (argc != 2) {
+                RPVHelperPrintUsage();
+                return 64;
+            }
+            return RPVHelperProfilesCleanup();
+        }
+
+        if ([command isEqualToString:@"profiles-delete"]) {
+            if (argc != 3) {
+                RPVHelperPrintUsage();
+                return 64;
+            }
+            return RPVHelperProfilesDelete([NSString stringWithUTF8String:argv[2]]);
         }
 
         // fix-cellular = App「设置」里「修复当前插件联网」手动入口（仅手动，无 daemon 自动循环）。

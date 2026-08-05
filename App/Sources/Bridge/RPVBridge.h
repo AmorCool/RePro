@@ -256,6 +256,25 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 /// 返回 YES 表示成功找到并发送了信号。
 - (BOOL)respring;
 
+#pragma mark 系统描述文件管理（v1.1.171）
+
+/// 读取 repro-profiledaemon 导出的系统描述文件清单快照。
+/// 清单来自真实的 /var/Managed Preferences/mobile（App 是 uid 501 且受沙盒约束，
+/// 不能直接列举该目录，统一由 root daemon 导出 plist）。
+/// 每项键：fileName / appId / displayName / uuid / sizeBytes /
+///        isStableName / parsed / creationDate / expirationDate / modifiedDate。
++ (NSArray<NSDictionary<NSString *, id> *> *)managedProfilesInventory;
+
+/// 让 daemon 重新导出一次清单（不做任何删除）。返回 YES 表示清单已刷新。
++ (BOOL)refreshManagedProfilesInventory;
+
+/// 请求 daemon 清理系统描述文件：删除已过期/损坏的，并按 application-identifier
+/// 去重（同一个 App 只保留最新一份）。返回 daemon 回写的结果描述，失败返回 nil。
++ (nullable NSString *)requestManagedProfileCleanup;
+
+/// 请求 daemon 删除指定文件名的描述文件（只接受纯文件名，daemon 侧会再校验一次）。
++ (nullable NSString *)requestManagedProfileDeletion:(NSArray<NSString *> *)fileNames;
+
 #pragma mark root helper 注入点
 
 /// 注册需要 root 权限的两个回调（写系统描述文件、跨沙箱复制文件）。

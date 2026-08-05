@@ -463,6 +463,19 @@ struct SettingsView: View {
             }
             .disabled(!account.isSignedIn)
 
+            // 描述文件管理（v1.1.171）：不依赖登录状态，清单由 root 守护进程从
+            // 真实 rootfs 的 /var/Managed Preferences/mobile 导出
+            NavigationLink(destination: ProfilesView()) {
+                HStack {
+                    Image(systemName: "doc.badge.gearshape")
+                    Text("管理描述文件")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Button {
                 showingRespringAlert = true
             } label: {
@@ -479,7 +492,7 @@ struct SettingsView: View {
         } header: {
             Text("系统操作")
         } footer: {
-            Text("证书管理可查看和撤销 Apple 开发者账号下的签名证书。免费账号最多 2 个活跃证书，超出后签名会失败。")
+            Text("证书管理可查看和撤销 Apple 开发者账号下的签名证书。免费账号最多 2 个活跃证书，超出后签名会失败。\n描述文件管理可清理系统里堆积的重复/过期描述文件——同一个 App ID 存在多份时，系统可能挑中旧的那份去校验新签名的应用，导致应用秒退（0xe8008015）。")
         }
     }
 
