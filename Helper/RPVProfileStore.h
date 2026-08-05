@@ -36,6 +36,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <dlfcn.h>
+#include <objc/runtime.h>
 
 static inline void RPVPSLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 static inline void RPVPSLog(NSString *fmt, ...) {
@@ -164,6 +166,66 @@ static inline NSString *RPVPSAppIdOfPlist(NSDictionary *plist) {
     if (![ent isKindOfClass:[NSDictionary class]]) return nil;
     id ai = ((NSDictionary *)ent)[@"application-identifier"];
     return [ai isKindOfClass:[NSString class]] ? ai : nil;
+}
+
+/// 取 profile 自身的 UUID（系统信任库中用于注销的标识，区别于 application-identifier）。
+/// 删除前必须先读出来：文件删掉就取不到了。
+static inline NSString *RPVPSUuidOfPlist(NSDictionary *plist) {
+    if (![plist isKindOfClass:[NSDictionary class]]) return nil;
+    id u = plist[@"UUID"];
+    return [u isKindOfClass:[NSString class]] ? u : nil;
+}
+
+#pragma mark - 系统级注销（MCProfileConnection 删除，与安装注册对称）
+
+/// 通过 ManagedConfiguration 框架的 MCProfileConnection 按 UUID 系统级注销一个已安装 profile。
+/// 对应安装时 daemon 里 installProvisioningProfileData:managingProfileIdentifier:outError: 的注册动作。
+/// 仅删文件 + SIGHUP profiled 不会让 iOS 17 的 profiled 从内存信任库真正移除该项
+/// （表现为：爱思仍显示、目标 App 仍能打开），必须走这条系统级注销路径才能彻底失效。
+/// 返回 YES 表示注销成功（或至少已发出系统级删除请求）。
+static inline BOOL RPVPSRevokeProfileViaMC(NSString *uuid) {
+    if (uuid.length == 0) { RPVPSLog(@"MC 注销跳过：UUID 为空"); return NO; }
+    dlopen("/System/Library/PrivateFrameworks/ManagedConfiguration.framework/ManagedConfiguration", RTLD_LAZY);
+    Class mcClass = objc_getClass("MCProfileConnection");
+    if (!mcClass) {
+        RPVPSLog(@"MCProfileConnection 不可用，无法系统级注销（文件已删 + profiled 重扫兜底）");
+        return NO;
+    }
+    id connection = [(id)mcClass performSelector:@selector(sharedConnection)];
+    if (!connection) { RPVPSLog(@"MCProfileConnection sharedConnection 为空"); return NO; }
+
+    // 候选删除方法名（不同 iOS 版本命名略有差异，逐个试探 respondsToSelector）。
+    NSArray<NSString *> *candidates = @[
+        @"removeProvisioningProfileWithIdentifier:outError:",
+        @"removeProfileWithIdentifier:outError:",
+        @"deleteProvisioningProfileWithIdentifier:outError:",
+        @"removeProvisioningProfileWithIdentifier:",
+    ];
+    for (NSString *name in candidates) {
+        SEL sel = NSSelectorFromString(name);
+        if (![connection respondsToSelector:sel]) continue;
+        NSMethodSignature *sig = [connection methodSignatureForSelector:sel];
+        if (!sig) continue;
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setTarget:connection];
+        [inv setSelector:sel];
+        [inv setArgument:&uuid atIndex:2];  // 第 1 个实参（index 0/1 是 self/cmd）
+        NSError *__autoreleasing err = nil;
+        NSError *__autoreleasing *errPtr = &err;
+        if (sig.numberOfArguments > 3) [inv setArgument:&errPtr atIndex:3];
+        BOOL ret = NO;
+        @try {
+            [inv invoke];
+            if (sig.methodReturnLength == sizeof(BOOL)) [inv getReturnValue:&ret];
+            RPVPSLog(@"MC 注销(%@) → 返回 %d，错误：%@", name, ret, err ?: @"无");
+        } @catch (NSException *e) {
+            RPVPSLog(@"MC 注销(%@) 抛异常：%@", name, e);
+            continue;  // 试下一个候选
+        }
+        return ret;
+    }
+    RPVPSLog(@"MCProfileConnection 无可用删除方法（已尝试 %lu 个候选）", (unsigned long)candidates.count);
+    return NO;
 }
 
 static inline NSDate *RPVPSDateOfPlist(NSDictionary *plist, NSString *key) {
@@ -390,6 +452,7 @@ static inline NSString *RPVPSDeleteNames(NSArray<NSString *> *fileNames) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSUInteger removed = 0, skipped = 0;
 
+    NSMutableArray<NSString *> *revokeUUIDs = [NSMutableArray array];
     for (NSString *raw in fileNames) {
         if (![raw isKindOfClass:[NSString class]]) { skipped++; continue; }
         NSString *fn = [raw stringByTrimmingCharactersInSet:
@@ -403,10 +466,20 @@ static inline NSString *RPVPSDeleteNames(NSArray<NSString *> *fileNames) {
         // 每个目标目录都尝试删一次（两个目录都删干净，避免残留副本）
         for (NSString *dir in RPVPSManagedPrefsDirs()) {
             NSString *path = [dir stringByAppendingPathComponent:fn];
-            if ([fm fileExistsAtPath:path] && [fm removeItemAtPath:path error:nil]) removed++;
+            if ([fm fileExistsAtPath:path]) {
+                // 删除前先提取 UUID，用于随后系统级注销（删了就取不到了）
+                NSData *data = [NSData dataWithContentsOfFile:path];
+                NSString *uuid = RPVPSUuidOfPlist(RPVPSPlistOfData(data));
+                if (uuid.length) [revokeUUIDs addObject:uuid];
+                if ([fm removeItemAtPath:path error:nil]) removed++;
+            }
         }
         if (removed == 0) skipped++;
     }
+
+    // 系统级注销：仅删文件 + SIGHUP profiled 不会让 iOS 17 的 profiled 从内存信任库真正
+    // 移除（表现为爱思仍显示、目标 App 仍能打开），必须按 UUID 调 MCProfileConnection 删除。
+    for (NSString *uuid in revokeUUIDs) RPVPSRevokeProfileViaMC(uuid);
 
     return [NSString stringWithFormat:@"OK: 已删除 %lu 个描述文件%@",
             (unsigned long)removed,
