@@ -17,14 +17,14 @@
     <true/>
     <!-- v1.1.170：去掉 KeepAlive（iOS 17 launchd 会把它判为 inefficient 并 SIGKILL，
          与 signingd v1.1.155 短命化同理）。
-         v1.1.171 更正：StartCalendarInterval{Minute:5} 的语义是「每小时的第 5 分钟」
-         而不是「每 5 分钟」。这里就是要每小时兜底跑一轮（清理过期/重复描述文件、
-         刷新清单），日常安装完全靠 App 的 launchctl kickstart + notify 即时触发，
-         daemon 处理完空闲 60 秒即自行退出，不常驻。 -->
+         v1.1.171 更正：StartCalendarInterval{Minute:N} 的语义是「每小时的第 N 分钟」
+         而不是「每 N 分钟」。v1.1.178 改为 Minute:0，即「每小时第 0 分钟」兜底跑一轮
+         （清理过期/重复描述文件、刷新清单），约每小时一次，而非每 5 分钟。
+         日常安装完全靠 App 的 notify 即时触发，daemon 处理完空闲 60 秒即自行退出，不常驻。 -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Minute</key>
-        <integer>5</integer>
+        <integer>0</integer>
     </dict>
     <!-- 🔴 v1.1.171：notify 事件唤醒（短命化守护进程的命脉）
          守护进程处理完就退出，App 发 notify 时它多半是死的。此前只靠 App 侧

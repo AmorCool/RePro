@@ -32,10 +32,13 @@
 #import <CommonCrypto/CommonDigest.h>
 #include <sys/sysctl.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <time.h>
 #include <dlfcn.h>
 #include <objc/runtime.h>
 
@@ -297,8 +300,32 @@ static inline int RPVPSSignalProcessesNamed(const char *name, int sig) {
 }
 
 static inline void RPVPSNudgeProfiled(void) {
+    // v1.1.178 修复：此前每个 App 安装完成后都向 profiled 发 SIGHUP，会触发整机信任库
+    // 全量重建雪崩（一次 daemon 运行内装 N 个 App = N 次整机信任库重建，正是用户感知的
+    // 「过一段时间就卡、发热」的直接成因）。profiled 本身会监视 /var/Managed Preferences/mobile
+    // 目录（FSEvents / notifyd），新建/覆盖描述文件后它最终会自行重新扫描，因此无需每次都 SIGHUP。
+    // 用标记文件 mtime 做「跨进程 60s 冷却去重」：同一时间窗口内只真正发送一次 SIGHUP，
+    // 把一次安装潮合并成一次重建。daemon/helper 每次运行都是独立进程，static 变量无法跨进程
+    // 共享，故用文件标记（位于共享 IPC 目录 /var/mobile/Library/RePro/，root 可写）。
+    // 若标记文件不可写则优雅降级为「仍发送」（最坏回到旧行为），不会阻塞主流程。
+    static const char *kNudgeStamp = "/var/mobile/Library/RePro/.last-profiled-nudge";
+    time_t now = time(NULL);
+    struct stat st;
+    if (stat(kNudgeStamp, &st) == 0 && (now - st.st_mtime) < 60) {
+        RPVPSLog(@"SIGHUP 冷却中（距上次 %lds < 60s），跳过本次 profiled 通知", (long)(now - st.st_mtime));
+        return;
+    }
+    // 更新冷却标记：创建/写入文件使 mtime = now（profiled 未运行也不影响冷却判断）
+    int fd = open(kNudgeStamp, O_WRONLY | O_CREAT, 0644);
+    if (fd >= 0) {
+        close(fd);
+        struct timeval tv[2];
+        tv[0].tv_sec = now; tv[0].tv_usec = 0;
+        tv[1].tv_sec = now; tv[1].tv_usec = 0;
+        utimes(kNudgeStamp, tv);
+    }
     int n = RPVPSSignalProcessesNamed("profiled", SIGHUP);
-    RPVPSLog(@"已向 %d 个 profiled 发送 SIGHUP（0 表示当时未运行，它下次启动会自行扫描）", n);
+    RPVPSLog(@"已向 %d 个 profiled 发送 SIGHUP（60s 冷却去重后；0 表示当时未运行，下次启动自行扫描）", n);
 }
 
 #pragma mark - 清理（过期 + 按 App ID 去重）

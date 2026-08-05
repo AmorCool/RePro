@@ -10,7 +10,7 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
-	<!-- v1.1.155 短命化：去掉 KeepAlive，改由 StartCalendarInterval 每 5 分钟拉起一次。
+	<!-- v1.1.155 短命化：去掉 KeepAlive，改由 StartCalendarInterval 每小时（第 0 分钟）拉起一次。
 	     根因（SSH 实测）：iOS 17 launchd 的 efficiency 管理会对「长驻但 IPC 稀疏」的
 	     守护进程判 immediate reason=inefficient 并 SIGKILL(-9)；KeepAlive=true 会造成
 	     「被杀→立刻拉起→再被杀」风暴（实测 daemon 活不过 5 秒，自动续签调度瘫痪；
@@ -21,7 +21,7 @@
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Minute</key>
-		<integer>5</integer>
+		<integer>0</integer>
 	</dict>
 	<!-- v1.1.150 方案B：崩溃后至少间隔 30 秒才允许再次拉起。
 	     防「崩溃→立即拉起→再崩溃」循环反复执行 launchd 注入逻辑
