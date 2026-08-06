@@ -231,6 +231,27 @@ jobs:
             Vendor/ReProvision/libProvision/libplist/Uid.cpp
           )
 
+          # 🔴 v2.1.0 fix10: ChOma 源码（EEBackend 的 fat_*/csd_* 签名描述符号）
+          SRC_CHOMA=(
+            Vendor/ChOma/arm64.c
+            Vendor/ChOma/Base64.c
+            Vendor/ChOma/BufferedStream.c
+            Vendor/ChOma/CodeDirectory.c
+            Vendor/ChOma/CSBlob.c
+            Vendor/ChOma/DER.c
+            Vendor/ChOma/DyldSharedCache.c
+            Vendor/ChOma/Entitlements.c
+            Vendor/ChOma/Fat.c
+            Vendor/ChOma/FileStream.c
+            Vendor/ChOma/Host.c
+            Vendor/ChOma/MachO.c
+            Vendor/ChOma/MachOLoadCommand.c
+            Vendor/ChOma/MemoryStream.c
+            Vendor/ChOma/PatchFinder.c
+            Vendor/ChOma/PatchFinder_arm64.c
+            Vendor/ChOma/Util.c
+          )
+
           INC_DIRS=(
             -IVendor/ReProvision
             -IVendor/ReProvision/libProvision
@@ -257,12 +278,13 @@ jobs:
             -fobjc-arc \
             -arch arm64 -miphoneos-version-min=15.0 \
             -O2 \
-            -framework Foundation -framework CoreFoundation \
+            -framework Foundation -framework CoreFoundation -framework Security \
             "${INC_DIRS[@]}" \
             "-L${OPENSSL_DIR}/lib" -lssl -lcrypto -lc++ -lobjc \
             -o build/repro-signingd \
             "${SRC_OBJC[@]}" \
             "${SRC_LIBPLIST[@]}" \
+            "${SRC_CHOMA[@]}" \
             2>&1 | tee signingd_build.log
 
           if [ ! -f build/repro-signingd ]; then
