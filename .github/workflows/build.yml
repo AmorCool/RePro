@@ -194,6 +194,7 @@ jobs:
             Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain/SAMKeychainQuery.m
             "Vendor/ReProvision/Application Database/RPVApplication.m"
             Helper/SSZipArchiveStub.m
+            Helper/DaemonStubs.m
           )
 
           SRC_LIBPLIST=(
@@ -252,7 +253,7 @@ jobs:
             -O2 \
             -framework Foundation -framework CoreFoundation \
             "${INC_DIRS[@]}" \
-            "-L${OPENSSL_DIR}/lib" -lssl -lcrypto -lc++ \
+            "-L${OPENSSL_DIR}/lib" -lssl -lcrypto -lc++ -lobjc \
             -o build/repro-signingd \
             "${SRC_OBJC[@]}" \
             "${SRC_LIBPLIST[@]}" \
