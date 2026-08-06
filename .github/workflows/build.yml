@@ -177,28 +177,27 @@ jobs:
 
           OPENSSL_DIR=/tmp/openssl-ios
 
-          # 所有签名相关的 ObjC/C++ 源文件
-          SRC_OBJC="
+          # bash 数组（路径含空格时避免被拆成分隔符）
+          SRC_OBJC=(
             Helper/repro-signingd.m
             Vendor/ReProvision/libProvision/EEBackend.m
-            Vendor/ReProvision/libProvision/Provisioning/EEProvisioning.mm
-            Vendor/ReProvision/libProvision/Apple Services/EEAppleServices.m
-            Vendor/ReProvision/libProvision/Apple Services/RPVAuthentication.m
-            Vendor/ReProvision/libProvision/Apple Services/RPVLoginImpl.m
-            Vendor/ReProvision/libProvision/Apple Services/RPVLoginFallbackImpl.m
-            Vendor/ReProvision/libProvision/Apple Services/NSData+GZIP.m
-            Vendor/ReProvision/libProvision/Signing/RZSignRunner.m
-            Vendor/ReProvision/libProvision/CoreCrypt/ccsrp.m
+            "Vendor/ReProvision/libProvision/Provisioning/EEProvisioning.mm"
+            "Vendor/ReProvision/libProvision/Apple Services/EEAppleServices.m"
+            "Vendor/ReProvision/libProvision/Apple Services/RPVAuthentication.m"
+            "Vendor/ReProvision/libProvision/Apple Services/RPVLoginImpl.m"
+            "Vendor/ReProvision/libProvision/Apple Services/RPVLoginFallbackImpl.m"
+            "Vendor/ReProvision/libProvision/Apple Services/NSData+GZIP.m"
+            "Vendor/ReProvision/libProvision/Signing/RZSignRunner.m"
+            "Vendor/ReProvision/libProvision/CoreCrypt/ccsrp.m"
             Vendor/ReProvision/Resources/RPVResources.m
             Vendor/ReProvision/Resources/RPVAccountChecker.m
             Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain.m
             Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain/SAMKeychainQuery.m
-            Vendor/ReProvision/Application Database/RPVApplication.m
+            "Vendor/ReProvision/Application Database/RPVApplication.m"
             Helper/SSZipArchiveStub.m
-          "
+          )
 
-          # libplist（C → 被 EEProvisioning 内部 plist 解析依赖）
-          SRC_LIBPLIST="
+          SRC_LIBPLIST=(
             Vendor/ReProvision/libProvision/libplist/base64.c
             Vendor/ReProvision/libProvision/libplist/bplist.c
             Vendor/ReProvision/libProvision/libplist/bytearray.c
@@ -224,37 +223,36 @@ jobs:
             Vendor/ReProvision/libProvision/libplist/String.cpp
             Vendor/ReProvision/libProvision/libplist/Structure.cpp
             Vendor/ReProvision/libProvision/libplist/Uid.cpp
-          "
+          )
 
-          # include 路径（与 App xcodeproj 中的 HEADER_SEARCH_PATHS 对齐）
-          INC_DIRS="
+          INC_DIRS=(
             -IVendor/ReProvision
             -IVendor/ReProvision/libProvision
-            -IVendor/ReProvision/libProvision/Provisioning
-            -IVendor/ReProvision/libProvision/Apple Services
-            -IVendor/ReProvision/libProvision/Signing
+            "-IVendor/ReProvision/libProvision/Provisioning"
+            "-IVendor/ReProvision/libProvision/Apple Services"
+            "-IVendor/ReProvision/libProvision/Signing"
             -IVendor/ReProvision/libProvision/SAMKeychain
             -IVendor/ReProvision/libProvision/SAMKeychain/SAMKeychain
             -IVendor/ReProvision/libProvision/libplist/include
-            -IVendor/ReProvision/libProvision/CoreCrypt
+            "-IVendor/ReProvision/libProvision/CoreCrypt"
             -IVendor/ReProvision/corecrypto
-            -IVendor/ReProvision/Application Database
+            "-IVendor/ReProvision/Application Database"
             -IVendor/ReProvision/Resources
             -IVendor/ReProvision/libProvision/SSZipArchive
             -IHelper
-            -I${OPENSSL_DIR}/include
-          "
+            "-I${OPENSSL_DIR}/include"
+          )
 
           xcrun -sdk iphoneos clang \
             -x objective-c -fobjc-arc \
             -arch arm64 -miphoneos-version-min=15.0 \
             -O2 \
             -framework Foundation -framework CoreFoundation \
-            ${INC_DIRS} \
-            -L${OPENSSL_DIR}/lib -lssl -lcrypto \
+            "${INC_DIRS[@]}" \
+            "-L${OPENSSL_DIR}/lib" -lssl -lcrypto \
             -o build/repro-signingd \
-            ${SRC_OBJC} \
-            ${SRC_LIBPLIST} \
+            "${SRC_OBJC[@]}" \
+            "${SRC_LIBPLIST[@]}" \
             2>&1 | tee signingd_build.log
 
           if [ ! -f build/repro-signingd ]; then
