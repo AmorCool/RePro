@@ -406,9 +406,21 @@ struct SettingsView: View {
                     .foregroundColor(notifyNeedsSystemSettings ? .red : .secondary)
             }
 
+            // 🔴 v1.1.189：手动「重新申请」入口。
+            // 状态为「未申请」时点击会弹系统授权框；已授权点击无副作用（系统不会重复弹）。
+            // 已拒绝时 App 内任何 API 都无法再弹窗（iOS 硬性限制），只能去系统设置改，
+            // 这里明确说明原因，避免误导用户以为点一下就能开。
             if notifyNeedsSystemSettings {
-                Button("前往系统设置开启") {
+                Button("前往系统设置开启（系统已拒绝，只能在系统设置中更改）") {
                     openSystemNotificationSettings()
+                }
+            } else {
+                Button("重新申请通知权限") {
+                    RPVNotificationManager.sharedInstance().registerToSendNotifications()
+                    // 授权框结果稍后反映到状态栏（弹窗期间状态还是旧的）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        refreshNotificationStatus()
+                    }
                 }
             }
         } header: {

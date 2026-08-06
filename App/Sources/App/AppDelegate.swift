@@ -382,6 +382,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 这里只是前台激活时的额外保险。
         RPVBridge.migrateKeychainAccessibility()
 
+        // 🔴 v1.1.189：通知权限申请补到前台激活后调用——
+        // 用户实锤「首次安装进 App 不弹权限框，杀后台重开才有」：didFinishLaunching 里
+        // 同步调 requestAuthorization 时系统授权 UI 尚未就绪（RootHide 下尤其明显），
+        // 弹窗被吞。becomeActive 时 UI 已就绪，弹窗可靠；
+        // 已授权 / 已拒绝状态下 requestAuthorization 直接返回不再弹，无副作用。
+        RPVNotificationManager.sharedInstance().registerToSendNotifications()
+
         // 🔴 v1.1.144：前台激活不再触发自动重签。
         // 历史设计「进入前台就重签」（applicationDidBecomeActive → tryAutoResign →
         // doAutoResign → resignAllExpiring）每次回到前台都跑一次完整 zsign 重签管线，

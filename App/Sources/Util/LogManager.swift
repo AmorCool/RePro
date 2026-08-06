@@ -136,7 +136,9 @@ class LogManager: ObservableObject {
               !content.isEmpty else { return }
         let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
         guard !lines.isEmpty else { return }
-        // 过滤噪音行（前缀黑名单；匹配后整行丢弃）
+        // 过滤噪音行（前缀黑名单；匹配后整行丢弃）。
+        // 🔴 v1.1.189：前缀统一不带前导空格，匹配前先 trim —— 旧版黑名单写「sudo 」，
+        // 实际日志行是「  sudo …」（管理命令列表带两个空格缩进），hasPrefix 匹配失败漏网。
         let noisePrefixes = [
             "=====",            // 启动横幅分隔线（长度不固定，短前缀兜底）
             "=== 启动",
@@ -146,15 +148,16 @@ class LogManager: ObservableObject {
             "内存看门狗已启动",
             "超时看门狗已启动",
             "ℹ️ 无法自检 entitlement",
-            "  namespace: ",
-            "  （若怀疑裸签",
+            "namespace: ",
+            "（若怀疑裸签",
             "配置: 自动",
             "BundleID: ",
             "架构: ",
             "launchd 每小时重新拉起",
         ]
         let meaningful = lines.filter { line in
-            !noisePrefixes.contains { line.hasPrefix($0) }
+            let t = line.trimmingCharacters(in: .whitespaces)
+            return !noisePrefixes.contains { t.hasPrefix($0) }
         }
         guard !meaningful.isEmpty else { return }
         let tail = Array(meaningful.suffix(25))
