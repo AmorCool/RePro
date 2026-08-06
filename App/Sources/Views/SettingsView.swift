@@ -34,6 +34,9 @@ struct SettingsView: View {
     @State private var showingClearLogAlert = false
     @State private var needsConfigSync = false
 
+    /// v1.1.186：下次检测时间（从 signingd 检测状态推算，onAppear / 间隔变化时刷新）
+    @State private var nextCheckText: String = "—"
+
     @ObservedObject private var account = BridgeClient.shared
 
     /// 小黑屋存储（只读用于显示数量，清空按钮直接操作它）
@@ -79,11 +82,15 @@ struct SettingsView: View {
                 refreshAccountOnly()
                 refreshLogFileSize()
                 refreshNotificationStatus()
+                refreshNextCheckText()
                 needsConfigSync = false
             }
             .onChange(of: autoResign) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
-            .onChange(of: resignCheckInterval) { _ in needsConfigSync = true }
+            .onChange(of: resignCheckInterval) { _ in
+                needsConfigSync = true
+                refreshNextCheckText()
+            }
             .onChange(of: forceResignLowPower) { _ in needsConfigSync = true }
             .onChange(of: account.isSignedIn) { signedIn in
                 // 退出登录后，重置登录前输入框（带已保存凭据预填）与显示开关
@@ -259,9 +266,13 @@ struct SettingsView: View {
             // 上限 12 小时是用户要求（改大 = 省电省流量，改小 = 到期前更及时）。
             Stepper("检测间隔 \(resignCheckInterval) 小时", value: $resignCheckInterval, in: 1...12)
 
-            // v1.1.158：已移除「检查间隔」与「下次自动续签」——signingd 短命化
-            // （launchd 每 5 分钟拉起一轮）后两者均为空壳摆设：检查间隔不再由
-            // 配置控制、也没有可展示的「计划触发时间」，相关代码一并删除。
+            // v1.1.186：展示「下次检测」时间（读 signingd 检测状态推算，用户一眼看到检查何时到期）
+            HStack {
+                Text("下次检测")
+                Spacer()
+                Text(nextCheckText)
+                    .foregroundColor(.secondary)
+            }
         } header: {
             Text("自动重签")
         } footer: {
@@ -645,6 +656,25 @@ struct SettingsView: View {
     private func clearDaemonLog() {
         DaemonLogClear(DaemonLogDefaultPath())
         refreshLogFileSize()
+    }
+
+    /// v1.1.186：推算「下次检测」时间。
+    /// 读 signingd 写下的检测状态（豁免目录，App 可读）：lastCheckTime + 检测间隔。
+    private func refreshNextCheckText() {
+        guard let dict = NSDictionary(contentsOfFile: "/var/mobile/Library/RePro/signingd-check-state.plist"),
+              let lastCheck = dict["lastCheckTime"] as? Double, lastCheck > 0 else {
+            nextCheckText = "尚未检测"
+            return
+        }
+        let interval = Double(max(resignCheckInterval, 1)) * 3600.0
+        let next = Date(timeIntervalSince1970: lastCheck + interval)
+        if next <= Date() {
+            nextCheckText = "即将检测"
+            return
+        }
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        nextCheckText = f.string(from: next)
     }
 
 }

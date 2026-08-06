@@ -53,6 +53,7 @@
 #include <time.h>
 #include <signal.h>
 #include <dlfcn.h>
+#include <pthread.h>   // v1.1.186：超时看门狗独立线程（不依赖主 runloop）
 #import <mach/mach.h>
 #import <Foundation/Foundation.h>
 
@@ -168,6 +169,33 @@ static void s_startMemWatchdog(void) {
     s_log(@"内存看门狗已启动（30 秒首次自检，之后每 5 分钟；超 400MB 主动重启，签名中不退出）");
 }
 
+// ─── 超时看门狗（v1.1.186，方案D：防僵尸实例）──────────────────────────
+//
+// 🔴 真机实锤：11:02 被 launchd 拉起的实例在主线程上被**永久阻塞**——
+// 5 分钟超时的 dispatch_after 也在主 runloop 上，主线程卡死它同样不触发，
+// 于是那个进程成了僵尸，占住 job 整整 3 小时（pid 1468 直到 14:23 被我强杀）。
+// 而 launchd 的 StartCalendarInterval 不会为「运行中」的 job 新起实例 →
+// 12:00 / 13:00 / 14:00 的定时检查全部被僵尸吞掉 → 用户设置 1 小时却一直没检查。
+//
+// 解决：用**独立 pthread**（sleep + _exit，不依赖主 runloop / dispatch）——
+// 正常流程最坏 5 分钟（等 App 完成）必然结束，10 分钟阈值绝不会误杀；
+// 一旦主线程真卡死，看门狗照样强制退出，launchd 下一轮重新拉起。
+static void *s_runWatchdogMain(void *arg) {
+    (void)arg;
+    sleep(10 * 60);
+    NSLog(@"[repro-signingd] ⚠️⚠️ 超时看门狗：本轮运行已超 10 分钟（正常流程最坏 5 分钟），"
+          @"判定主线程卡死，强制退出，等待 launchd 下轮拉起");
+    _exit(0);
+    return NULL;
+}
+static void s_startRunWatchdog(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, s_runWatchdogMain, NULL) == 0) {
+        pthread_detach(t);
+        s_log(@"超时看门狗已启动（独立线程，超 10 分钟强制退出防僵尸）");
+    }
+}
+
 // ─── 崩溃循环检测（v1.1.150，方案C）──────────────────────────────────
 // daemon 每次被 launchd 拉起都记一次。若 10 分钟内 ≥3 次，说明在崩溃循环
 // （RootHide hook 不稳定时常见），写醒目告警帮助定位是环境问题还是代码问题。
@@ -241,13 +269,27 @@ static void s_open_log(void) {
         NSRange r = [a0 rangeOfString:@"/usr/libexec/" options:NSBackwardsSearch];
         if (r.location != NSNotFound) jb = [a0 substringToIndex:r.location];
     }
-    if (!jb) jb = @"/var/jb";
+    // 🔴 v1.1.186：argv[0] 可能是 "/usr/libexec/repro-signingd"（无 jbroot 前缀，
+    //  RootHide 的 env 包装启动路径），substringToIndex:0 得到的是 @""（非 nil）——
+    //  旧代码 `if (!jb)` 接不住空串 → dir 变成相对路径 "var/log" → 日志写到
+    //  cwd 下的 var/log，落点完全错误。必须用 length == 0 判断。
+    if (jb.length == 0) jb = @"/var/jb";
     dir = [jb stringByAppendingPathComponent:@"var/log"];
 
     // ★ v1.1.152 fallback 链：iOS 17 RootHide 容器化下 fopen("a") 可能写不出
     // （实测：/var/jb/var/log/reprorefresh_at.log mtime=安装时间，size=0）。
-    // 按真实可写性顺序尝试 3 个候选路径，任意一个成功就 break。
+    // 按真实可写性顺序尝试 4 个候选路径，任意一个成功就 break。
+    //
+    // 🔴 v1.1.186 候选顺序调整：把「豁免目录」放到第一位。
+    // 真机实测（RootHide + user/501 域 + SafeMode env 包装）：daemon 是 vroot 进程，
+    // /var/jb/var/log 与 /var/mobile/Library/Logs/RePro 都被 overlay 重定向到
+    // AppGroup 假目录（/rootfs/var/mobile/Containers/Shared/AppGroup/.jbroot-XXX/…），
+    // 日志写在那里，用户 SSH / 爱思 / App 全部看不到 —— 表现为「没生成日志」。
+    // 而 /var/mobile/Library/RePro 是 RootHide 明确的「豁免 overlay 共享 IPC 目录」，
+    // daemon 写它 = 真实 rootfs（pid/check-state/crash-count 都写在这里），
+    // App 也是 mobile 可读 → 日志放这里，App 日志页与 SSH 都能直接看到。
     NSArray<NSString *> *candidates = @[
+        @"/var/mobile/Library/RePro/reprorefresh_at.log",               // ★ 豁免目录=真实 rootfs（v1.1.186 首选）
         [dir stringByAppendingPathComponent:@"reprorefresh_at.log"],   // 原路径：jbroot 容器内
         @"/var/mobile/Library/Logs/RePro/reprorefresh_at.log",        // 真实 syslog 旁路
         @"/tmp/reprorefresh_at.log",                                   // 最后兜底（重启清空）
@@ -264,7 +306,7 @@ static void s_open_log(void) {
             return;
         }
     }
-    // 三条路径全部失败 → 留 NSLog 警告，但 s_log 仍能 NSLog 输出
+    // 四条路径全部失败 → 留 NSLog 警告，但 s_log 仍能 NSLog 输出
     NSLog(@"[repro-signingd] ⚠️ 无法打开任何日志文件路径（候选：%@），仅写系统日志", candidates);
 }
 
@@ -923,8 +965,12 @@ static BOOL s_fire(void) {
         double lastCheck = st ? [st[@"lastCheckTime"] doubleValue] : 0;
         NSTimeInterval interval = (NSTimeInterval)c.checkIntervalHours * 3600.0;
         if (lastCheck > 0 && (nowCheck - (time_t)lastCheck) < interval) {
-            s_log(@"距上次检测 %.1f 小时 < 设定间隔 %ld 小时，本轮跳过",
-                  (nowCheck - (time_t)lastCheck) / 3600.0, (long)c.checkIntervalHours);
+            // 🔴 v1.1.186：跳过日志补上「下次检测时间」，用户一眼能看到检查何时到期
+            time_t nextCheck = (time_t)lastCheck + (time_t)interval;
+            struct tm tm; localtime_r(&nextCheck, &tm);
+            char buf[32]; strftime(buf, sizeof(buf), "%m-%d %H:%M", &tm);
+            s_log(@"距上次检测 %.1f 小时 < 设定间隔 %ld 小时，本轮跳过（下次检测约 %s）",
+                  (nowCheck - (time_t)lastCheck) / 3600.0, (long)c.checkIntervalHours, buf);
             return NO;
         }
         [@{ @"lastCheckTime": @(nowCheck) } writeToFile:kCheckStatePath atomically:YES];
@@ -1287,6 +1333,10 @@ int main(int argc, char *argv[]) {
 
     // v1.1.150/151：内存看门狗（方案A）——防等待 App 期间（最长 5 分钟）RootHide 拦截器泄漏
     s_startMemWatchdog();
+
+    // v1.1.186：超时看门狗（方案D）——防主线程永久阻塞的僵尸实例占住 job、
+    // 吞掉后续所有定时拉起（真机 pid 1468 卡死 3 小时实锤）。独立线程，不依赖主 runloop。
+    s_startRunWatchdog();
 
     // v1.1.67：启动时自检自身 entitlement + namespace（每次触发也会再打印）
     s_report_self_entitlements();
