@@ -57,6 +57,11 @@
 #import <mach/mach.h>
 #import <Foundation/Foundation.h>
 
+// 🔴 v2.1.0：signingd 自己执行签名管线（原版 ReProvision 架构，不再唤醒 App）。
+// 需要签名相关的私有实现头：
+#import "RPVProfileStore.h"   // profile 解析/安装/通知 profiled
+#import "EEBackend.h"         // 签名管线入口（内部走 EEProvisioning + RZSignRunner/zsign）
+
 static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
 static NSString *const kConfigPath  = @"/var/mobile/Library/Resign/signingd-config.plist";
 static NSString *const kTriggerPath = @"/var/mobile/Library/Resign/auto-resign-trigger";
@@ -168,18 +173,32 @@ static void s_startMemWatchdog(void) {
 // RootHide 下 NSLog 走 ASL/os_log，logd 通信一旦不可达就可能**永久阻塞**，
 // _exit(0) 永远执行不到 → 看门狗形同虚设 → 僵尸实例照样挡住下一轮拉起。
 // 必须**先 _exit(0) 再考虑打日志**（_exit 是无条件进程终止，不依赖任何服务）。
+// 🔴 v2.1.0：看门狗从「固定 10 分钟」改为「空闲 10 分钟」。
+// 背景：daemon 自己签名（v2.1.0 起）多个 app 串行可能超过 10 分钟
+//（每个 app 上限 5 分钟），固定超时会误杀正常签名。
+// 新逻辑：签名进行中（gResignInProgress）不累计；空闲超过 10 分钟仍不退出
+// → 判定僵尸，无条件 _exit（launchd 下一轮拉起）。
 static void *s_runWatchdogMain(void *arg) {
     (void)arg;
-    sleep(10 * 60);
-    // 无条件终止进程——NSLog 放在 _exit 之后（不可达），避免 logd 阻塞拖死看门狗
-    _exit(0);
+    time_t idleSince = time(NULL);
+    while (1) {
+        sleep(60);
+        if (gResignInProgress) {
+            idleSince = time(NULL);   // 签名中：重置空闲计时
+            continue;
+        }
+        if ((time(NULL) - idleSince) >= 10 * 60) {
+            // 无条件终止进程——NSLog 放 _exit 之后（不可达），避免 logd 阻塞拖死看门狗
+            _exit(0);
+        }
+    }
     return NULL;
 }
 static void s_startRunWatchdog(void) {
     pthread_t t;
     if (pthread_create(&t, NULL, s_runWatchdogMain, NULL) == 0) {
         pthread_detach(t);
-        s_log(@"超时看门狗已启动（独立线程，超 10 分钟强制退出防僵尸）");
+        s_log(@"超时看门狗已启动（独立线程，空闲超 10 分钟强制退出；签名中不计时）");
     }
 }
 
@@ -934,6 +953,201 @@ static BOOL s_launchAppInBackground(void) {
 // v1.1.155 起返回 BOOL：YES=已真正触发续签（调用方需等待 App 完成）；
 // NO=本轮跳过（开关关闭/低电量/24h 冷却中），调用方应立即退出。
 
+// ═══════════════════════════════════════════════════════════════════════
+// 🔴 v2.1.0 自签名管线（原版 ReProvision 架构：daemon 自己签，不唤醒 App）
+// ═══════════════════════════════════════════════════════════════════════
+// 凭据由 App 登录时写入共享 IPC 目录 /var/mobile/Library/Resign/credentials.cache：
+//   { username: "apple_id|DSID", password: gsToken, teamID: "TEAMID" }
+// 证书/私钥在 provisioning.cache（EEProvisioning 内部走 RPVResources 读 Keychain+cache）。
+// daemon 是 root 进程 + no-sandbox，能读这些 0600 文件（root 不受权限限制）。
+
+static NSString *const kDaemonCredentialsCachePath = @"/var/mobile/Library/Resign/credentials.cache";
+
+/// 读凭据缓存。identity = DSID（EEBackend 需要的 user identity）。
+static BOOL s_readCredentials(NSString **identityOut, NSString **gsTokenOut, NSString **teamIDOut) {
+    NSDictionary *cred = [NSDictionary dictionaryWithContentsOfFile:kDaemonCredentialsCachePath];
+    if (cred.count == 0) {
+        s_log(@"凭据缓存缺失/为空：%@（请先在 App 里登录 Apple ID）", kDaemonCredentialsCachePath);
+        return NO;
+    }
+    NSString *username = cred[@"username"];
+    NSString *gsToken  = cred[@"password"];
+    NSString *teamID   = cred[@"teamID"];
+    if (username.length == 0 || gsToken.length == 0 || teamID.length == 0) {
+        s_log(@"凭据缓存不完整（username/gsToken/teamID 至少一项缺失），跳过本轮续签");
+        return NO;
+    }
+    // username 格式 "apple_id|DSID"，DSID 是 Apple API 需要的 identity
+    NSArray *parts = [username componentsSeparatedByString:@"|"];
+    NSString *identity = parts.count >= 2 ? parts[1] : username;
+    if (identityOut) *identityOut = identity;
+    if (gsTokenOut)  *gsTokenOut  = gsToken;
+    if (teamIDOut)   *teamIDOut   = teamID;
+    s_log(@"凭据就绪：identity=%@ teamID=%@", identity, teamID);
+    return YES;
+}
+
+/// 递归收集 root 下的所有 .app bundle 路径（深度上限 3：
+/// 普通 app = Application/xxx/app.app；RootHide 越狱 app = Application/.jbroot-XXX/Applications/app.app）
+static void s_collectAppBundles(NSString *dir, NSMutableArray<NSString *> *outPaths, int depth) {
+    if (depth > 3) return;
+    NSArray *entries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+    for (NSString *name in entries ?: @[]) {
+        NSString *path = [dir stringByAppendingPathComponent:name];
+        BOOL isDir = NO;
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir]) continue;
+        if (isDir) {
+            if ([name hasSuffix:@".app"]) {
+                [outPaths addObject:path];
+            } else {
+                s_collectAppBundles(path, outPaths, depth + 1);
+            }
+        }
+    }
+}
+
+/// 枚举「需要重签」的应用：embedded.mobileprovision 剩余有效期 **严格小于** 阈值天数。
+/// 与 App 侧 RPVApplicationDatabase 的 NSOrderedAscending 判定口径一致（v1.1.184 实锤）。
+static NSMutableArray<NSDictionary *> *s_enumerateExpiredApps(NSInteger thresholdDays) {
+    NSMutableArray<NSDictionary *> *found = [NSMutableArray array];
+    NSMutableArray<NSString *> *bundles = [NSMutableArray array];
+    s_collectAppBundles(kBundleRoot, bundles, 0);
+
+    for (NSString *appPath in bundles) {
+        NSString *infoPath = [appPath stringByAppendingPathComponent:@"Info.plist"];
+        NSString *profilePath = [appPath stringByAppendingPathComponent:@"embedded.mobileprovision"];
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:infoPath];
+        NSString *bundleId = info[@"CFBundleIdentifier"];
+        if (bundleId.length == 0) continue;
+        if ([bundleId isEqualToString:kAppBundleID]) continue;   // 不签自己
+
+        NSDictionary *profilePlist = RPVPSPlistAtPath(profilePath);
+        NSDate *expiry = [profilePlist isKindOfClass:[NSDictionary class]] ? profilePlist[@"ExpirationDate"] : nil;
+        if (![expiry isKindOfClass:[NSDate class]]) continue;    // 无 profile = 非自签应用，跳过
+
+        NSTimeInterval remain = [expiry timeIntervalSinceNow];
+        if (remain < thresholdDays * 24 * 3600) {                 // 严格小于
+            [found addObject:@{
+                @"path": appPath,
+                @"bundleId": bundleId,
+                @"expiry": expiry,
+            }];
+            s_log(@"  到期: %@ 剩余 %.1f 天（阈值 %ld 天）→ 需要重签",
+                  bundleId, remain / 86400.0, (long)thresholdDays);
+        }
+    }
+    return found;
+}
+
+/// LSApplicationWorkspace 安装签名后的 app（与 App 侧 RPVApplicationSigning 同 API）。
+/// 动态取类（LSApplicationWorkspace 不在公开 SDK 头），-framework MobileCoreServices 保证链接。
+static BOOL s_installSignedApp(NSString *appPath, NSString *bundleId) {
+    dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+    if (!wsClass) { s_log(@"安装失败: LSApplicationWorkspace 不可用"); return NO; }
+    id workspace = [wsClass performSelector:@selector(defaultWorkspace)];
+    NSURL *appURL = [NSURL fileURLWithPath:appPath];
+    NSDictionary *opts = @{
+        @"CFBundleIdentifier": bundleId ?: @"",
+        @"AllowInstallLocalProvisioned": @YES,
+    };
+    NSError *err = nil;
+    BOOL ok = [workspace installApplication:appURL withOptions:opts error:&err];
+    if (!ok) s_log(@"安装失败 %@: %@", bundleId, err.localizedDescription ?: @"未知错误");
+    return ok;
+}
+
+/// 单个应用：复制到临时目录 → EEBackend 签名 → 装 profile → 安装回。
+static BOOL s_signAndInstallOneApp(NSString *appPath, NSString *identity,
+                                   NSString *gsToken, NSString *teamID) {
+    // 1. 复制 .app 到临时目录（EEBackend 就地签名）
+    NSString *tmpRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:@"repro-sign"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:tmpRoot
+                             withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *tmpApp = [tmpRoot stringByAppendingPathComponent:[appPath lastPathComponent]];
+    [[NSFileManager defaultManager] removeItemAtPath:tmpApp error:nil];
+    NSError *copyErr = nil;
+    if (![[NSFileManager defaultManager] copyItemAtPath:appPath toPath:tmpApp error:&copyErr]) {
+        s_log(@"复制 %@ 到临时目录失败: %@", appPath, copyErr.localizedDescription);
+        return NO;
+    }
+    s_log(@"已复制 %@ → %@，开始签名", [appPath lastPathComponent], tmpApp);
+
+    // 2. EEBackend 签名（内部：EEProvisioning 四阶段 + RZSignRunner/zsign）。
+    //    completion 是异步回调 → 用信号量同步等待（上限 5 分钟，防卡死）。
+    __block NSError *signErr = nil;
+    __block BOOL done = NO;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    [EEBackend signBundleAtPath:tmpApp identity:identity gsToken:gsToken
+              priorChosenTeamID:teamID withCompletionHandler:^(NSError *error) {
+        signErr = error;
+        done = YES;
+        dispatch_semaphore_signal(sema);
+    }];
+    long waitRC = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * 60 * NSEC_PER_SEC));
+    if (waitRC != 0 || !done) {
+        s_log(@"签名超时（5 分钟）: %@", tmpApp);
+        return NO;
+    }
+    if (signErr) {
+        s_log(@"签名失败 %@: %@", [appPath lastPathComponent], signErr.localizedDescription);
+        return NO;
+    }
+    s_log(@"签名成功: %@", [appPath lastPathComponent]);
+
+    // 3. 提取 embedded.mobileprovision → 写系统描述文件库 + 通知 profiled 重扫
+    NSData *profileData = [NSData dataWithContentsOfFile:
+                           [tmpApp stringByAppendingPathComponent:@"embedded.mobileprovision"]];
+    if (profileData.length > 0) {
+        NSString *stableName = RPVPSStableNameForData(profileData);
+        NSString *written = RPVPSWriteProfileToDirs(profileData, stableName);
+        s_log(@"描述文件已写入系统库: %@", written ?: stableName);
+        RPVPSNudgeProfiled();
+    } else {
+        s_log(@"⚠️ 签名后 bundle 里没有 embedded.mobileprovision（异常）");
+    }
+
+    // 4. 读签名后的 bundle id（libProvision 会加 TeamID 前缀，installd 按它匹配）
+    NSDictionary *signedInfo = [NSDictionary dictionaryWithContentsOfFile:
+                                [tmpApp stringByAppendingPathComponent:@"Info.plist"]];
+    NSString *signedBundleId = signedInfo[@"CFBundleIdentifier"] ?: @"";
+    if (signedBundleId.length == 0) {
+        s_log(@"签名后 Info.plist 读不到 CFBundleIdentifier");
+        return NO;
+    }
+
+    // 5. LSApplicationWorkspace 安装回
+    return s_installSignedApp(tmpApp, signedBundleId);
+}
+
+/// v2.1.0：daemon 自签名主流程。返回 YES 表示执行了（无论成败），NO 表示本轮跳过。
+static BOOL s_selfSignPipeline(sd_config c) {
+    // 1. 凭据
+    NSString *identity = nil, *gsToken = nil, *teamID = nil;
+    if (!s_readCredentials(&identity, &gsToken, &teamID)) {
+        s_log(@"续签中止：无可用凭据（请在 App 里重新登录）");
+        return NO;
+    }
+
+    // 2. 枚举到期应用
+    NSArray *expired = s_enumerateExpiredApps(c.days);
+    if (expired.count == 0) {
+        s_log(@"续签检查完成：所有应用剩余有效期充足，无需重签（阈值 %ld 天）", (long)c.days);
+        return NO;
+    }
+    s_log(@"共 %lu 个应用需要重签", (unsigned long)expired.count);
+
+    // 3. 逐个签名 + 安装
+    NSInteger okCount = 0, failCount = 0;
+    for (NSDictionary *app in expired) {
+        BOOL ok = s_signAndInstallOneApp(app[@"path"], identity, gsToken, teamID);
+        if (ok) okCount++; else failCount++;
+        s_log(@"  [%@] %@", ok ? @"✅" : @"❌", app[@"bundleId"]);
+    }
+    s_log(@"续签完成：成功 %ld 个，失败 %ld 个", (long)okCount, (long)failCount);
+    return YES;
+}
+
 static BOOL s_fire(void) {
     sd_config c = s_cfg();
     if (!c.enabled) { s_log(@"自动续签已关闭，跳过"); return NO; }
@@ -974,29 +1188,28 @@ static BOOL s_fire(void) {
     gResignStartTime = time(NULL);
     gResignInProgress = YES;
     gResignTotalCount++;
-    s_log(@"═══ 续签开始 #%ld ═══", (long)gResignTotalCount);
+    s_log(@"═══ 续签开始 #%ld（daemon 自签名，不唤醒 App）═══", (long)gResignTotalCount);
 
-    time_t now = time(NULL);
-    [@{
-        @"timestamp": @(now),
-        @"threshold": @(c.days),
-        @"triggeredBy": @"daemon-timer",
-    } writeToFile:kTriggerPath atomically:YES];
-    chown(kTriggerPath.UTF8String, 501, 501);
+    // 🔴 v2.1.0：daemon 自己执行签名管线。
+    // 旧逻辑：写 trigger 文件 → SBSLaunch 唤醒 App → notify → 等 App 完成回调。
+    // 新逻辑：读凭据缓存 → 枚举到期应用 → EEBackend 签名 → 装 profile → 安装回。
+    // 不再依赖 App 进程存在（用户划掉 App 也不影响），不存在「等 notify 卡死」。
+    BOOL executed = s_selfSignPipeline(c);
 
-    if (s_launchAppInBackground()) {
-        s_log(@"触发续签 — 阈值 %ld 天（已唤醒 App）", (long)c.days);
-    } else {
-        s_log(@"触发续签 — 阈值 %ld 天（降级为 notify_post）", (long)c.days);
-    }
+    // 写状态文件供 --status / App 状态页读取（与 s_onSigningComplete 同字段）
+    double elapsed = difftime(time(NULL), gResignStartTime);
+    NSDictionary *result = @{
+        @"lastResignTime":    @(time(NULL)),
+        @"lastResignElapsed": @(elapsed),
+        @"totalCount":        @(gResignTotalCount),
+        @"successCount":      @(executed ? 1 : 0),
+        @"status":            executed ? @"已检查" : @"跳过",
+    };
+    [result writeToFile:kResultPath atomically:YES];
+    chown(kResultPath.UTF8String, 501, 501);
 
-    // 🔴 v1.1.165：无论唤醒成败都 notify_post。根因：App 进程已存在时（用户打开过
-    // 挂后台），SBS 后台唤醒不会重走 didFinishLaunching → App 侧的 isDaemonTriggeredResign
-    // 永不执行 → 续签静默失败（用户实测「触发了刷新但没自动续签」）。
-    // 现在 notify 作为进程内触发通道：App 收到后检查本 trigger 文件的新鲜度（180s）决定
-    // 是否执行静默续签；冷启动路径已消费 trigger 时新鲜度检查自然失败，不会双触发。
-    notify_post("cn.analy.resign.schedule-resign");
-    return YES;
+    gResignInProgress = NO;
+    return executed;
 }
 
 // ─── 信号处理 ─────────────────────────────────────────────────────
@@ -1029,19 +1242,12 @@ static void s_manualResign(NSString *reason) {
     gResignStartTime  = now;
     gResignInProgress = YES;
     gResignTotalCount++;
-    s_log(@"═══ %@ 触发续签 #%ld ═══", reason, (long)gResignTotalCount);
+    s_log(@"═══ %@ 触发续签 #%ld（daemon 自签名）═══", reason, (long)gResignTotalCount);
 
-    [@{
-        @"timestamp":   @(now),
-        @"threshold":   @(c.days),
-        @"triggeredBy": reason,
-    } writeToFile:kTriggerPath atomically:YES];
-    chown(kTriggerPath.UTF8String, 501, 501);
+    // 🔴 v2.1.0：手动触发同样走 daemon 自签名管线（不再唤醒 App）
+    s_selfSignPipeline(c);
 
-    s_launchAppAndWait(YES);
-
-    s_log(@"[%@] 唤醒流程结束 — 接下来应出现 App 侧日志（[AppDelegate] / [BridgeClient]）", reason);
-    s_log(@"[%@] 若 30 秒内没有 App 侧日志，说明 App 没被拉起，请用 --status 查看诊断", reason);
+    s_log(@"[%@] 自签名流程结束 — 结果见上方日志", reason);
 }
 
 static void s_gracefulExit(int sig) {
