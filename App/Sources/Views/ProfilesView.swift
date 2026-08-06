@@ -91,11 +91,11 @@ private struct ProfileGroup: Identifiable {
 struct ProfilesView: View {
     @State private var profiles: [ManagedProfile] = []
     @State private var isLoading = false
-    @State private var isWorking = false
     @State private var statusMessage: String?
     @State private var isStatusError = false
-    @State private var showingCleanupConfirm = false
-    @State private var pendingDelete: ManagedProfile?
+    // 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
+    // @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」）。
+    // 本页只保留「查看 + 刷新清单」；swipe 删除、清理按钮、相关 state 已删除。
 
     private var groups: [ProfileGroup] {
         let grouped = Dictionary(grouping: profiles) { $0.appId }
@@ -149,13 +149,6 @@ struct ProfilesView: View {
                     Section {
                         ForEach(Array(group.profiles.enumerated()), id: \.element.id) { index, profile in
                             profileRow(profile, isCurrent: index == 0)
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        pendingDelete = profile
-                                    } label: {
-                                        Label("删除", systemImage: "trash")
-                                    }
-                                }
                         }
                     } header: {
                         HStack {
@@ -180,19 +173,6 @@ struct ProfilesView: View {
         .navigationTitle("描述文件管理")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadLocalInventory)
-        .alert("清理描述文件", isPresented: $showingCleanupConfirm) {
-            Button("取消", role: .cancel) {}
-            Button("清理", role: .destructive) { runCleanup() }
-        } message: {
-            Text("将删除全部已过期/损坏的描述文件，并对每个 App 只保留最新的一份（多余 \(duplicateTotal) 份、过期 \(expiredTotal) 份）。当前生效的描述文件不会被删除。")
-        }
-        .alert(item: $pendingDelete) { profile in
-            // v1.1.184：删除确认文案精简（用户嫌长篇大论烦）——一行问完直接删
-            Alert(title: Text("删除描述文件"),
-                  message: Text("确定删除这份描述文件吗？"),
-                  primaryButton: .destructive(Text("删除")) { runDelete(profile) },
-                  secondaryButton: .cancel(Text("取消")))
-        }
     }
 
     // MARK: - 子视图
@@ -242,26 +222,9 @@ struct ProfilesView: View {
                     }
                 }
             }
-            .disabled(isLoading || isWorking)
-
-            Button {
-                showingCleanupConfirm = true
-            } label: {
-                HStack {
-                    Image(systemName: "wand.and.stars")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("清理重复与过期")
-                        Text("每个 App 只保留最新一份")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    if isWorking {
-                        ProgressView().scaleEffect(0.8)
-                    }
-                }
-            }
-            .disabled(isLoading || isWorking || (duplicateTotal == 0 && expiredTotal == 0))
+            .disabled(isLoading)
+            // 🔴 v1.1.185：「清理重复与过期」按钮已移除（删除/清理功能整体下线，
+            // 防堆积靠稳定名覆盖写 + profiled 重扫，无需手动清理）。
         } header: {
             Text("操作")
         }
@@ -353,37 +316,5 @@ struct ProfilesView: View {
             }
         }
     }
-
-    private func runCleanup() {
-        guard !isWorking else { return }
-        isWorking = true
-        statusMessage = nil
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = RPVBridge.requestManagedProfileCleanup()
-            let items = Self.parse(RPVBridge.managedProfilesInventory())
-            DispatchQueue.main.async {
-                isWorking = false
-                profiles = items
-                isStatusError = (result == nil)
-                statusMessage = result ?? "清理失败：root 侧未响应"
-            }
-        }
-    }
-
-    private func runDelete(_ profile: ManagedProfile) {
-        guard !isWorking else { return }
-        isWorking = true
-        statusMessage = nil
-        let name = profile.fileName
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = RPVBridge.requestManagedProfileDeletion([name])
-            let items = Self.parse(RPVBridge.managedProfilesInventory())
-            DispatchQueue.main.async {
-                isWorking = false
-                profiles = items
-                isStatusError = (result == nil)
-                statusMessage = result ?? "删除失败：root 侧未响应"
-            }
-        }
-    }
+    // 🔴 v1.1.185：runCleanup / runDelete 已移除（删除/清理功能整体下线）。
 }

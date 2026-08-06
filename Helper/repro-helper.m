@@ -206,13 +206,9 @@ static int RPVHelperInstallProvisioningProfile(NSString *profilePath) {
     //  profile 被注册进 managed(MSM) 库（installd 不认）→ 0xe8008015；且 managed 注册会
     //  覆盖 App 在本地库的注册，反而把 installd 能读到的副本抹掉。故 helper 只做文件兜底层。
 
-    // 安装后立刻去重：删掉过期/损坏的，以及同一个 App ID 的历史重复份
-    //（老版本留下的内容 SHA1 命名文件就是在这一步被清掉的）。
-    // 只处理 *.mobileprovision，系统自带的 com.apple.*.plist 一律不碰。
-    NSString *cleanupSummary = RPVPSCleanup();
-    if (cleanupSummary.length > 0) {
-        RPVHelperLog(@"描述文件库清理：%@", cleanupSummary);
-    }
+    // 🔴 v1.1.185：装完不再自动清理（删除/清理功能整体移除，MC 注销在 RootHide 下
+    // SIGSEGV 崩溃）。防堆积靠稳定名覆盖写（sha1(application-identifier) 恒定同名
+    // 直接覆盖）+ profiled 重扫，无需删文件。
 
     // 踢一下 profiled 让它立刻重新扫描（sysctl 枚举后直发 SIGHUP，不依赖任何外部二进制）。
     RPVHelperRefreshProfiled();
@@ -355,27 +351,8 @@ static int RPVHelperFixCellular(NSString *selfBid) {
 
 /// v1.1.171：rootless / rootful 下没有 repro-profiledaemon（它只在 RootHide 包里装），
 /// App 的「管理描述文件」界面不能只靠 daemon IPC，否则这两套包上界面永远转圈。
-/// 这三个子命令让 App 直接同步拉起 setuid root 的 helper 完成同样的事——
-/// 逻辑与 daemon 完全一致（都调 RPVProfileStore.h 里的同一份实现），不会出现行为分歧。
-
-/// 结果文件路径与 daemon 用的是同一个，App 侧读取逻辑因此完全一致，不必分两套。
-static NSString *const kRPVHelperManageResultPath =
-    @"/var/mobile/Library/RePro/profile-manage-result";
-
-/// 把一次管理操作的结果串写给 App（root 写出的文件要 chown 回 mobile，App 才好读/删）。
-static void RPVHelperWriteManageResult(NSString *summary) {
-    if (summary.length == 0) summary = @"无操作";
-    NSString *dir = [kRPVHelperManageResultPath stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                             withIntermediateDirectories:YES attributes:nil error:nil];
-    [summary writeToFile:kRPVHelperManageResultPath atomically:YES
-                encoding:NSUTF8StringEncoding error:nil];
-    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions : @(0644),
-                                                    NSFileOwnerAccountID   : @(501),
-                                                    NSFileGroupOwnerAccountID : @(501)}
-                                     ofItemAtPath:kRPVHelperManageResultPath
-                                            error:nil];
-}
+/// 🔴 v1.1.185：删除/清理已整体移除，本模块只剩「导出清单」一个子命令——
+/// 逻辑与 daemon 完全一致（都调 RPVProfileStore.h 里的同一份实现）。
 
 /// 导出描述文件库清单到 outPath（plist）。
 static int RPVHelperProfilesInventory(NSString *outPath) {
@@ -388,39 +365,9 @@ static int RPVHelperProfilesInventory(NSString *outPath) {
     return 0;
 }
 
-/// 去重清理：删过期/损坏的，以及同一 application-identifier 的历史重复份。
-static int RPVHelperProfilesCleanup(void) {
-    NSString *summary = RPVPSCleanup();
-    RPVHelperLog(@"profiles-cleanup: %@", summary.length ? summary : @"无可清理项");
-    RPVHelperWriteManageResult(summary);
-    RPVHelperRefreshProfiled();
-    return 0;
-}
-
-/// 按文件名删除。listPath 是一个文本文件，每行一个文件名（不含路径）。
-/// 文件名合法性由 RPVPSDeleteNames 统一校验（不含 /、非 . 开头、必须 .mobileprovision 后缀），
-/// 防路径穿越，也保证系统自带的 com.apple.*.plist 绝不会被误删。
-static int RPVHelperProfilesDelete(NSString *listPath) {
-    if (listPath.length == 0) {
-        RPVHelperLog(@"profiles-delete 缺少清单路径");
-        return 2;
-    }
-    NSString *content = [NSString stringWithContentsOfFile:listPath encoding:NSUTF8StringEncoding error:nil];
-    if (content.length == 0) {
-        RPVHelperLog(@"profiles-delete 清单为空: %@", listPath);
-        return 3;
-    }
-    NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (NSString *line in [content componentsSeparatedByString:@"\n"]) {
-        NSString *t = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (t.length > 0) [names addObject:t];
-    }
-    NSString *summary = RPVPSDeleteNames(names);
-    RPVHelperLog(@"profiles-delete: %@", summary.length ? summary : @"无操作");
-    RPVHelperWriteManageResult(summary);
-    RPVHelperRefreshProfiled();
-    return 0;
-}
+// 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
+// @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」）。
+// RPVHelperProfilesCleanup / RPVHelperProfilesDelete 已删除。
 
 #pragma mark - 入口
 
@@ -432,8 +379,6 @@ static void RPVHelperPrintUsage(void) {
             "  repro-helper install-profile <描述文件路径>\n"
             "  repro-helper fix-cellular <当前插件 bundle id>\n"
             "  repro-helper profiles-inventory <输出 plist 路径>\n"
-            "  repro-helper profiles-cleanup\n"
-            "  repro-helper profiles-delete <文件名清单路径，每行一个>\n"
             "  repro-helper reboot-device\n"
             "  repro-helper userspace-reboot\n"
             "  repro-helper kickstart-lsd\n"
@@ -911,21 +856,8 @@ int main(int argc, char *argv[]) {
             return RPVHelperProfilesInventory([NSString stringWithUTF8String:argv[2]]);
         }
 
-        if ([command isEqualToString:@"profiles-cleanup"]) {
-            if (argc != 2) {
-                RPVHelperPrintUsage();
-                return 64;
-            }
-            return RPVHelperProfilesCleanup();
-        }
-
-        if ([command isEqualToString:@"profiles-delete"]) {
-            if (argc != 3) {
-                RPVHelperPrintUsage();
-                return 64;
-            }
-            return RPVHelperProfilesDelete([NSString stringWithUTF8String:argv[2]]);
-        }
+        // 🔴 v1.1.185：profiles-cleanup / profiles-delete 已整体移除
+        // （MC 注销在 RootHide 下 SIGSEGV 崩溃，@try 接不住信号 → daemon 崩溃）。
 
         // fix-cellular = App「设置」里「修复当前插件联网」手动入口（仅手动，无 daemon 自动循环）。
         // v1.1.146：只把当前插件（ReSign）自身送进 CoreTelephony 私有 API 修复，

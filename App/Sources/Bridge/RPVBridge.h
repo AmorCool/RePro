@@ -268,15 +268,9 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 ///        isStableName / parsed / creationDate / expirationDate / modifiedDate。
 + (NSArray<NSDictionary<NSString *, id> *> *)managedProfilesInventory;
 
-/// 让 daemon 重新导出一次清单（不做任何删除）。返回 YES 表示清单已刷新。
+/// 让 daemon 重新导出一次清单（🔴 v1.1.185：删除/清理已移除，这是管理功能的全部）。
+/// 返回 YES 表示清单已刷新。
 + (BOOL)refreshManagedProfilesInventory;
-
-/// 请求 daemon 清理系统描述文件：删除已过期/损坏的，并按 application-identifier
-/// 去重（同一个 App 只保留最新一份）。返回 daemon 回写的结果描述，失败返回 nil。
-+ (nullable NSString *)requestManagedProfileCleanup;
-
-/// 请求 daemon 删除指定文件名的描述文件（只接受纯文件名，daemon 侧会再校验一次）。
-+ (nullable NSString *)requestManagedProfileDeletion:(NSArray<NSString *> *)fileNames;
 
 #pragma mark root helper 注入点
 

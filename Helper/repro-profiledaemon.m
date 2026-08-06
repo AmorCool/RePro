@@ -82,32 +82,15 @@ static void RPVProfileDaemonLog(NSString *fmt, ...) {
 #pragma mark - 描述文件库操作（实现见 RPVProfileStore.h，与 repro-helper 共用）
 
 static NSString *const kInventoryPath      = @"/var/mobile/Library/RePro/profiles-inventory.plist";
-static NSString *const kDeleteRequestPath  = @"/var/mobile/Library/RePro/profile-delete-request";
-static NSString *const kCleanupRequestPath = @"/var/mobile/Library/RePro/profile-cleanup-request";
 static NSString *const kManageResultPath   = @"/var/mobile/Library/RePro/profile-manage-result";
 static NSString *const kManageNotifyName   = @"com.reprovision.profile-manage-request";
 
-/// 清理系统描述文件库：删过期/损坏 + 按 application-identifier 去重。
-/// 这一步是修复「签名后目标 App 秒退」的关键，详见 RPVProfileStore.h 顶部说明。
-static NSString *CleanupProfiles(void) {
-    return RPVPSCleanup();
-}
+// 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV，见 main 顶部说明）。
+// 不再有 kDeleteRequestPath / kCleanupRequestPath，管理请求只剩「刷新清单」。
 
 /// 导出清单快照供 App 的「描述文件管理」界面读取。
 static void WriteInventory(void) {
     RPVPSWriteInventory(kInventoryPath);
-}
-
-/// 处理 App 投递的「删除指定描述文件」请求（每行一个文件名）。
-static NSString *HandleDeleteRequest(void) {
-    NSString *content = [NSString stringWithContentsOfFile:kDeleteRequestPath
-                                                  encoding:NSUTF8StringEncoding
-                                                     error:nil];
-    [[NSFileManager defaultManager] removeItemAtPath:kDeleteRequestPath error:nil];
-    if (content.length == 0) return nil;
-    NSArray<NSString *> *names = [content componentsSeparatedByCharactersInSet:
-                                  [NSCharacterSet newlineCharacterSet]];
-    return RPVPSDeleteNames(names);
 }
 
 #pragma mark - 安装
@@ -238,16 +221,13 @@ static void HandleRequest(void) {
 
     NSString *result = InstallProfile(profileData);
     RPVProfileDaemonLog(@"结果：%@", result);
+    // 🔴 v1.1.185：装完不再自动清理（删除功能整体移除，见 main 顶部说明）。
+    // 防堆积靠稳定名覆盖写 + profiled 重扫，无需删文件。
 
-    // 装完顺手清一次：删过期 + 按 App ID 去重（这一步才是防闪退的关键）
-    NSString *cleanup = CleanupProfiles();
-    RPVProfileDaemonLog(@"%@", cleanup);
-
-    NSString *combined = [result stringByAppendingFormat:@"; %@", cleanup];
-    [combined writeToFile:kResultPath
-               atomically:YES
-                 encoding:NSUTF8StringEncoding
-                    error:nil];
+    [result writeToFile:kResultPath
+             atomically:YES
+               encoding:NSUTF8StringEncoding
+                  error:nil];
 
     // 请求已消费，删掉 .consumed 暂存，避免残留
     [[NSFileManager defaultManager] removeItemAtPath:consumedPath error:nil];
@@ -258,44 +238,23 @@ static void HandleRequest(void) {
     __sync_fetch_and_sub(&g_busy, 1);
 }
 
-/// 处理「描述文件管理」类请求：删除指定文件 / 手动清理 / 仅刷新清单。
+/// 处理「描述文件管理」类请求：🔴 v1.1.185 起只剩「刷新清单」。
+/// 删除指定文件 / 手动清理已整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
+/// @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」，见 main 顶部说明）。
 static void HandleManageRequests(void) {
     __sync_fetch_and_add(&g_busy, 1);
 
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-
-    // v1.1.183：只要消费过请求文件，就**必定**回写一句结果。
-    // 旧版在 HandleDeleteRequest 读到空内容返回 nil 时，请求文件已被删掉、
-    // 结果却一个字没写 —— App 那头只能干等满 60 秒报「root 侧未响应」，
-    // daemon 日志里同样查不到线索。现在哪怕是失败也要把原因回给 App。
-    if ([fm fileExistsAtPath:kDeleteRequestPath]) {
-        NSString *r = HandleDeleteRequest();
-        [parts addObject:(r.length
-                          ? r
-                          : @"ERR: 删除请求内容为空（请求文件已消费但没有有效文件名）")];
-    }
-    if ([fm fileExistsAtPath:kCleanupRequestPath]) {
-        [fm removeItemAtPath:kCleanupRequestPath error:nil];
-        [parts addObject:[@"OK: " stringByAppendingString:CleanupProfiles()]];
-    }
-
-    // 🔴 v1.1.179：清单必须在结果文件**之前**写。
-    // App 侧是「轮询到结果串就立刻去读清单快照」，旧版顺序是先写结果再写清单，
-    // 中间那几百毫秒 App 读到的是删除前的旧清单 —— 表现为「明明删了，列表还在」。
-    // 反过来先刷清单再回结果，App 拿到结果时清单必定已是最新，竞态消失。
+    // 刷新清单（App「描述文件管理」的「刷新清单」按钮走这里）。
+    // 清单先写、结果后回，保证 App 轮询到结果时清单已是最新。
     WriteInventory();
 
-    if (parts.count > 0) {
-        RPVPSNudgeProfiled();
-        NSString *combined = [parts componentsJoinedByString:@"; "];
-        RPVProfileDaemonLog(@"管理请求结果：%@", combined);
-        [combined writeToFile:kManageResultPath
-                   atomically:YES
-                     encoding:NSUTF8StringEncoding
-                        error:nil];
-        chown(kManageResultPath.fileSystemRepresentation, 501, 501);
-    }
+    NSString *done = @"OK: 清单已刷新";
+    RPVProfileDaemonLog(@"管理请求结果：%@", done);
+    [done writeToFile:kManageResultPath
+           atomically:YES
+             encoding:NSUTF8StringEncoding
+                error:nil];
+    chown(kManageResultPath.fileSystemRepresentation, 501, 501);
 
     g_lastActivity = [NSDate timeIntervalSinceReferenceDate];
     __sync_fetch_and_sub(&g_busy, 1);
@@ -309,27 +268,10 @@ int main(int argc, char *argv[]) {
         EnsureIpcDirWritable();
         [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
 
-        // 🔴🔴 v1.1.179 关键顺序修复：启动清理必须给「挂起请求」让路。
-        //
-        // 旧版无条件先跑 CleanupProfiles()，而它会按 application-identifier 去重、
-        // 删过期。可 daemon 是短命进程（空闲 60 秒自退），用户在 App 里点「删除某份
-        // 描述文件」时它多半已经退出 —— launchd 重新拉起后，启动清理**抢在**删除请求
-        // 之前跑，把用户点名要删的那份（往往正是重复/过期的那份）先删掉了；
-        // 随后处理删除请求时文件已不在，于是回报「已删除 0 个（跳过 1 个）」。
-        // 用户看到的就是「日志说没删除、列表里那份却确实没了」的自相矛盾。
-        //
-        // 现在：有挂起请求就先办请求，办完再补跑清理；没有请求才走原来的启动清理。
-        NSFileManager *bootFM = [NSFileManager defaultManager];
-        BOOL hasPendingRequest = [bootFM fileExistsAtPath:kProfileData] ||
-                                 [bootFM fileExistsAtPath:kDeleteRequestPath] ||
-                                 [bootFM fileExistsAtPath:kCleanupRequestPath];
-        if (!hasPendingRequest) {
-            // 启动即清一次，覆盖 daemon 未运行期间累积的过期与重复文件
-            RPVProfileDaemonLog(@"启动清理 → %@", CleanupProfiles());
-        } else {
-            RPVProfileDaemonLog(@"检测到挂起请求，启动清理推迟到请求处理之后");
-        }
-
+        // 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
+        // @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」）。
+        // 不再有任何「启动即清理 / 删除请求」逻辑；profile 堆积由「稳定名覆盖写」
+        // （sha1(application-identifier) 恒定同名，重签直接覆盖）从源头杜绝。
         g_lastActivity = [NSDate timeIntervalSinceReferenceDate];
 
         int token = 0;
@@ -386,14 +328,8 @@ int main(int argc, char *argv[]) {
         if ([[NSFileManager defaultManager] fileExistsAtPath:kProfileData]) {
             HandleRequest();
         }
-        // 无论有没有安装请求，启动都刷新一次清单并消费管理请求
+        // 启动都刷新一次清单（🔴 v1.1.185：删除/清理已移除，管理请求只剩刷新清单）
         HandleManageRequests();
-
-        // 挂起请求已经办完，这时才补跑常规清理（见上方顺序修复说明）
-        if (hasPendingRequest) {
-            RPVProfileDaemonLog(@"请求已处理，补跑启动清理 → %@", CleanupProfiles());
-            WriteInventory();
-        }
 
         // 短命化：空闲满 kIdleExitSeconds 就退出。iOS 17 launchd 会把长驻低 IPC
         // 守护判为 inefficient 直接 SIGKILL，常驻毫无意义（详见 signingd 改造）。
@@ -421,12 +357,7 @@ int main(int argc, char *argv[]) {
                 HandleRequest();
                 return;
             }
-            if ([tickFM fileExistsAtPath:kDeleteRequestPath] ||
-                [tickFM fileExistsAtPath:kCleanupRequestPath]) {
-                RPVProfileDaemonLog(@"轮询发现挂起的管理请求，立即处理");
-                HandleManageRequests();
-                return;
-            }
+            // 🔴 v1.1.185：删除/清理请求文件已不存在（功能移除），无需轮询。
 
             NSTimeInterval idle = [NSDate timeIntervalSinceReferenceDate] - g_lastActivity;
             if (idle >= kIdleExitSeconds) {

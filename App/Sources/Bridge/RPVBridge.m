@@ -1089,100 +1089,47 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
 
 static NSString *const kRPVProfileIpcDir        = @"/var/mobile/Library/RePro";
 static NSString *const kRPVInventoryPath        = @"/var/mobile/Library/RePro/profiles-inventory.plist";
-static NSString *const kRPVDeleteRequestPath    = @"/var/mobile/Library/RePro/profile-delete-request";
-static NSString *const kRPVCleanupRequestPath   = @"/var/mobile/Library/RePro/profile-cleanup-request";
 static NSString *const kRPVManageResultPath     = @"/var/mobile/Library/RePro/profile-manage-result";
 static NSString *const kRPVManageNotifyName     = @"com.reprovision.profile-manage-request";
+// 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
+// @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」）。
+// 不再有 kRPVDeleteRequestPath / kRPVCleanupRequestPath，管理请求只剩「刷新清单」。
 
 /// rootless / rootful 分支：没有 repro-profiledaemon（它只装在 RootHide 包里），
-/// 直接同步拉起 setuid root 的 repro-helper 做同样的事。helper 与 daemon 调的是
-/// RPVProfileStore.h 里同一份实现，结果也写到同一个 result 文件，行为完全一致。
-/// 返回结果串；纯刷新返回 @""；失败返回 nil。
-static NSString *RPVRunProfileManageViaHelper(NSArray<NSString *> *deleteNames, BOOL cleanup) {
+/// 直接同步拉起 setuid root 的 repro-helper 刷新清单。helper 与 daemon 调的是
+/// RPVProfileStore.h 里同一份实现。返回 @"" = 清单已更新；失败返回 nil。
+static NSString *RPVRunProfileManageViaHelper(void) {
     NSString *helperPath = RPVResolvedRootHelperPath();
     if (helperPath.length == 0) {
         RPVDiagnostic(RPVDiagError, @"profiles", @"未找到 repro-helper，无法管理描述文件");
         return nil;
     }
 
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm createDirectoryAtPath:kRPVProfileIpcDir
-  withIntermediateDirectories:YES attributes:nil error:nil];
-    [fm removeItemAtPath:kRPVManageResultPath error:nil];
-
-    BOOL hasWork = NO;
-    BOOL ok = YES;
-
-    if (deleteNames.count > 0) {
-        // 文件名清单写到 App 自己的 tmp（helper 是 root，读得到）
-        NSString *listPath = [NSTemporaryDirectory()
-                              stringByAppendingPathComponent:
-                              [NSString stringWithFormat:@"repro-profile-delete_%@.txt",
-                               [[NSUUID UUID] UUIDString]]];
-        NSString *body = [deleteNames componentsJoinedByString:@"\n"];
-        if ([body writeToFile:listPath atomically:YES encoding:NSUTF8StringEncoding error:nil]) {
-            ok = RPVRunRootHelper(helperPath, @[@"profiles-delete", listPath]);
-            hasWork = YES;
-            [fm removeItemAtPath:listPath error:nil];
-        } else {
-            ok = NO;
-        }
-    }
-
-    if (ok && cleanup) {
-        ok = RPVRunRootHelper(helperPath, @[@"profiles-cleanup"]);
-        hasWork = YES;
-    }
-
-    // 无论做没做事，最后都刷新一次清单，保证 UI 拿到的是最新状态
+    // v1.1.185 起只剩刷新清单（删除/清理已移除）
     BOOL invOK = RPVRunRootHelper(helperPath, @[@"profiles-inventory", kRPVInventoryPath]);
-    if (!ok || !invOK) return nil;
-
-    if (!hasWork) return @"";
-
-    NSString *result = [NSString stringWithContentsOfFile:kRPVManageResultPath
-                                                 encoding:NSUTF8StringEncoding error:nil];
-    [fm removeItemAtPath:kRPVManageResultPath error:nil];
-    return result.length ? [result stringByTrimmingCharactersInSet:
-                            [NSCharacterSet whitespaceAndNewlineCharacterSet]]
-                         : @"";
+    return invOK ? @"" : nil;
 }
 
-/// 投递一次管理请求并等待 daemon 处理完成。
-/// deleteNames 非空 → 删除指定文件；cleanup=YES → 过期+重复清理；两者都空 → 仅刷新清单。
-/// 返回 daemon 回写的结果串；纯刷新时返回 @"" 表示清单已更新；超时返回 nil。
-static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BOOL cleanup) {
+/// 投递一次「刷新清单」请求并等待 daemon 处理完成。
+/// 🔴 v1.1.185：删除/清理已整体移除，本函数只剩刷新清单这一个用途。
+/// 返回 @"" = 清单已更新；超时返回 nil。
+static NSString *RPVRunProfileManageRequest(void) {
     // 🔴 只有 RootHide 才需要绕 daemon：那里 App 进程在 jbroot namespace 内，
     // 直接（或经 helper）访问 /var/Managed Preferences/mobile 会被 overlay 重定向到假目录，
     // 必须由 rootfs LaunchDaemon 代劳。rootless/rootful 没有这层隔离，helper 同步做完更快。
     if (!RPVIsRootHideEnvironment()) {
-        return RPVRunProfileManageViaHelper(deleteNames, cleanup);
+        return RPVRunProfileManageViaHelper();
     }
 
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm createDirectoryAtPath:kRPVProfileIpcDir
   withIntermediateDirectories:YES attributes:nil error:nil];
 
-    // 记录清单原有时间戳，用于「纯刷新」场景判断 daemon 是否已经处理过
+    // 记录清单原有时间戳，用于判断 daemon 是否已经刷新过
     NSDate *beforeStamp = [[fm attributesOfItemAtPath:kRPVInventoryPath error:nil]
                            fileModificationDate];
 
     [fm removeItemAtPath:kRPVManageResultPath error:nil];
-
-    BOOL hasWork = NO;
-    if (deleteNames.count > 0) {
-        NSString *body = [deleteNames componentsJoinedByString:@"\n"];
-        if ([body writeToFile:kRPVDeleteRequestPath atomically:YES
-                     encoding:NSUTF8StringEncoding error:nil]) {
-            hasWork = YES;
-        }
-    }
-    if (cleanup) {
-        if ([@"1" writeToFile:kRPVCleanupRequestPath atomically:YES
-                     encoding:NSUTF8StringEncoding error:nil]) {
-            hasWork = YES;
-        }
-    }
 
     RPVKickstartProfileDaemon();
     notify_post(kRPVManageNotifyName.UTF8String);
@@ -1193,9 +1140,8 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
     // daemon 是短命进程（空闲 60 秒自退）。请求若恰好投在它「马上要退」的窗口里，
     // notify 会被那个正在死掉的进程收走，launchd 认为事件已被消费、不再拉起新实例，
     // 请求就悬在盘上没人处理，App 只能干等满 60 秒报「超时未返回」。
-    // 补发唤醒只是重新发信号 / kickstart，**不重写请求文件**，
-    // 而 daemon 侧读到请求即原子消费，因此不存在同一操作被执行两次的风险。
-    // v1.1.181：前 30s 仅软唤醒（绝不让 -k 误杀正在清理的 daemon）；
+    // 补发唤醒只是重新发信号 / kickstart，**不重写请求文件**。
+    // v1.1.181：前 30s 仅软唤醒（绝不让 -k 误杀正在干活的 daemon）；
     // 满 30s 仍无结果，说明 daemon 大概率已死 / 未被 launchctl 拉起，
     // 此时强制重启是安全的（dead→restart，不会中断任何进行中的工作），
     // 仅执行一次兜底，避免反复杀掉刚拉起、正在扫描的实例。
@@ -1217,26 +1163,14 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
             }
         }
 
-        if (hasWork) {
-            NSString *result = [NSString stringWithContentsOfFile:kRPVManageResultPath
-                                                         encoding:NSUTF8StringEncoding
-                                                            error:nil];
-            if (result.length > 0) {
-                [fm removeItemAtPath:kRPVManageResultPath error:nil];
-                return [result stringByTrimmingCharactersInSet:
-                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            }
-        } else {
-            NSDate *now = [[fm attributesOfItemAtPath:kRPVInventoryPath error:nil]
-                           fileModificationDate];
-            if (now && (!beforeStamp || [now compare:beforeStamp] == NSOrderedDescending)) {
-                return @"";
-            }
+        NSDate *now = [[fm attributesOfItemAtPath:kRPVInventoryPath error:nil]
+                       fileModificationDate];
+        if (now && (!beforeStamp || [now compare:beforeStamp] == NSOrderedDescending)) {
+            return @"";
         }
     }
 
-    RPVLogProfileDaemonTimeoutDiagnostics(
-        deleteNames.count > 0 ? @"描述文件删除" : (cleanup ? @"描述文件清理" : @"清单刷新"));
+    RPVLogProfileDaemonTimeoutDiagnostics(@"清单刷新");
     return nil;
 }
 
@@ -1260,23 +1194,10 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
 }
 
 + (BOOL)refreshManagedProfilesInventory {
-    return RPVRunProfileManageRequest(nil, NO) != nil;
+    return RPVRunProfileManageRequest() != nil;
 }
-
-+ (NSString *)requestManagedProfileCleanup {
-    NSString *r = RPVRunProfileManageRequest(nil, YES);
-    RPVDiagnostic(r ? RPVDiagInfo : RPVDiagError, @"profiledaemon",
-                  @"描述文件清理结果: %@", r ?: @"超时未返回");
-    return r;
-}
-
-+ (NSString *)requestManagedProfileDeletion:(NSArray<NSString *> *)fileNames {
-    if (fileNames.count == 0) return nil;
-    NSString *r = RPVRunProfileManageRequest(fileNames, NO);
-    RPVDiagnostic(r ? RPVDiagInfo : RPVDiagError, @"profiledaemon",
-                  @"描述文件删除结果: %@", r ?: @"超时未返回");
-    return r;
-}
+// 🔴 v1.1.185：requestManagedProfileCleanup / requestManagedProfileDeletion 已移除
+// （删除/清理功能整体下线，见 RPVRunProfileManageRequest 注释）。
 
 /// rootful 环境下本来就能写成功。
 + (void)installRootHelperHandlers {
