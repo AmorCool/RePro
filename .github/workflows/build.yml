@@ -238,6 +238,7 @@ jobs:
             "-IVendor/ReProvision/Application Database"
             -IVendor/ReProvision/Resources
             -IVendor/ReProvision/libProvision/SSZipArchive
+            -IVendor/ReProvision/Support
             -IVendor/ChOma
             -IHelper
             "-I${OPENSSL_DIR}/include"
