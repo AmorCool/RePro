@@ -79,6 +79,12 @@ static NSDictionary *RPVDaemonCredentials(void) {
 
 // ─── RPVAuthentication 桩（真实 Anisette + 缓存直通登录）────────────────────
 
+// AuthKit 私有框架声明（动态取类时编译器需要 selector 签名）
+@interface AKAppleIDSession : NSObject
+- (id)initWithIdentifier:(id)arg1;
+- (id)appleIDHeadersForRequest:(id)arg1;
+@end
+
 @interface RPVAuthentication : NSObject
 @property (nonatomic, strong) NSString *clientInfoOverride;
 - (NSDictionary *)appleIDHeadersForRequest:(NSURLRequest *)request;

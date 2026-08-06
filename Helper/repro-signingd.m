@@ -62,6 +62,12 @@
 #import "RPVProfileStore.h"   // profile 解析/安装/通知 profiled
 #import "EEBackend.h"         // 签名管线入口（内部走 EEProvisioning + RZSignRunner/zsign）
 
+// LSApplicationWorkspace 不在公开 SDK 头（与 App 侧 RPVApplicationSigning 相同声明方式）
+@interface LSApplicationWorkspace : NSObject
++ (id)defaultWorkspace;
+- (BOOL)installApplication:(NSURL *)arg1 withOptions:(NSDictionary *)arg2 error:(NSError **)arg3;
+@end
+
 static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
 static NSString *const kConfigPath  = @"/var/mobile/Library/Resign/signingd-config.plist";
 static NSString *const kTriggerPath = @"/var/mobile/Library/Resign/auto-resign-trigger";
