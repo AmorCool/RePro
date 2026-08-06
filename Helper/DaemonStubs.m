@@ -5,6 +5,13 @@
 
 #import <Foundation/Foundation.h>
 
+// CGRectZero 手动常量（避免链接 CoreGraphics）
+#if !defined(CGRectZero)
+typedef struct { double x, y, width, height; } DaemonCGRect;
+static const DaemonCGRect daemonRectZero = {0, 0, 0, 0};
+#define CGRectZero daemonRectZero
+#endif
+
 // ─── UIKit 桩（daemon 无 UI，全部 nil 空壳）───────────────────────────────
 
 @interface UIDevice : NSObject
