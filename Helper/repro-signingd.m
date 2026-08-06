@@ -105,6 +105,9 @@ static NSString *sLogPath   = nil;   // v1.1.152：实际写入的文件路径�
 static time_t    gResignStartTime = 0;       // 本次续签开始时间
 static BOOL      gResignInProgress = NO;     // 是否有续签正在进行
 
+// 前向声明（定义在本文件后面，看门狗等早期函数需要调用）
+static void s_log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+
 // ─── 内存看门狗（v1.1.150，2026-08-06 v1.1.192 根本性重写）─────────────
 //
 // 🔴 真机实锤（22:25-22:27，31 次 Jetsam largestProcess=repro-signingd）：
