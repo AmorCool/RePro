@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name（手动触发专用；留空则用分支名）'
+        required: false
+        default: ''
 
 # 🔴 v2.1.0：同一 tag force push 会堆积多个排队 run（互相干扰、浪费名额）。
 # concurrency：同 ref 只保留最新，旧 run 自动取消。
@@ -490,8 +495,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "ReSign ${{ github.ref_name }}"
+          # 🔴 v2.1.0：手动触发（workflow_dispatch）时 github.ref_name=main 会建错 release，
+          # 用输入参数覆盖：dispatch 时传 tag_name，tag push 时用 github.ref_name。
+          tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
+          name: "ReSign ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}"
           body: |
             ## ReSign ${{ github.ref_name }}
             ### 安装包
