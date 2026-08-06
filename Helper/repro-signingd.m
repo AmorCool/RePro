@@ -1123,11 +1123,11 @@ static void s_onSigningComplete(void) {
     NSDictionary *appReport = [NSDictionary dictionaryWithContentsOfFile:
                                [kIpcDir stringByAppendingString:@"/app-resign-report.plist"]];
     if (appReport) {
-        // 🔴 v1.1.190：App 侧 result=skipped（所有应用剩余有效期充足，无需重签，
-        // 即 RPVErrorNoSigningRequired=101）同样算成功——旧版只认 success，
-        // skipped 被标成「失败」，用户看日志误以为续签出问题。
-        NSString *ar = appReport[@"result"];
-        BOOL ok = [ar isEqualToString:@"success"] || [ar isEqualToString:@"skipped"];
+        // 🔴 v1.1.191：按用户要求回退 v1.1.190 的改动——skipped（无需重签）**不**视为成功。
+        // 语义口径：skipped = 剩余有效期没到「提前重签窗口」（严格小于）的正常跳过，
+        // 本轮**没有执行续签**，标「成功」会误导用户以为真的续签了；
+        // 「失败 + 详情=无需重签」虽然字面刺眼，但详情把原因说清楚了，用户认可这个口径。
+        BOOL ok = [appReport[@"result"] isEqualToString:@"success"];
         s_log(@"App 报告: 结果=%@ App侧耗时=%.1f秒 详情=%@",
               ok ? @"成功" : @"失败",
               [appReport[@"elapsed"] doubleValue],
