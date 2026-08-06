@@ -168,20 +168,94 @@ jobs:
           echo "profile daemon built successfully"
 
       - name: Build signing daemon (repro-signingd)
-        # repro-signingd 是后台定时续签守护进程。由 launchd 在系统启动时
-        # 拉起（RunAtLoad + KeepAlive），用 NSTimer 定时检查是否需要续签，
-        # 通过 notify_post + 共享文件通知 App 执行自动续签。
+        # 🆕 v2.1.0：signingd 直接集成交付满签名管线（原版 ReProvision 架构）。
+        # 不再依赖唤醒 App → 不存在「等 notify 卡死」的脆弱环节。
+        # 编译包含 Vendor 下全部签名源码 + libplist + OpenSSL 1.1.x（CSR 生成）。
         run: |
           set -e
           mkdir -p build
+
+          OPENSSL_DIR=/tmp/openssl-ios
+
+          # 所有签名相关的 ObjC/C++ 源文件
+          SRC_OBJC="
+            Helper/repro-signingd.m
+            Vendor/ReProvision/libProvision/EEBackend.m
+            Vendor/ReProvision/libProvision/Provisioning/EEProvisioning.mm
+            Vendor/ReProvision/libProvision/Apple Services/EEAppleServices.m
+            Vendor/ReProvision/libProvision/Apple Services/RPVAuthentication.m
+            Vendor/ReProvision/libProvision/Apple Services/RPVLoginImpl.m
+            Vendor/ReProvision/libProvision/Apple Services/RPVLoginFallbackImpl.m
+            Vendor/ReProvision/libProvision/Apple Services/NSData+GZIP.m
+            Vendor/ReProvision/libProvision/Signing/RZSignRunner.m
+            Vendor/ReProvision/libProvision/CoreCrypt/ccsrp.m
+            Vendor/ReProvision/Resources/RPVResources.m
+            Vendor/ReProvision/Resources/RPVAccountChecker.m
+            Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain.m
+            Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain/SAMKeychainQuery.m
+            Vendor/ReProvision/Application Database/RPVApplication.m
+            Helper/SSZipArchiveStub.m
+          "
+
+          # libplist（C → 被 EEProvisioning 内部 plist 解析依赖）
+          SRC_LIBPLIST="
+            Vendor/ReProvision/libProvision/libplist/base64.c
+            Vendor/ReProvision/libProvision/libplist/bplist.c
+            Vendor/ReProvision/libProvision/libplist/bytearray.c
+            Vendor/ReProvision/libProvision/libplist/hashtable.c
+            Vendor/ReProvision/libProvision/libplist/libcnary/iterator.c
+            Vendor/ReProvision/libProvision/libplist/libcnary/list.c
+            Vendor/ReProvision/libProvision/libplist/libcnary/node.c
+            Vendor/ReProvision/libProvision/libplist/libcnary/node_iterator.c
+            Vendor/ReProvision/libProvision/libplist/libcnary/node_list.c
+            Vendor/ReProvision/libProvision/libplist/plist.c
+            Vendor/ReProvision/libProvision/libplist/ptrarray.c
+            Vendor/ReProvision/libProvision/libplist/time64.c
+            Vendor/ReProvision/libProvision/libplist/xplist.c
+            Vendor/ReProvision/libProvision/libplist/Array.cpp
+            Vendor/ReProvision/libProvision/libplist/Boolean.cpp
+            Vendor/ReProvision/libProvision/libplist/Data.cpp
+            Vendor/ReProvision/libProvision/libplist/Date.cpp
+            Vendor/ReProvision/libProvision/libplist/Dictionary.cpp
+            Vendor/ReProvision/libProvision/libplist/Integer.cpp
+            Vendor/ReProvision/libProvision/libplist/Key.cpp
+            Vendor/ReProvision/libProvision/libplist/Node.cpp
+            Vendor/ReProvision/libProvision/libplist/Real.cpp
+            Vendor/ReProvision/libProvision/libplist/String.cpp
+            Vendor/ReProvision/libProvision/libplist/Structure.cpp
+            Vendor/ReProvision/libProvision/libplist/Uid.cpp
+          "
+
+          # include 路径（与 App xcodeproj 中的 HEADER_SEARCH_PATHS 对齐）
+          INC_DIRS="
+            -IVendor/ReProvision
+            -IVendor/ReProvision/libProvision
+            -IVendor/ReProvision/libProvision/Provisioning
+            -IVendor/ReProvision/libProvision/Apple Services
+            -IVendor/ReProvision/libProvision/Signing
+            -IVendor/ReProvision/libProvision/SAMKeychain
+            -IVendor/ReProvision/libProvision/SAMKeychain/SAMKeychain
+            -IVendor/ReProvision/libProvision/libplist/include
+            -IVendor/ReProvision/libProvision/CoreCrypt
+            -IVendor/ReProvision/corecrypto
+            -IVendor/ReProvision/Application Database
+            -IVendor/ReProvision/Resources
+            -IVendor/ReProvision/libProvision/SSZipArchive
+            -IHelper
+            -I${OPENSSL_DIR}/include
+          "
 
           xcrun -sdk iphoneos clang \
             -x objective-c -fobjc-arc \
             -arch arm64 -miphoneos-version-min=15.0 \
             -O2 \
             -framework Foundation -framework CoreFoundation \
+            ${INC_DIRS} \
+            -L${OPENSSL_DIR}/lib -lssl -lcrypto \
             -o build/repro-signingd \
-            Helper/repro-signingd.m 2>&1 | tee signingd_build.log
+            ${SRC_OBJC} \
+            ${SRC_LIBPLIST} \
+            2>&1 | tee signingd_build.log
 
           if [ ! -f build/repro-signingd ]; then
             echo "error: repro-signingd build failed"
@@ -191,7 +265,7 @@ jobs:
 
           file build/repro-signingd
           chmod +x build/repro-signingd
-          echo "signing daemon built successfully"
+          echo "signing daemon built successfully (v2.1.0: self-contained signing pipeline)"
 
       - name: Cross-compile zsign for iOS (arm64)
         # zsign 是设备端签名后端（纯 C/C++，仅依赖 OpenSSL）。
