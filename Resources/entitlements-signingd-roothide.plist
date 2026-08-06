@@ -7,7 +7,7 @@
 	     在通用版基础上多一组 no-sandbox / storage.*：
 	     RootHide 默认把所有越狱二进制关进沙箱，daemon 需要读真实
 	     /var/mobile/Library/Preferences 下 App 的偏好设置（检查间隔 / 阈值），
-	     还要写 /var/log 日志与 /var/mobile/Library/RePro 的 IPC 文件。
+	     还要写 /var/log 日志与 /var/mobile/Library/Resign 的 IPC 文件。
 
 	     ★ 三条 backboardd / multitasking 权限是唤醒 App 到后台并保活的前提，
 	       v1.1.63 及以前因为裸签（零 entitlements）而全部缺失。 -->
@@ -19,16 +19,16 @@
 	     要求二进制具备合法的 application-identifier / team-identifier / app-group，
 	     否则仍会在运行时剥离私有权限（SBSLaunch 返回 7）。AAAAAAAAAA 为通配 team id。 -->
 	<key>application-identifier</key>
-	<string>AAAAAAAAAA.jp.soh.reprovision.signingd</string>
+	<string>AAAAAAAAAA.cn.analy.resign.signingd</string>
 	<key>com.apple.developer.team-identifier</key>
 	<string>AAAAAAAAAA</string>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.jp.soh.reprovision.ios</string>
+		<string>group.cn.analy.resign.ios</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
+		<string>AAAAAAAAAA.cn.analy.resign.ios</string>
 	</array>
 
 	<key>com.apple.private.security.no-container</key>

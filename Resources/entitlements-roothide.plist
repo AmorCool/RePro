@@ -75,19 +75,19 @@
     <true/>
 
     <key>application-identifier</key>
-    <string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
+    <string>AAAAAAAAAA.cn.analy.resign.ios</string>
 
     <key>com.apple.developer.team-identifier</key>
     <string>AAAAAAAAAA</string>
 
     <key>com.apple.security.application-groups</key>
     <array>
-      <string>group.jp.soh.reprovision.ios</string>
+      <string>group.cn.analy.resign.ios</string>
     </array>
 
     <key>keychain-access-groups</key>
     <array>
-      <string>AAAAAAAAAA.jp.soh.reprovision.ios</string>
+      <string>AAAAAAAAAA.cn.analy.resign.ios</string>
     </array>
 
     <key>com.apple.localnotification.schedulingproxy</key>
@@ -107,7 +107,7 @@
 
     <key>com.apple.developer.icloud-container-identifiers</key>
     <array>
-      <string>iCloud.jp.soh.reprovision.ios</string>
+      <string>iCloud.cn.analy.resign.ios</string>
     </array>
 
     <key>com.apple.security.iokit-user-client-class</key>

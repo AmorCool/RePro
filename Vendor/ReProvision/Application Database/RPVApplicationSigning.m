@@ -81,7 +81,7 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 
     if (self) {
         self.observers = [NSMutableArray array];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(_appShouldBeRemoved:) name:@"jp.soh.reprovision/appShouldBeRemoved" object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(_appShouldBeRemoved:) name:@"cn.analy.resign/appShouldBeRemoved" object:nil];
     }
 
     return self;

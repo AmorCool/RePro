@@ -1326,14 +1326,14 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.192;
+				MARKETING_VERSION = 2.0.0;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lssl",
 					"-lcrypto",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.reprovision.repro;
+				PRODUCT_BUNDLE_IDENTIFIER = cn.analy.resign;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
@@ -1384,14 +1384,14 @@
 					"$(inherited)",
 					"$(OPENSSL_ROOT)/lib",
 				);
-				MARKETING_VERSION = 1.1.192;
+				MARKETING_VERSION = 2.0.0;
 				OTHER_CFLAGS = "-DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lssl",
 					"-lcrypto",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.reprovision.repro;
+				PRODUCT_BUNDLE_IDENTIFIER = cn.analy.resign;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = iphoneos;
 				SUPPORTS_MACCATALYST = NO;

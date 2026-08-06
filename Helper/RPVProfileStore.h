@@ -230,9 +230,9 @@ static inline void RPVPSNudgeProfiled(void) {
     // 目录（FSEvents / notifyd），新建/覆盖描述文件后它最终会自行重新扫描，因此无需每次都 SIGHUP。
     // 用标记文件 mtime 做「跨进程 60s 冷却去重」：同一时间窗口内只真正发送一次 SIGHUP，
     // 把一次安装潮合并成一次重建。daemon/helper 每次运行都是独立进程，static 变量无法跨进程
-    // 共享，故用文件标记（位于共享 IPC 目录 /var/mobile/Library/RePro/，root 可写）。
+    // 共享，故用文件标记（位于共享 IPC 目录 /var/mobile/Library/Resign/，root 可写）。
     // 若标记文件不可写则优雅降级为「仍发送」（最坏回到旧行为），不会阻塞主流程。
-    static const char *kNudgeStamp = "/var/mobile/Library/RePro/.last-profiled-nudge";
+    static const char *kNudgeStamp = "/var/mobile/Library/Resign/.last-profiled-nudge";
     time_t now = time(NULL);
     struct stat st;
     if (stat(kNudgeStamp, &st) == 0 && (now - st.st_mtime) < 60) {

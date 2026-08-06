@@ -301,7 +301,7 @@ static int RPVHelperFixCellularViaCTServer(NSString *bid) {
     // v1.1.124：写共享修复时间戳（与 signingd 开机自动修复共用防抖文件）。
     // 手动/自动修复成功后，下次设备重启前不再重复触发。
     NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
-    [stamp writeToFile:@"/var/mobile/Library/RePro/fix-cellular-last.plist" atomically:YES];
+    [stamp writeToFile:@"/var/mobile/Library/Resign/fix-cellular-last.plist" atomically:YES];
 
     return 0;
 }
@@ -538,7 +538,7 @@ static int RPVHelperRebootUserSpace(void) {
 ///
 /// v1.1.182：RootHide 下 uicache 退出码 1 是已知问题（命令内部读 /var/containers
 /// 受 namespace 限制）。App 侧「重建图标缓存」改用 kickstart-lsd；uicache 子命令
-/// 仍保留给「重新注册 App」用，但 stderr 重定向到 /var/mobile/Library/RePro/uicache.stderr.log
+/// 仍保留给「重新注册 App」用，但 stderr 重定向到 /var/mobile/Library/Resign/uicache.stderr.log
 /// —— 失败时用户能在 RePro 日志面板看到真因。
 static int RPVHelperRunUicache(int argc, char *argv[]) {
     // v1.1.183：改用统一的越狱工具解析（含 RootHide 随机 jbroot），
@@ -569,7 +569,7 @@ static int RPVHelperRunUicache(int argc, char *argv[]) {
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addopen(&actions, 2,
-        "/var/mobile/Library/RePro/uicache.stderr.log",
+        "/var/mobile/Library/Resign/uicache.stderr.log",
         O_WRONLY | O_CREAT | O_TRUNC, 0644);
 
     int rc = posix_spawn(&pid, [uicache UTF8String], &actions, NULL, (char *const *)cargs, NULL);
@@ -582,7 +582,7 @@ static int RPVHelperRunUicache(int argc, char *argv[]) {
     int status = 0;
     waitpid(pid, &status, 0);
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    RPVHelperLog(@"uicache exit=%d (%@)，stderr 已写入 /var/mobile/Library/RePro/uicache.stderr.log",
+    RPVHelperLog(@"uicache exit=%d (%@)，stderr 已写入 /var/mobile/Library/Resign/uicache.stderr.log",
                  exitCode, [args componentsJoinedByString:@" "]);
     return exitCode;
 }
@@ -608,7 +608,7 @@ static int RPVHelperLaunchctlKickstart(NSString *launchctlPath,
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addopen(&actions, 2,
-        "/var/mobile/Library/RePro/uicache.stderr.log",
+        "/var/mobile/Library/Resign/uicache.stderr.log",
         O_WRONLY | O_CREAT | O_APPEND, 0644);
     int rc = posix_spawn(&pid, lc, &actions, NULL, (char *const *)args, env);
     posix_spawn_file_actions_destroy(&actions);
@@ -731,7 +731,7 @@ static int RPVHelperRebuildIconCache(NSString *bundlePath) {
         posix_spawn_file_actions_t actions;
         posix_spawn_file_actions_init(&actions);
         posix_spawn_file_actions_addopen(&actions, 2,
-            "/var/mobile/Library/RePro/uicache.stderr.log",
+            "/var/mobile/Library/Resign/uicache.stderr.log",
             O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (posix_spawn(&pid, uc, &actions, NULL, (char *const *)args, NULL) == 0) {
             int status = 0;
@@ -781,8 +781,8 @@ static int RPVHelperKickstartProfileDaemon(BOOL force) {
 
     // roothide 把 jbroot 下的 LaunchDaemons 加载在 system 域（postinst 用的是
     // `bootstrap system`）；历史上也出现过挂在 user/501 的情况，两个域都试一次。
-    const char *domains[] = { "system/jp.soh.reprovision.profiledaemon",
-                              "user/501/jp.soh.reprovision.profiledaemon" };
+    const char *domains[] = { "system/cn.analy.resign.profiledaemon",
+                              "user/501/cn.analy.resign.profiledaemon" };
     for (int d = 0; d < 2; d++) {
         const char *argvKill[] = { lc, "kickstart", "-k", domains[d], NULL };
         const char *argvSoft[] = { lc, "kickstart", domains[d], NULL };
@@ -876,7 +876,7 @@ int main(int argc, char *argv[]) {
             // 修复可延后，续签中断不可恢复。
             {
                 NSDictionary *trigger = [NSDictionary dictionaryWithContentsOfFile:
-                    @"/var/mobile/Library/RePro/auto-resign-trigger"];
+                    @"/var/mobile/Library/Resign/auto-resign-trigger"];
                 NSTimeInterval ts = trigger ? [trigger[@"timestamp"] doubleValue] : 0;
                 if (ts > 0 && (time(NULL) - (time_t)ts) < 180) {
                     return 0; // 🔇 静默跳过（不写时间戳，后续仍可触发修复）

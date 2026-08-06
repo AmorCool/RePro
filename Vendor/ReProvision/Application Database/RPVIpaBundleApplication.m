@@ -113,10 +113,10 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
     if (!tmp) tmp = @"/tmp";
 
     // RootHide：App 的 NSTemporaryDirectory() 落在 jbroot overlay namespace，
-    // 直接拷贝到共享路径 /var/mobile/Library/RePro/imports/<uuid>（App 可读写，
+    // 直接拷贝到共享路径 /var/mobile/Library/Resign/imports/<uuid>（App 可读写，
     // 正是 profiledaemon 用的 IPC 目录），避免路径在 namespace 间对不上。
     BOOL isRootHide = RPVIsRootHideEnvironment();
-    NSString *baseDir = isRootHide ? @"/var/mobile/Library/RePro/imports" : tmp;
+    NSString *baseDir = isRootHide ? @"/var/mobile/Library/Resign/imports" : tmp;
 
     // Namespace the copy so concurrent imports don't clash, but keep the original
     // filename so the .ipa extension (checked downstream) is preserved.

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>jp.soh.reprovision.signingd</string>
+	<string>cn.analy.resign.signingd</string>
 	<key>ProgramArguments</key>
 	<array>
 		<!-- ★ v1.1.65 关键修复：RootHide 下必须设这两个环境变量，否则 RootHide 会在运行时
@@ -18,7 +18,7 @@
 	<key>RunAtLoad</key>
 	<true/>
 	<!-- v1.1.155 短命化：去掉 KeepAlive，改由 StartCalendarInterval 每小时（第 0 分钟）拉起一次。
-	     见 Resources/jp.soh.reprovision.signingd.plist 注释（iOS 17 "inefficient"
+	     见 Resources/cn.analy.resign.signingd.plist 注释（iOS 17 "inefficient"
 	     SIGKILL 杀循环 → 短命进程绕开 + RootHide 常驻泄漏无累积机会）。 -->
 	<key>StartCalendarInterval</key>
 	<dict>
@@ -32,7 +32,7 @@
 	<integer>30</integer>
 	<key>UserName</key>
 	<string>root</string>
-	<!-- v1.1.152：见 Resources/jp.soh.reprovision.signingd.plist 注释
+	<!-- v1.1.152：见 Resources/cn.analy.resign.signingd.plist 注释
 	     （移除 Interactive 改 Background + 加 MemoryLimit=50MB 防 iOS 17
 	      launchd "inefficient" 判定 + 6MB jetsam 限额过严）。 -->
 	<key>ProcessType</key>

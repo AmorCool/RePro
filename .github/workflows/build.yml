@@ -308,7 +308,7 @@ jobs:
           do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$RL/usr/libexec/"
-          cp Resources/jp.soh.reprovision.signingd.plist "$RL/Library/LaunchDaemons/"
+          cp Resources/cn.analy.resign.signingd.plist "$RL/Library/LaunchDaemons/"
           chmod 0755 "$RL/usr/libexec/repro-signingd"
           # v1.1.64：signingd 必须带 backboardd.launchapplications / multitasking.*assertions
           # 才能唤醒 App 到后台并保活。此前 rootless/rootful 甚至完全没签 → 唤醒永远失败。
@@ -331,7 +331,7 @@ jobs:
           do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
           do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$PKG2/usr/libexec/"
-          cp Resources/jp.soh.reprovision.signingd.plist "$PKG2/Library/LaunchDaemons/"
+          cp Resources/cn.analy.resign.signingd.plist "$PKG2/Library/LaunchDaemons/"
           chmod 0755 "$PKG2/usr/libexec/repro-signingd"
           do_sign "$PKG2/usr/libexec/repro-signingd" Resources/entitlements-signingd.plist
           do_sign_bare "$PKG2/usr/local/bin/zsign"
@@ -350,10 +350,10 @@ jobs:
           chmod 0755 "$PKG3/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG3/Applications/ReSign.app/Icon.png"
-          cp Resources/jp.soh.reprovision.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
+          cp Resources/cn.analy.resign.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
           # v1.1.65：roothide 用专属 LaunchDaemon plist（带 _MSSafeMode=1/_SafeMode=1，
           # 否则 RootHide 运行时剥离 backboardd.launchapplications → SBSLaunch 返回 7）
-          cp Resources/jp.soh.reprovision.signingd-roothide.plist "$PKG3/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
+          cp Resources/cn.analy.resign.signingd-roothide.plist "$PKG3/Library/LaunchDaemons/cn.analy.resign.signingd.plist"
           do_sign "$PKG3/Applications/ReSign.app/ReSign" Resources/entitlements-roothide.plist
           do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
           do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
@@ -377,9 +377,9 @@ jobs:
             find "Packages/$pkg/DEBIAN" -type f -exec chmod 0755 {} \;
           done
 
-          dpkg-deb -Zgzip -b Packages/rootless "CydiaPackages/jp.soh.reprovision_${VERSION}_iphoneos-arm64.deb"
-          dpkg-deb -Zgzip -b Packages/rootful "CydiaPackages/jp.soh.reprovision_${VERSION}_iphoneos-arm.deb"
-          dpkg-deb -Zgzip -b Packages/roothide "CydiaPackages/jp.soh.reprovision_${VERSION}_roothide-iphoneos-arm64.deb"
+          dpkg-deb -Zgzip -b Packages/rootless "CydiaPackages/cn.analy.resign_${VERSION}_iphoneos-arm64.deb"
+          dpkg-deb -Zgzip -b Packages/rootful "CydiaPackages/cn.analy.resign_${VERSION}_iphoneos-arm.deb"
+          dpkg-deb -Zgzip -b Packages/roothide "CydiaPackages/cn.analy.resign_${VERSION}_roothide-iphoneos-arm64.deb"
 
           ls -lh CydiaPackages/
 

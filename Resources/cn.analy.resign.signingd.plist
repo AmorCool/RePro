@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>jp.soh.reprovision.signingd</string>
+	<string>cn.analy.resign.signingd</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/libexec/repro-signingd</string>

@@ -37,7 +37,7 @@
 //    Daemon 的角色是「短命调度器 + 唤醒器 + 保活管理者」：
 //      launchd 定时拉起 → 冷却检查 → 写 trigger 标记 → SBSLaunchApplication 唤醒 App 到后台
 //      → BKSProcessAssertion 防止 App 被挂起 → App 执行 silentResignAndExit → exit(0)
-//      → App 完成时 notify("com.reprovision.signing-complete") → daemon 写 lastResignTime → 退出
+//      → App 完成时 notify("cn.analy.resign.signing-complete") → daemon 写 lastResignTime → 退出
 //    用户全程无需手动打开 App；设备深睡错过调度会在唤醒后由 launchd 立即补执行。
 //
 //  日志: fopen/fprintf 同步写入 <jbroot>/var/log/reprorefresh_at.log
@@ -57,19 +57,19 @@
 #import <mach/mach.h>
 #import <Foundation/Foundation.h>
 
-static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
-static NSString *const kConfigPath  = @"/var/mobile/Library/RePro/signingd-config.plist";
-static NSString *const kTriggerPath = @"/var/mobile/Library/RePro/auto-resign-trigger";
-static NSString *const kResultPath  = @"/var/mobile/Library/RePro/last-resign-result.plist";
-static NSString *const kPidPath     = @"/var/mobile/Library/RePro/signingd.pid";
-// ⚠️ v1.1.69 关键修复：此前此处写成 @"jp.soh.reprovision"，但 App 真实的
-// CFBundleIdentifier（SpringBoard 注册 ID）= "com.reprovision.repro"（见 pbxproj
+static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
+static NSString *const kConfigPath  = @"/var/mobile/Library/Resign/signingd-config.plist";
+static NSString *const kTriggerPath = @"/var/mobile/Library/Resign/auto-resign-trigger";
+static NSString *const kResultPath  = @"/var/mobile/Library/Resign/last-resign-result.plist";
+static NSString *const kPidPath     = @"/var/mobile/Library/Resign/signingd.pid";
+// ⚠️ v1.1.69 关键修复：此前此处写成 @"cn.analy.resign"，但 App 真实的
+// CFBundleIdentifier（SpringBoard 注册 ID）= "cn.analy.resign"（见 pbxproj
 // PRODUCT_BUNDLE_IDENTIFIER 与 deb 内 Info.plist）。SBS 用 BundleID 查 App，
 // 传错 ID → SBSProcessIDForDisplayIdentifier 返回 NO、SBSLaunch 返回 7（"App 未注册"），
 // App 永远拉不起来 → 自动续签从未真正发生。现已改为正确的 BundleID。
 // （kAppBundleID 也用于读 App 配置：App 把设置同步到共享 plist
-//  /var/mobile/Library/RePro/signingd-config.plist，与 BundleID 无关，不受影响。）
-static NSString *const kAppBundleID = @"com.reprovision.repro";
+//  /var/mobile/Library/Resign/signingd-config.plist，与 BundleID 无关，不受影响。）
+static NSString *const kAppBundleID = @"cn.analy.resign";
 
 // 免费账号「同一设备最多 3 个自签应用」限制所依赖的扩展属性名
 static const char *const kFreeProfileXattr = "com.apple.installd.validatedByFreeProfile";
@@ -91,7 +91,7 @@ static const NSInteger  kFallbackDays    = 2;
 static const NSInteger kDefaultCheckIntervalHours = 1;
 static const NSInteger kMaxCheckIntervalHours     = 12;
 // 记录「上一次真正执行检测的时刻」，跨进程持久化（daemon 是短命进程，内存变量留不住）
-static NSString *const kCheckStatePath = @"/var/mobile/Library/RePro/signingd-check-state.plist";
+static NSString *const kCheckStatePath = @"/var/mobile/Library/Resign/signingd-check-state.plist";
 
 // 🔴 v1.1.148 提前重签阈值上限（用户要求：最多只能提前 6 天）。
 // 根因：免费 Apple ID 的 profile 有效期只有 7 天，若阈值允许 7 天，
@@ -269,11 +269,11 @@ static void s_open_log(void) {
     // /var/jb/var/log 与 /var/mobile/Library/Logs/RePro 都被 overlay 重定向到
     // AppGroup 假目录（/rootfs/var/mobile/Containers/Shared/AppGroup/.jbroot-XXX/…），
     // 日志写在那里，用户 SSH / 爱思 / App 全部看不到 —— 表现为「没生成日志」。
-    // 而 /var/mobile/Library/RePro 是 RootHide 明确的「豁免 overlay 共享 IPC 目录」，
+    // 而 /var/mobile/Library/Resign 是 RootHide 明确的「豁免 overlay 共享 IPC 目录」，
     // daemon 写它 = 真实 rootfs（pid/check-state/crash-count 都写在这里），
     // App 也是 mobile 可读 → 日志放这里，App 日志页与 SSH 都能直接看到。
     NSArray<NSString *> *candidates = @[
-        @"/var/mobile/Library/RePro/reprorefresh_at.log",               // ★ 豁免目录=真实 rootfs（v1.1.186 首选）
+        @"/var/mobile/Library/Resign/reprorefresh_at.log",               // ★ 豁免目录=真实 rootfs（v1.1.186 首选）
         [dir stringByAppendingPathComponent:@"reprorefresh_at.log"],   // 原路径：jbroot 容器内
         @"/var/mobile/Library/Logs/RePro/reprorefresh_at.log",        // 真实 syslog 旁路
         @"/tmp/reprorefresh_at.log",                                   // 最后兜底（重启清空）
@@ -413,14 +413,14 @@ static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
 //
 // ⚠️ v1.1.64 关键修复 —— 用户主诉「App 里设的检查间隔 / 提前重签天数，跟 daemon 实际用的不一样」
 //
-//   旧版 daemon 只认 /var/mobile/Library/RePro/signingd-config.plist 这一个来源，
+//   旧版 daemon 只认 /var/mobile/Library/Resign/signingd-config.plist 这一个来源，
 //   而这个文件只有 App 在前台改设置时才会被写出来。只要 App 没被打开过
 //   （而 daemon 的整个存在意义恰恰就是「不用打开 App」），文件就不存在，
 //   daemon 于是一路打「配置文件不存在」并用死值 120 分 / 2 天 跑，
 //   跟界面上的设置完全脱节。这就是日志里刷屏的那行的真正含义。
 //
 //   现在按 ReProvision 原版 reprovisiond 的做法：优先直接读 App 自己的
-//   UserDefaults（CFPreferences，appID=jp.soh.reprovision，user=mobile）。
+//   UserDefaults（CFPreferences，appID=cn.analy.resign，user=mobile）。
 //   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
 //   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
@@ -992,7 +992,7 @@ static BOOL s_fire(void) {
     // 永不执行 → 续签静默失败（用户实测「触发了刷新但没自动续签」）。
     // 现在 notify 作为进程内触发通道：App 收到后检查本 trigger 文件的新鲜度（180s）决定
     // 是否执行静默续签；冷启动路径已消费 trigger 时新鲜度检查自然失败，不会双触发。
-    notify_post("com.reprovision.schedule-resign");
+    notify_post("cn.analy.resign.schedule-resign");
     return YES;
 }
 
@@ -1184,7 +1184,7 @@ static int s_printStatus(void) {
         printf("daemon 状态      : ✅ 本轮进程运行中 (pid=%d)\n", dpid);
     } else {
         printf("daemon 状态      : ⏸ 本轮进程未运行（非持久化定时检查正常——launchd 每小时拉起一轮）\n");
-        printf("                   判断健康请用下方「最近一次续签完成」；手动拉起: launchctl kickstart -k system/jp.soh.reprovision.signingd\n");
+        printf("                   判断健康请用下方「最近一次续签完成」；手动拉起: launchctl kickstart -k system/cn.analy.resign.signingd\n");
     }
 
     // 2. 当前配置
@@ -1318,7 +1318,7 @@ int main(int argc, char *argv[]) {
     s_log(@"  sudo /usr/libexec/repro-signingd --status      ← 查看是否真的续签了（推荐先看这个）");
     s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 手动触发续签（同步等待完成，推荐）");
     s_log(@"  sudo /usr/libexec/repro-signingd --bypass-3app ← 手动解除免费账号 3 应用限制");
-    s_log(@"  sudo launchctl kickstart -k system/jp.soh.reprovision.signingd  ← 立即拉起一轮");
+    s_log(@"  sudo launchctl kickstart -k system/cn.analy.resign.signingd  ← 立即拉起一轮");
     s_log(@"========================================");
     s_setup_signal_handlers();
 
@@ -1353,7 +1353,7 @@ int main(int argc, char *argv[]) {
     s_log(@"      launchd 每小时重新拉起，用户无需手动打开 App");
 
     // 续签完成通知 → 更新统计 + 释放 BKS + 退出本轮
-    int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,
+    int t2; notify_register_dispatch("cn.analy.resign.signing-complete", &t2,
         dispatch_get_main_queue(), ^(int _){
         s_onSigningComplete();
     });
@@ -1361,7 +1361,7 @@ int main(int argc, char *argv[]) {
     // ★ App 每完成一个应用的签名安装就发一次，daemon 立即解除 3 应用限制。
     //   前台手动签名 / IPA 导入安装 / 其它应用签名 / 后台续签 全部走这条通道。
     //   2 秒延迟让 installd 把 xattr 写完再删，避免竞态。
-    int t3; notify_register_dispatch("com.reprovision.bypass-3app-request", &t3,
+    int t3; notify_register_dispatch("cn.analy.resign.bypass-3app-request", &t3,
         dispatch_get_main_queue(), ^(int _){
         s_log(@"3应用绕过: 收到 App 的 bypass-3app-request 信号（合并后执行）");
         s_requestBypass(@"App 签名完成");

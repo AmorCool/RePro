@@ -1,8 +1,8 @@
-Package: jp.soh.reprovision
+Package: cn.analy.resign
 Name: ReSign
 Description: Re-signing tool for iOS jailbreak(iOS17+)
 Depends: firmware (>= 13.0), zip, unzip
-Version: 1.1.192~release
+Version: 2.0.0~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm

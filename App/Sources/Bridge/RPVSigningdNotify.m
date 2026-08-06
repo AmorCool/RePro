@@ -4,7 +4,7 @@
 //
 //  repro-signingd 定时检查是否需要续签，触发时优先 BKS 后台拉起 App 静默续签
 // （App 侧 isDaemonTriggeredResign → startDaemonResign）；拉起失败才降级
-// notify_post("com.reprovision.schedule-resign")。
+// notify_post("cn.analy.resign.schedule-resign")。
 // 🔴 v1.1.144：收到该信号不再让前台 App 代跑重签（历史「进前台就重签」设计，
 // 反复前后台切换会反复跑 zsign 导致内存暴涨 → 整机 Jetsam → roothide XPC 拦截
 // fault → EXC_GUARD/LIBXPC 杀主线程闪退）。daemon 下个周期会自动重试。
@@ -33,7 +33,7 @@
 }
 
 - (void)setup {
-    notify_register_dispatch("com.reprovision.schedule-resign",
+    notify_register_dispatch("cn.analy.resign.schedule-resign",
         &_token,
         dispatch_get_main_queue(),
         ^(int unused) {
@@ -47,11 +47,11 @@
             //
             // ⚠️ v1.1.144 曾为避免「进前台就重签」的内存暴涨而整条砍掉本通道；现在触发源
             // 是 daemon 周期（24h 冷却 + 每 5 分钟最多一轮），频率完全可控，不会重蹈覆辙。
-            NSDictionary *trigger = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/RePro/auto-resign-trigger"];
+            NSDictionary *trigger = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Resign/auto-resign-trigger"];
             NSNumber *ts = trigger[@"timestamp"];
             if (ts && [[NSDate date] timeIntervalSince1970] - [ts doubleValue] < 180.0) {
                 NSLog(@"[ReSign] daemon 续签信号 + trigger 新鲜 → 请求 AppDelegate 执行静默续签");
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"com.reprovision.daemon-request-resign"
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"cn.analy.resign.daemon-request-resign"
                                                                     object:nil];
             } else {
                 NSLog(@"[ReSign] 收到 daemon 续签信号但 trigger 缺失/已过期（可能已被冷启动路径消费），忽略");
@@ -60,11 +60,11 @@
 }
 
 + (void)notifyConfigUpdated {
-    notify_post("com.reprovision.signingd-config-updated");
+    notify_post("cn.analy.resign.signingd-config-updated");
 }
 
 + (void)notifySigningComplete {
-    notify_post("com.reprovision.signing-complete");
+    notify_post("cn.analy.resign.signing-complete");
 }
 
 + (void)notifyBypass3AppRequest {
@@ -74,7 +74,7 @@
         NSLog(@"[ReSign] 3 应用绕过未启用（设置 → 免费账号限制 → 「自动绕过 3 应用限制」开关为关闭），跳过请求 daemon");
         return;
     }
-    uint32_t status = notify_post("com.reprovision.bypass-3app-request");
+    uint32_t status = notify_post("cn.analy.resign.bypass-3app-request");
     if (status != 0) {
         NSLog(@"[ReSign] 请求 3 应用绕过失败: notify_post 0x%x", status);
     } else {

@@ -11,7 +11,7 @@
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 MPDIR="/var/Managed Preferences/mobile"
-IPC="/var/mobile/Library/RePro"
+IPC="/var/mobile/Library/Resign"
 RESULT="$IPC/profile-install-result"
 PENDING="$IPC/pending-install.mobileprovision"
 PROFILE_SRC="$IPC/profile-to-install.mobileprovision"
@@ -29,7 +29,7 @@ else
 fi
 
 echo
-echo "[2] /var/mobile/Library/RePro 是否真实可见（不是 overlay）："
+echo "[2] /var/mobile/Library/Resign 是否真实可见（不是 overlay）："
 echo "    pending-install.mobileprovision 存在？ -> $([ -f "$PENDING" ] && echo YES || echo NO)"
 echo "    profile-to-install.mobileprovision 存在？ -> $([ -f "$PROFILE_SRC" ] && echo YES || echo NO)"
 echo "    目录内容："

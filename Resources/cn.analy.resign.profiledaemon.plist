@@ -3,7 +3,7 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>jp.soh.reprovision.profiledaemon</string>
+    <string>cn.analy.resign.profiledaemon</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/bin/env</string>
@@ -37,15 +37,15 @@
     <dict>
         <key>com.apple.notifyd.matching</key>
         <dict>
-            <key>com.reprovision.profile-install-request</key>
+            <key>cn.analy.resign.profile-install-request</key>
             <dict>
                 <key>Notification</key>
-                <string>com.reprovision.profile-install-request</string>
+                <string>cn.analy.resign.profile-install-request</string>
             </dict>
-            <key>com.reprovision.profile-manage-request</key>
+            <key>cn.analy.resign.profile-manage-request</key>
             <dict>
                 <key>Notification</key>
-                <string>com.reprovision.profile-manage-request</string>
+                <string>cn.analy.resign.profile-manage-request</string>
             </dict>
         </dict>
     </dict>

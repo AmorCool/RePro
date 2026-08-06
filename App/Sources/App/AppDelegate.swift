@@ -24,7 +24,7 @@ final class ResignProgress: ObservableObject {
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
-    private static let ipcDir = "/var/mobile/Library/RePro"
+    private static let ipcDir = "/var/mobile/Library/Resign"
 
     /// v1.1.148: 提前重签天数上限（与 daemon 的 kMaxThresholdDays 一致）= 最多提前 6 天。
     /// 免费 profile 有效期 7 天，7 = 永远在窗口内 → 冷却一过就全量重签。
@@ -94,7 +94,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         setupSigningdNotify()
 
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("com.reprovision.signingd-config-updated"),
+            forName: NSNotification.Name("cn.analy.resign.signingd-config-updated"),
             object: nil, queue: .main) { [weak self] _ in self?.syncConfigSilent() }
 
         // 🔴 v1.1.165：daemon 的【进程内触发路径】。App 进程已存在时（用户打开过挂后台），
@@ -103,7 +103,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 收到 daemon 的 schedule-resign 信号并确认 trigger 新鲜后发本通知，这里响应并执行
         // 静默续签（与冷启动路径共用 startDaemonResign，内部有 24h 冷却 + banner）。
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("com.reprovision.daemon-request-resign"),
+            forName: NSNotification.Name("cn.analy.resign.daemon-request-resign"),
             object: nil, queue: .main) { [weak self] _ in
             self?.handleDaemonResignRequest()
         }

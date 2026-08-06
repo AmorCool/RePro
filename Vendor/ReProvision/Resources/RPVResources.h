@@ -41,7 +41,7 @@
 + (void)migrateKeychainAccessibility;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
-// 签名状态 Keychain（service = jp.soh.reprovision）
+// 签名状态 Keychain（service = cn.analy.resign）
 //
 // 这些项（uuid / privateKey / privateKeyTeamID）是签名流程的核心状态：
 //   · uuid              —— machineId，用于判定「Apple 账号下某张证书是不是本机的」

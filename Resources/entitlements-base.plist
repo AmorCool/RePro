@@ -19,7 +19,7 @@
     <!-- Keychain 访问 -->
     <key>keychain-access-groups</key>
     <array>
-        <string>com.reprovision.*</string>
+        <string>cn.analy.resign.*</string>
     </array>
 
     <!-- 后台运行 -->

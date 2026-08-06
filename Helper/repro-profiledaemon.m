@@ -32,8 +32,8 @@
 //  ─────────────────────────────────────────────────────────────────────
 //
 //  IPC：App（同样跑在真实域，uid 501）把 profile 数据写到
-//  /var/mobile/Library/RePro/profile-to-install.mobileprovision 并 notify_post，
-//  daemon 安装后把结果写回 /var/mobile/Library/RePro/profile-install-result 供
+//  /var/mobile/Library/Resign/profile-to-install.mobileprovision 并 notify_post，
+//  daemon 安装后把结果写回 /var/mobile/Library/Resign/profile-install-result 供
 //  App 轮询。
 //
 //  生命周期：短命化。启动 → 处理挂起请求 → 空闲 60 秒 → 自行退出。
@@ -59,10 +59,10 @@
 // 系统描述文件库的解析/去重/清单/删除，与 repro-helper 共用同一份实现
 #import "RPVProfileStore.h"
 
-static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
-static NSString *const kProfileData = @"/var/mobile/Library/RePro/profile-to-install.mobileprovision";
-static NSString *const kResultPath  = @"/var/mobile/Library/RePro/profile-install-result";
-static NSString *const kNotifyName  = @"com.reprovision.profile-install-request";
+static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
+static NSString *const kProfileData = @"/var/mobile/Library/Resign/profile-to-install.mobileprovision";
+static NSString *const kResultPath  = @"/var/mobile/Library/Resign/profile-install-result";
+static NSString *const kNotifyName  = @"cn.analy.resign.profile-install-request";
 static NSString *const kManagedPrefsDir = @"/var/Managed Preferences/mobile";
 
 // 空闲多久后自行退出（秒）。App 触发后最长等待这么久就收工。
@@ -81,9 +81,9 @@ static void RPVProfileDaemonLog(NSString *fmt, ...) {
 
 #pragma mark - 描述文件库操作（实现见 RPVProfileStore.h，与 repro-helper 共用）
 
-static NSString *const kInventoryPath      = @"/var/mobile/Library/RePro/profiles-inventory.plist";
-static NSString *const kManageResultPath   = @"/var/mobile/Library/RePro/profile-manage-result";
-static NSString *const kManageNotifyName   = @"com.reprovision.profile-manage-request";
+static NSString *const kInventoryPath      = @"/var/mobile/Library/Resign/profiles-inventory.plist";
+static NSString *const kManageResultPath   = @"/var/mobile/Library/Resign/profile-manage-result";
+static NSString *const kManageNotifyName   = @"cn.analy.resign.profile-manage-request";
 
 // 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV，见 main 顶部说明）。
 // 不再有 kDeleteRequestPath / kCleanupRequestPath，管理请求只剩「刷新清单」。

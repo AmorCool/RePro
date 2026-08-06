@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import struct, zlib, sys, gzip, lzma
 
-DEB = r"C:\Users\Administrator\WorkBuddy\reprovison-cn\RePro\jp.soh.reprovision_1.1.68.release_roothide-iphoneos-arm64.deb"
+DEB = r"C:\Users\Administrator\WorkBuddy\reprovison-cn\RePro\cn.analy.resign_1.1.68.release_roothide-iphoneos-arm64.deb"
 
 def parse_ar(data):
     assert data[:8] == b"!<arch>\n"

@@ -31,13 +31,13 @@ static dispatch_once_t nanoRegistryOnceToken;
 
 // 本地凭证缓存路径（锁屏 Keychain 不可读时的 fallback）
 // 权限 600（仅 owner 可读），存储在 RePro 私有目录。
-static NSString *kCredentialsCachePath = @"/var/mobile/Library/RePro/credentials.cache";
+static NSString *kCredentialsCachePath = @"/var/mobile/Library/Resign/credentials.cache";
 
 // 签名状态缓存路径（uuid / privateKey / privateKeyTeamID 的锁屏 fallback）
-static NSString *kProvisioningCachePath = @"/var/mobile/Library/RePro/provisioning.cache";
+static NSString *kProvisioningCachePath = @"/var/mobile/Library/Resign/provisioning.cache";
 
 // 签名状态 Keychain 的 service 名（与 EEProvisioning 保持一致）
-#define PROVISIONING_SERVICENAME @"jp.soh.reprovision"
+#define PROVISIONING_SERVICENAME @"cn.analy.resign"
 
 @implementation RPVResources
 
@@ -105,8 +105,8 @@ static NSString *kProvisioningCachePath = @"/var/mobile/Library/RePro/provisioni
     [[NSUserDefaults standardUserDefaults] setObject:value forKey:key];
 
     // 写入 CFPreferences（RePro 自己的域；已无守护进程需要同步）
-    CFPreferencesSetValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("com.reprovision.repro"), kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-    CFPreferencesAppSynchronize(CFSTR("com.reprovision.repro"));
+    CFPreferencesSetValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("cn.analy.resign"), kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+    CFPreferencesAppSynchronize(CFSTR("cn.analy.resign"));
 
     // Broadcast notification as Darwin
     if (notification)

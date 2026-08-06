@@ -23,17 +23,17 @@ function finish() {
 }
 
 # Clear Inbox folder（jbroot 路径，vroot shell 下直接可用）
-if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox" ]; then
-	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
+if [ -d "/var/mobile/Library/Application Support/Containers/cn.analy.resign.ios/Documents/Inbox" ]; then
+	rm -rf "/var/mobile/Library/Application Support/Containers/cn.analy.resign.ios/Documents/Inbox"
 fi
 
 # 从旧版本（带 reprovisiond 守护进程或旧版 profiledaemon）升级时的兜底清理：
 for c in /bin/launchctl /usr/bin/launchctl; do
 	if [ -x "$c" ]; then
 		for domain in "gui/501" "user/501" "system"; do
-			"$c" bootout "$domain/jp.soh.reprovisiond" 2>/dev/null || true
-			"$c" bootout "$domain/jp.soh.reprovision.profiledaemon" 2>/dev/null || true
-			"$c" bootout "$domain/jp.soh.reprovision.signingd" 2>/dev/null || true
+			"$c" bootout "$domain/cn.analy.resignd" 2>/dev/null || true
+			"$c" bootout "$domain/cn.analy.resign.profiledaemon" 2>/dev/null || true
+			"$c" bootout "$domain/cn.analy.resign.signingd" 2>/dev/null || true
 		done
 		break
 	fi
@@ -62,7 +62,7 @@ fi
 # 描述文件 IPC 共享目录：必须 mobile 可写（App 以 mobile 身份写描述文件，
 # daemon 以 root 读取）。建为 mobile:mobile 0755，避免 root 创建的目录导致
 # App 写入 Permission denied（这正是 v1.1.25 重签失败的根因）。
-IPC_DIR="/var/mobile/Library/RePro"
+IPC_DIR="/var/mobile/Library/Resign"
 mkdir -p "$IPC_DIR" 2>/dev/null || true
 chown mobile:mobile "$IPC_DIR" 2>/dev/null || chmod 0777 "$IPC_DIR" 2>/dev/null || true
 chmod 0755 "$IPC_DIR" 2>/dev/null || true
@@ -147,13 +147,13 @@ load_daemon() {
 }
 
 # 加载 signingd LaunchDaemon（定时检查是否需要续签，通知 App）
-load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist" \
-            "jp.soh.reprovision.signingd" \
+load_daemon "/Library/LaunchDaemons/cn.analy.resign.signingd.plist" \
+            "cn.analy.resign.signingd" \
             "signingd (定时续签守护进程)"
 
 # 加载 profiledaemon LaunchDaemon（系统级上下文，不受 App namespace 影响）
-load_daemon "/Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist" \
-            "jp.soh.reprovision.profiledaemon" \
+load_daemon "/Library/LaunchDaemons/cn.analy.resign.profiledaemon.plist" \
+            "cn.analy.resign.profiledaemon" \
             "profiledaemon (system context, outside App namespace)"
 
 # Reload application cache（uicache 是 bootstrap 工具，认 jbroot 路径）

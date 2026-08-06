@@ -252,7 +252,7 @@ static void RZFixFrameworkBundles(NSString *bundlePath) {
             // Nest the fixed framework's identifier under the main app's bundle id
             // (the conventional Xcode form "appid.fwname"), so it validates as
             // nested code rather than a foreign bundle.
-            NSString *idPrefix = @"com.reprovision.fixedfw";
+            NSString *idPrefix = @"cn.analy.resign.fixedfw";
             NSString *appInfoPlist = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
             if ([fm fileExistsAtPath:appInfoPlist]) {
                 NSString *appId = [[NSDictionary dictionaryWithContentsOfFile:appInfoPlist] objectForKey:@"CFBundleIdentifier"];
@@ -938,7 +938,7 @@ static void RZLogProfileDiagnostics(NSString *bundlePath) {
             NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
             [userInfo setObject:applicationId forKey:@"bundleIdentifier"];
 
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"jp.soh.reprovision/appShouldBeRemoved" object:nil userInfo:userInfo];
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"cn.analy.resign/appShouldBeRemoved" object:nil userInfo:userInfo];
         }
     }
 

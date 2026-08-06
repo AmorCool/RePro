@@ -128,7 +128,7 @@ final class BridgeClient: ObservableObject {
             // 但一旦释放就是必崩点；且失败路径必须调 completion，否则调用方
             // withCheckedContinuation 永不恢复 → 界面卡死。
             guard let self else {
-                completion(.failure(NSError(domain: "com.reprovision", code: -1,
+                completion(.failure(NSError(domain: "cn.analy.resign", code: -1,
                                             userInfo: [NSLocalizedDescriptionKey: "BridgeClient 已释放"])))
                 return
             }

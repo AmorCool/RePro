@@ -105,7 +105,7 @@ struct SettingsView: View {
             }
             .onDisappear {
                 if needsConfigSync {
-                    NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
+                    NotificationCenter.default.post(name: NSNotification.Name("cn.analy.resign.signingd-config-updated"), object: nil)
                 }
             }
             .alert("退出登录", isPresented: $showingSignOutAlert) {
@@ -673,7 +673,7 @@ struct SettingsView: View {
     /// v1.1.186：推算「下次检测」时间。
     /// 读 signingd 写下的检测状态（豁免目录，App 可读）：lastCheckTime + 检测间隔。
     private func refreshNextCheckText() {
-        guard let dict = NSDictionary(contentsOfFile: "/var/mobile/Library/RePro/signingd-check-state.plist"),
+        guard let dict = NSDictionary(contentsOfFile: "/var/mobile/Library/Resign/signingd-check-state.plist"),
               let lastCheck = dict["lastCheckTime"] as? Double, lastCheck > 0 else {
             nextCheckText = "尚未检测"
             return

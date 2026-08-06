@@ -52,13 +52,13 @@ func DaemonLogSize(_ path: String) -> String {
 }
 
 /// daemon 日志路径。
-/// 🔴 v1.1.186：统一到豁免目录 /var/mobile/Library/RePro/reprorefresh_at.log——
+/// 🔴 v1.1.186：统一到豁免目录 /var/mobile/Library/Resign/reprorefresh_at.log——
 /// RootHide 下 /var/jb/var/log 与 <jbroot>/var/log 都是 overlay 假目录（AppGroup 私有，
-/// 用户 SSH/爱思看不到），而 /var/mobile/Library/RePro 是豁免 overlay 的共享 IPC 目录，
+/// 用户 SSH/爱思看不到），而 /var/mobile/Library/Resign 是豁免 overlay 的共享 IPC 目录，
 /// App(mobile) 与 signingd 都能写、用户也能在真实 rootfs 看到。signingd 的 s_open_log
 /// v1.1.186 首选同一路径，App 与 daemon 日志合流到一个文件（各自带时间戳前缀）。
 func DaemonLogDefaultPath() -> String {
-    return "/var/mobile/Library/RePro/reprorefresh_at.log"
+    return "/var/mobile/Library/Resign/reprorefresh_at.log"
 }
 
 /// daemon 日志文件大小上限（2 MB），超出后截断重建（见 daemonLogWrite 轮转逻辑）
@@ -115,13 +115,13 @@ class LogManager: ObservableObject {
         importSigningdLogTail()
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleDiagnostic(_:)),
-            name: Notification.Name("com.reprovision.diagnostic"), object: nil)
+            name: Notification.Name("cn.analy.resign.diagnostic"), object: nil)
     }
 
     /// 🔴 v1.1.186：把 signingd 的检测日志尾部导入日志页，让用户能看到
     /// 「检测间隔 / 距上次检测 / 下次检测」等 daemon 行为记录。
     ///
-    /// 背景：signingd 日志 v1.1.186 起写到豁免目录 /var/mobile/Library/RePro/
+    /// 背景：signingd 日志 v1.1.186 起写到豁免目录 /var/mobile/Library/Resign/
     /// reprorefresh_at.log（RootHide 下唯一 App 与 SSH 都能看到的真实位置），
     /// 本方法在 App 启动时读它的最后 N 行并入内存日志（source=signingd）。
     /// 只在 initialize() 调一次，不会重复；直接写 logs 数组，不再回写文件。
@@ -131,7 +131,7 @@ class LogManager: ObservableObject {
     /// entitlement 自检 3 行（无法自检/namespace/若怀疑裸签）只对 SSH 排查有价值，
     /// 对用户看检测记录毫无意义，直接丢弃。
     private func importSigningdLogTail() {
-        let path = "/var/mobile/Library/RePro/reprorefresh_at.log"
+        let path = "/var/mobile/Library/Resign/reprorefresh_at.log"
         guard let content = try? String(contentsOfFile: path, encoding: .utf8),
               !content.isEmpty else { return }
         let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
@@ -224,7 +224,7 @@ class LogManager: ObservableObject {
                 self?.logs.append(entry)
                 while (self?.logs.count ?? 0) > (self?.maxLogEntries ?? 50) { self?.logs.removeFirst() }
             }
-            os_log("[%@][%@] %@", log: OSLog(subsystem: "com.reprovision", category: source),
+            os_log("[%@][%@] %@", log: OSLog(subsystem: "cn.analy.resign", category: source),
                    type: (level == .error ? .error : level == .warning ? .default : .info),
                    level.displayName, source, message)
         }

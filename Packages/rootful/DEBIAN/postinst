@@ -19,14 +19,14 @@ function finish() {
 }
 
 # Clear Inbox folder
-if [ -d "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox" ]; then
-	rm -rf "/var/mobile/Library/Application Support/Containers/jp.soh.reprovision.ios/Documents/Inbox"
+if [ -d "/var/mobile/Library/Application Support/Containers/cn.analy.resign.ios/Documents/Inbox" ]; then
+	rm -rf "/var/mobile/Library/Application Support/Containers/cn.analy.resign.ios/Documents/Inbox"
 fi
 
 # 从旧版本（带 reprovisiond 守护进程）升级时的兜底清理。
 for c in "/bin/launchctl" "/usr/bin/launchctl"; do
 	if [ -x "$c" ]; then
-		"$c" bootout system/jp.soh.reprovisiond 2>/dev/null || true
+		"$c" bootout system/cn.analy.resignd 2>/dev/null || true
 		break
 	fi
 done
@@ -71,7 +71,7 @@ if [ -n "$UICACHE" ]; then
 fi
 
 # 加载后台定时续签守护进程
-SIGNINGD_PLIST="/Library/LaunchDaemons/jp.soh.reprovision.signingd.plist"
+SIGNINGD_PLIST="/Library/LaunchDaemons/cn.analy.resign.signingd.plist"
 LAUNCHCTL=""
 for c in "/bin/launchctl" "/usr/bin/launchctl"; do
 	if [ -x "$c" ]; then LAUNCHCTL="$c"; break; fi

@@ -48,7 +48,7 @@
 
 #pragma mark - 桥接主类
 
-static NSString *const RPVBridgeErrorDomain = @"com.reprovision.repro.bridge";
+static NSString *const RPVBridgeErrorDomain = @"cn.analy.resign.bridge";
 
 typedef NS_ENUM(NSInteger, RPVBridgeErrorCode) {
     RPVBridgeErrorNotSignedIn      = 1,
@@ -77,7 +77,7 @@ typedef NS_ENUM(NSInteger, RPVBridgeErrorCode) {
 
 #pragma mark - 诊断转发（给 App 日志页）
 
-NSString *const RPVDiagnosticNotification = @"com.reprovision.diagnostic";
+NSString *const RPVDiagnosticNotification = @"cn.analy.resign.diagnostic";
 
 /// 既保留系统日志输出，又通过通知把诊断送进 LogManager（App「日志」页）。
 void RPVDiagnostic(RPVDiagLevel level, NSString *source, NSString *format, ...) {
@@ -114,7 +114,7 @@ void RPVDiagnostic(RPVDiagLevel level, NSString *source, NSString *format, ...) 
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _workQueue = dispatch_queue_create("com.reprovision.repro.bridge", DISPATCH_QUEUE_SERIAL);
+        _workQueue = dispatch_queue_create("cn.analy.resign.bridge", DISPATCH_QUEUE_SERIAL);
         // 只注册一次观察者，之后所有重签进度都从这里分发出去
         [[RPVApplicationSigning sharedInstance] addSigningUpdatesObserver:self];
     }
@@ -173,7 +173,7 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 }
 
 + (NSString *)currentMachineIdentifier {
-    // 与 EEProvisioning 的 _identifierForCurrentMachine 同源（jp.soh.reprovision / uuid），
+    // 与 EEProvisioning 的 _identifierForCurrentMachine 同源（cn.analy.resign / uuid），
     // 走 RPVResources 以便锁屏时回退本地缓存，避免读不到导致误判。
     NSString *uuid = [RPVResources provisioningValueForAccount:@"uuid"];
     return uuid.length > 0 ? uuid : nil;
@@ -618,7 +618,7 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 
         // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
         // （不再枚举批量处理，避免对系统守护调 CoreTelephony 私有 API 污染 CT 状态）。
-        NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.reprovision.repro";
+        NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"cn.analy.resign";
         BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
         NSString *message = ok
             ? @"已修复当前插件联网"
@@ -882,10 +882,10 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 /// 通过 notify(3) + 共享路径触发 repro-profiledaemon（LaunchDaemon）安装描述文件。
 ///
 /// v1.1.171 实测更正：App 与 daemon 其实都运行在真实 rootfs 域，
-/// /var/mobile/Library/RePro 是同一个真实目录，IPC 完全可靠。
+/// /var/mobile/Library/Resign 是同一个真实目录，IPC 完全可靠。
 /// 之所以仍必须由 daemon 落盘，是因为写 /var/Managed Preferences/mobile
 /// 需要 root，而 App 是 uid 501 且受沙盒约束。
-/// App 把描述文件数据写入 /var/mobile/Library/RePro/，发 notify 信号，
+/// App 把描述文件数据写入 /var/mobile/Library/Resign/，发 notify 信号，
 /// 再轮询结果文件（最多 60 秒）。
 
 /// 尽力把短命的 profiledaemon 拉起来（best-effort）。
@@ -964,12 +964,12 @@ static void RPVLogProfileDaemonTimeoutDiagnostics(NSString *stage) {
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
 
     NSArray<NSString *> *watched = @[
-        @"/var/mobile/Library/RePro/profile-to-install.mobileprovision",
-        @"/var/mobile/Library/RePro/profile-delete-request",
-        @"/var/mobile/Library/RePro/profile-cleanup-request",
-        @"/var/mobile/Library/RePro/profile-manage-result",
-        @"/var/mobile/Library/RePro/profile-install-result",
-        @"/var/mobile/Library/RePro/profiles-inventory.plist",
+        @"/var/mobile/Library/Resign/profile-to-install.mobileprovision",
+        @"/var/mobile/Library/Resign/profile-delete-request",
+        @"/var/mobile/Library/Resign/profile-cleanup-request",
+        @"/var/mobile/Library/Resign/profile-manage-result",
+        @"/var/mobile/Library/Resign/profile-install-result",
+        @"/var/mobile/Library/Resign/profiles-inventory.plist",
     ];
     for (NSString *p in watched) {
         NSDictionary *attrs = [fm attributesOfItemAtPath:p error:nil];
@@ -987,7 +987,7 @@ static void RPVLogProfileDaemonTimeoutDiagnostics(NSString *stage) {
     NSString *root = jb.length ? jb : ([fm fileExistsAtPath:@"/var/jb"] ? @"/var/jb" : @"/");
     NSString *daemonBin = [root stringByAppendingPathComponent:@"usr/libexec/repro-profiledaemon"];
     NSString *daemonPlist = [root stringByAppendingPathComponent:
-                             @"Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist"];
+                             @"Library/LaunchDaemons/cn.analy.resign.profiledaemon.plist"];
     [lines addObject:[NSString stringWithFormat:@"  daemon 二进制 %@: %@",
                       [fm isExecutableFileAtPath:daemonBin] ? @"就位" : @"缺失", daemonBin]];
     [lines addObject:[NSString stringWithFormat:@"  daemon plist %@: %@",
@@ -1002,9 +1002,9 @@ static void RPVLogProfileDaemonTimeoutDiagnostics(NSString *stage) {
 static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     if (profilePath.length == 0) return NO;
 
-    static NSString *const kIpcDir      = @"/var/mobile/Library/RePro";
-    static NSString *const kProfileData = @"/var/mobile/Library/RePro/profile-to-install.mobileprovision";
-    static NSString *const kResultPath  = @"/var/mobile/Library/RePro/profile-install-result";
+    static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
+    static NSString *const kProfileData = @"/var/mobile/Library/Resign/profile-to-install.mobileprovision";
+    static NSString *const kResultPath  = @"/var/mobile/Library/Resign/profile-install-result";
 
     // 确保共享目录存在（App 是 mobile，/var/mobile 下真实可读写）。
     [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir
@@ -1031,7 +1031,7 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     RPVKickstartProfileDaemon();
 
     // 发 notify 信号
-    uint32_t status = notify_post("com.reprovision.profile-install-request");
+    uint32_t status = notify_post("cn.analy.resign.profile-install-request");
     if (status != NOTIFY_STATUS_OK) {
         RPVDiagnostic(RPVDiagError, @"profiledaemon", @"notify_post 失败: 0x%x", status);
         return NO;
@@ -1057,7 +1057,7 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
                 forceRestarted = YES;
             }
             RPVKickstartProfileDaemonEx(force);
-            notify_post("com.reprovision.profile-install-request");
+            notify_post("cn.analy.resign.profile-install-request");
             if (force) {
                 RPVDiagnostic(RPVDiagInfo, @"profiledaemon",
                               @"软唤醒 30s 无结果，升级为强制重启 daemon（仅一次兜底）");
@@ -1087,10 +1087,10 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
 
 #pragma mark - 系统描述文件管理（v1.1.171）
 
-static NSString *const kRPVProfileIpcDir        = @"/var/mobile/Library/RePro";
-static NSString *const kRPVInventoryPath        = @"/var/mobile/Library/RePro/profiles-inventory.plist";
-static NSString *const kRPVManageResultPath     = @"/var/mobile/Library/RePro/profile-manage-result";
-static NSString *const kRPVManageNotifyName     = @"com.reprovision.profile-manage-request";
+static NSString *const kRPVProfileIpcDir        = @"/var/mobile/Library/Resign";
+static NSString *const kRPVInventoryPath        = @"/var/mobile/Library/Resign/profiles-inventory.plist";
+static NSString *const kRPVManageResultPath     = @"/var/mobile/Library/Resign/profile-manage-result";
+static NSString *const kRPVManageNotifyName     = @"cn.analy.resign.profile-manage-request";
 // 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
 // @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」）。
 // 不再有 kRPVDeleteRequestPath / kRPVCleanupRequestPath，管理请求只剩「刷新清单」。

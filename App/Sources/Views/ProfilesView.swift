@@ -4,7 +4,7 @@ import SwiftUI
 //
 // 数据来自真实的 /var/Managed Preferences/mobile。App 是 uid 501 且受沙盒约束，
 // 不能直接列举该目录，所以由 root 侧导出清单快照
-// （/var/mobile/Library/RePro/profiles-inventory.plist），本界面只读这份快照；
+// （/var/mobile/Library/Resign/profiles-inventory.plist），本界面只读这份快照；
 // 删除与清理同样交给 root 侧执行。
 //
 // root 侧是谁取决于越狱形态（RPVBridge 自动选择，界面无感）：
