@@ -252,7 +252,7 @@ jobs:
             -O2 \
             -framework Foundation -framework CoreFoundation \
             "${INC_DIRS[@]}" \
-            "-L${OPENSSL_DIR}/lib" -lssl -lcrypto \
+            "-L${OPENSSL_DIR}/lib" -lssl -lcrypto -lc++ \
             -o build/repro-signingd \
             "${SRC_OBJC[@]}" \
             "${SRC_LIBPLIST[@]}" \
