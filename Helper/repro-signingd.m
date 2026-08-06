@@ -180,11 +180,15 @@ static void s_startMemWatchdog(void) {
 // 解决：用**独立 pthread**（sleep + _exit，不依赖主 runloop / dispatch）——
 // 正常流程最坏 5 分钟（等 App 完成）必然结束，10 分钟阈值绝不会误杀；
 // 一旦主线程真卡死，看门狗照样强制退出，launchd 下一轮重新拉起。
+//
+// 🔴 v1.1.190 教训（真机 pid 5363 卡死 92 分钟实锤）：旧版线程先 NSLog 再 _exit(0)——
+// RootHide 下 NSLog 走 ASL/os_log，logd 通信一旦不可达就可能**永久阻塞**，
+// _exit(0) 永远执行不到 → 看门狗形同虚设 → 僵尸实例照样挡住下一轮拉起。
+// 必须**先 _exit(0) 再考虑打日志**（_exit 是无条件进程终止，不依赖任何服务）。
 static void *s_runWatchdogMain(void *arg) {
     (void)arg;
     sleep(10 * 60);
-    NSLog(@"[repro-signingd] ⚠️⚠️ 超时看门狗：本轮运行已超 10 分钟（正常流程最坏 5 分钟），"
-          @"判定主线程卡死，强制退出，等待 launchd 下轮拉起");
+    // 无条件终止进程——NSLog 放在 _exit 之后（不可达），避免 logd 阻塞拖死看门狗
     _exit(0);
     return NULL;
 }
@@ -1119,7 +1123,11 @@ static void s_onSigningComplete(void) {
     NSDictionary *appReport = [NSDictionary dictionaryWithContentsOfFile:
                                [kIpcDir stringByAppendingString:@"/app-resign-report.plist"]];
     if (appReport) {
-        BOOL ok = [appReport[@"result"] isEqualToString:@"success"];
+        // 🔴 v1.1.190：App 侧 result=skipped（所有应用剩余有效期充足，无需重签，
+        // 即 RPVErrorNoSigningRequired=101）同样算成功——旧版只认 success，
+        // skipped 被标成「失败」，用户看日志误以为续签出问题。
+        NSString *ar = appReport[@"result"];
+        BOOL ok = [ar isEqualToString:@"success"] || [ar isEqualToString:@"skipped"];
         s_log(@"App 报告: 结果=%@ App侧耗时=%.1f秒 详情=%@",
               ok ? @"成功" : @"失败",
               [appReport[@"elapsed"] doubleValue],
