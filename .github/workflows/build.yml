@@ -6,6 +6,12 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# 🔴 v2.1.0：同一 tag force push 会堆积多个排队 run（互相干扰、浪费名额）。
+# concurrency：同 ref 只保留最新，旧 run 自动取消。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
