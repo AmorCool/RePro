@@ -25,6 +25,7 @@
 
 #include <spawn.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/sysctl.h>
 #include <sys/proc.h>
@@ -433,6 +434,7 @@ static void RPVHelperPrintUsage(void) {
             "  repro-helper profiles-delete <文件名清单路径，每行一个>\n"
             "  repro-helper reboot-device\n"
             "  repro-helper userspace-reboot\n"
+            "  repro-helper kickstart-lsd\n"
             "  repro-helper uicache <uicache 原生参数…>\n");
 }
 
@@ -516,11 +518,20 @@ static int RPVHelperRebootUserSpace(void) {
 /// 用法：repro-helper uicache <uicache 的原生参数…>
 ///   uicache -a                           重建全部图标缓存
 ///   uicache -p /Applications/ReSign.app  重新注册单个 App
+///
+/// v1.1.182：RootHide 下 uicache 退出码 1 是已知问题（命令内部读 /var/containers
+/// 受 namespace 限制）。App 侧「重建图标缓存」改用 kickstart-lsd；uicache 子命令
+/// 仍保留给「重新注册 App」用，但 stderr 重定向到 /var/mobile/Library/RePro/uicache.stderr.log
+/// —— 失败时用户能在 RePro 日志面板看到真因。
 static int RPVHelperRunUicache(int argc, char *argv[]) {
     NSArray<NSString *> *candidates = @[ @"/usr/bin/uicache", @"/var/jb/usr/bin/uicache" ];
     NSString *uicache = nil;
     for (NSString *p in candidates) {
-        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) { uicache = p; break; }
+        // v1.1.182：用 access() 探测可执行权限，比 NSFileManager 在 RootHide 下更稳。
+        if (access([p fileSystemRepresentation], X_OK) == 0) {
+            uicache = p;
+            break;
+        }
     }
     if (uicache.length == 0) {
         RPVHelperLog(@"uicache 未找到（已尝试 /usr/bin、/var/jb/usr/bin）");
@@ -543,7 +554,16 @@ static int RPVHelperRunUicache(int argc, char *argv[]) {
     cargs[count + 1] = NULL;
 
     pid_t pid = 0;
-    int rc = posix_spawn(&pid, [uicache UTF8String], NULL, NULL, (char *const *)cargs, NULL);
+
+    // 重定向 stderr 到日志文件以便诊断
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 2,
+        "/var/mobile/Library/RePro/uicache.stderr.log",
+        O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+    int rc = posix_spawn(&pid, [uicache UTF8String], &actions, NULL, (char *const *)cargs, NULL);
+    posix_spawn_file_actions_destroy(&actions);
     free(cargs);
     if (rc != 0) {
         RPVHelperLog(@"uicache 启动失败: %d", rc);
@@ -552,7 +572,48 @@ static int RPVHelperRunUicache(int argc, char *argv[]) {
     int status = 0;
     waitpid(pid, &status, 0);
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    RPVHelperLog(@"uicache exit=%d (%@)", exitCode, [args componentsJoinedByString:@" "]);
+    RPVHelperLog(@"uicache exit=%d (%@)，stderr 已写入 /var/mobile/Library/RePro/uicache.stderr.log",
+                 exitCode, [args componentsJoinedByString:@" "]);
+    return exitCode;
+}
+
+/// v1.1.182：重建图标缓存的兜底实现。直接用 launchctl kickstart -k 重启 lsd，
+/// 由 lsd 自己重建图标缓存。比 uicache 在 RootHide 下稳得多（lsd 是系统服务，
+/// launchctl 是 setuid root helper 直接调用，没有 namespace 副作用）。
+/// 用法：repro-helper kickstart-lsd
+static int RPVHelperRunKickstartLSD(void) {
+    RPVHelperLog(@"kickstart-lsd: 重启 com.apple.lsd 触发图标缓存重建");
+    // 透传 PATH 给 launchctl，免得 launchctl 自己找不到 PATH 下的工具。
+    char *env[] = {
+        "PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin",
+        "HOME=/var/root",
+        NULL
+    };
+    // -k = kill 后重启（重启会触发 lsd 重新扫描已安装 app 并重建图标缓存）
+    // 必须在 system 域 —— lsd 是系统服务，不是当前用户域的。
+    char *argv[] = {
+        "/usr/bin/launchctl",
+        "kickstart", "-k",
+        "system/com.apple.lsd",
+        NULL
+    };
+    pid_t pid = 0;
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    // stderr 落到同一诊断日志，跟 uicache 串行可读
+    posix_spawn_file_actions_addopen(&actions, 2,
+        "/var/mobile/Library/RePro/uicache.stderr.log",
+        O_WRONLY | O_CREAT | O_APPEND, 0644);
+    int rc = posix_spawn(&pid, argv[0], &actions, NULL, argv, env);
+    posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) {
+        RPVHelperLog(@"launchctl kickstart spawn 失败: %d", rc);
+        return rc;
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    RPVHelperLog(@"launchctl kickstart exit=%d", exitCode);
     return exitCode;
 }
 
@@ -655,6 +716,7 @@ int main(int argc, char *argv[]) {
 
         // v1.1.181：系统状态页工具菜单用。reboot/userspace-reboot 来自 RebootTools，
         // uicache 来自 TrollStoreLite 系用法（重建图标缓存 / 重新注册 App）。
+        // v1.1.182：加 kickstart-lsd，替代 uicache -a（RootHide 下后者退出码 1）。
         if ([command isEqualToString:@"reboot-device"]) {
             return RPVHelperRebootDevice();
         }
@@ -665,6 +727,10 @@ int main(int argc, char *argv[]) {
 
         if ([command isEqualToString:@"uicache"]) {
             return RPVHelperRunUicache(argc, argv);
+        }
+
+        if ([command isEqualToString:@"kickstart-lsd"]) {
+            return RPVHelperRunKickstartLSD();
         }
 
         RPVHelperLog(@"未知命令: %@", command);

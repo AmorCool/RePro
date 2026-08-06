@@ -10,6 +10,8 @@ import UIKit
 struct HealthView: View {
     @State private var snapshot: EnvironmentSnapshot?
     @State private var isLoading = false
+    /// 跳转文件管理器失败时的提示（同时兼作「路径已复制」的回执）
+    @State private var openHint: String?
 
     // 工具菜单状态（v1.1.181）
     @State private var showToolMenu = false
@@ -28,6 +30,13 @@ struct HealthView: View {
             }
             .navigationTitle("系统状态")
             .onAppear { refresh() }
+            .alert("打开文件管理器",
+                   isPresented: Binding(get: { openHint != nil },
+                                        set: { if !$0 { openHint = nil } })) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(openHint ?? "")
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -49,7 +58,11 @@ struct HealthView: View {
                         toolResult = "重启 SpringBoard 失败：未找到 SpringBoard 进程。"
                     }
                 }
-                Button("重建图标缓存") { runHelper(["uicache", "-a"]) }
+                // v1.1.182：v1.1.181 用的是 uicache -a，但 iOS 17+ RootHide 下
+                // uicache 命令本身受 namespace 限制，常见退出码 1。
+                // 改用 launchctl kickstart -k system/com.apple.lsd：重启 lsd 服务
+                // 会自动重建图标缓存，且对 RootHide 兼容（系统级服务）。
+                Button("重建图标缓存") { runHelper(["kickstart-lsd"]) }
                 Button("重新注册 App") { runHelper(["uicache", "-p", "/Applications/ReSign.app"]) }
                 Button("重启用户空间") { pendingReboot = .userspace }
                 Button("重启设备", role: .destructive) { pendingReboot = .device }
@@ -98,10 +111,30 @@ struct HealthView: View {
                       value: snapshot?.jailbreak.displayName ?? placeholder,
                       status: statusForJailbreak)
 
-            // v1.1.181：越狱根目录恢复为普通 HealthRow（默认色 + 绿色打勾），
-            // 路径完整显示（不截断、不限制行数），去掉 Footer 说明。
+            // v1.1.181→v1.1.182：保留点按跳转 filza 的功能（用户工作流依赖），
+            // 但视觉样式用普通 HealthRow：默认色文字、完整路径（不截断、不限制行数）、
+            // 右上角绿勾、无 Footer。
             if let root = snapshot?.jailbreakRoot, !root.isEmpty {
-                HealthRow(label: "越狱根目录", value: root, status: .good)
+                Button {
+                    openInFileManager(root)
+                } label: {
+                    HStack(alignment: .top) {
+                        Text("越狱根目录")
+                            .foregroundColor(.primary)
+                        Spacer(minLength: 12)
+                        Text(root)
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.trailing)
+                            .font(.callout)
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .imageScale(.medium)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("越狱根目录：\(root)")
+                .accessibilityHint("点按用 Filza 打开该目录")
             } else {
                 HealthRow(label: "越狱根目录",
                           value: snapshot?.jailbreakRoot ?? placeholder,
@@ -110,6 +143,31 @@ struct HealthView: View {
         } header: {
             Text("越狱环境")
         }
+    }
+
+    /// 用 Filza 打开指定目录。
+    /// Filza 注册的 scheme 是 `filza://view/<绝对路径>`。
+    /// 这里刻意**不用** `canOpenURL` —— 那要求在 Info.plist 的
+    /// LSApplicationQueriesSchemes 里预先登记 scheme，否则一律返回 false；
+    /// 直接 open 的 completion 同样能告诉我们有没有 App 接管，且没有登记要求。
+    /// ⚠️ RootHide 下 Filza 是另一个带自己 jbroot 的 App，App 在 RePro 的 jbroot 内
+    /// spawn `open` 走的是 launchd 系统机制，理论上跨 jbroot 跳 filza 是 OK 的。
+    private func openInFileManager(_ root: String) {
+        let encoded = root.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? root
+        guard let url = URL(string: "filza://view" + encoded) else {
+            copyPath(root, reason: "路径无法转换成 URL")
+            return
+        }
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                copyPath(root, reason: "未检测到 Filza（或它拒绝了跳转）")
+            }
+        }
+    }
+
+    private func copyPath(_ path: String, reason: String) {
+        UIPasteboard.general.string = path
+        openHint = "\(reason)。\n路径已复制到剪贴板：\n\(path)"
     }
 
     private var statusForJailbreak: HealthStatus {
