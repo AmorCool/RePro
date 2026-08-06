@@ -396,10 +396,16 @@ static void s_compute_self_entitlements(void) {
     gSelfEntitlementReport = r;
 }
 
-/// 每次触发都打印的自检（进程内只算一次，之后复用缓存）
+/// 每次触发都打印的自检（进程内只算一次，之后复用缓存）。
+/// 🔴 v1.1.187：打印也去重 —— 旧版 s_fire 每轮都重复打 3 行
+/// （无法自检/namespace/若怀疑裸签），App 日志页导入后全是噪音。
 static void s_report_self_entitlements(void) {
+    static BOOL printed = NO;
     if (!gSelfEntitlementReport) s_compute_self_entitlements();
-    s_log(@"%@", gSelfEntitlementReport ?: @"⚠️ 未检测到自身 entitlement 信息");
+    if (!printed) {
+        printed = YES;
+        s_log(@"%@", gSelfEntitlementReport ?: @"⚠️ 未检测到自身 entitlement 信息");
+    }
 }
 
 /// App 是否已注册到 SpringBoard（即便没在运行，注册了 SBSProcessID 也返回 YES）。
@@ -1374,11 +1380,12 @@ int main(int argc, char *argv[]) {
     });
 
     // ── 核心：立即执行一轮到期检查 ──
-    // （不再需要常驻定时器/解锁/亮屏监听——launchd 每 5 分钟拉起天然覆盖，
+    // （不再需要常驻定时器/解锁/亮屏监听——launchd 每小时拉起天然覆盖，
     //   设备深睡错过调度会在唤醒后立即补执行。）
     BOOL fired = s_fire();
     if (!fired) {
-        s_log(@"本轮检查无需续签（开关关闭/低电量/24h 冷却中）→ 立即退出，下次由 launchd 拉起");
+        // 🔴 v1.1.187：文案修正——24h 冷却 v1.1.184 已删除，本轮跳过是「检测间隔未到」等
+        s_log(@"本轮检查无需续签（检测间隔未到/开关关闭/低电量）→ 立即退出，下次由 launchd 拉起");
         s_gracefulExit(0);
         return 0;
     }

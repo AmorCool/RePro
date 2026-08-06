@@ -125,13 +125,39 @@ class LogManager: ObservableObject {
     /// reprorefresh_at.log（RootHide 下唯一 App 与 SSH 都能看到的真实位置），
     /// 本方法在 App 启动时读它的最后 N 行并入内存日志（source=signingd）。
     /// 只在 initialize() 调一次，不会重复；直接写 logs 数组，不再回写文件。
+    ///
+    /// 🔴 v1.1.187：导入前过滤「启动横幅 / 诊断噪音」行（用户反馈这些不该出现在
+    /// App 日志板块）——启动横幅（===/管理命令/看门狗/配置/BundleID/架构）与
+    /// entitlement 自检 3 行（无法自检/namespace/若怀疑裸签）只对 SSH 排查有价值，
+    /// 对用户看检测记录毫无意义，直接丢弃。
     private func importSigningdLogTail() {
         let path = "/var/mobile/Library/RePro/reprorefresh_at.log"
         guard let content = try? String(contentsOfFile: path, encoding: .utf8),
               !content.isEmpty else { return }
         let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
         guard !lines.isEmpty else { return }
-        let tail = Array(lines.suffix(25))
+        // 过滤噪音行（前缀黑名单；匹配后整行丢弃）
+        let noisePrefixes = [
+            "================================================",
+            "=== 启动",
+            "管理命令:",
+            "sudo ",
+            "已注册信号处理",
+            "内存看门狗已启动",
+            "超时看门狗已启动",
+            "ℹ️ 无法自检 entitlement",
+            "  namespace: ",
+            "  （若怀疑裸签",
+            "配置: 自动",
+            "BundleID: ",
+            "架构: ",
+            "launchd 每小时重新拉起",
+        ]
+        let meaningful = lines.filter { line in
+            !noisePrefixes.contains { line.hasPrefix($0) }
+        }
+        guard !meaningful.isEmpty else { return }
+        let tail = Array(meaningful.suffix(25))
 
         queue.async { [weak self] in
             DispatchQueue.main.async {
