@@ -178,19 +178,18 @@ jobs:
           OPENSSL_DIR=/tmp/openssl-ios
 
           # bash 数组（路径含空格时避免被拆成分隔符）
+          # 🔴 v2.1.0 精简：daemon 凭据已缓存，不需要完整登录流。
+          # RPVLoginImpl(SRP+corecrypto) / RPVLoginFallbackImpl(AuthKit UI) /
+          # RPVAuthentication(门面) / RPVAccountChecker(检查) / ccsrp(SRP加密)
+          # 均排除。Anisette 由 daemon 内直接 dlopen AuthKit 生成。
           SRC_OBJC=(
             Helper/repro-signingd.m
             Vendor/ReProvision/libProvision/EEBackend.m
             "Vendor/ReProvision/libProvision/Provisioning/EEProvisioning.mm"
             "Vendor/ReProvision/libProvision/Apple Services/EEAppleServices.m"
-            "Vendor/ReProvision/libProvision/Apple Services/RPVAuthentication.m"
-            "Vendor/ReProvision/libProvision/Apple Services/RPVLoginImpl.m"
-            "Vendor/ReProvision/libProvision/Apple Services/RPVLoginFallbackImpl.m"
             "Vendor/ReProvision/libProvision/Apple Services/NSData+GZIP.m"
             "Vendor/ReProvision/libProvision/Signing/RZSignRunner.m"
-            "Vendor/ReProvision/libProvision/CoreCrypt/ccsrp.m"
             Vendor/ReProvision/Resources/RPVResources.m
-            Vendor/ReProvision/Resources/RPVAccountChecker.m
             Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain.m
             Vendor/ReProvision/libProvision/SAMKeychain/SAMKeychain/SAMKeychainQuery.m
             "Vendor/ReProvision/Application Database/RPVApplication.m"
@@ -239,12 +238,15 @@ jobs:
             "-IVendor/ReProvision/Application Database"
             -IVendor/ReProvision/Resources
             -IVendor/ReProvision/libProvision/SSZipArchive
+            -IVendor/ChOma
             -IHelper
             "-I${OPENSSL_DIR}/include"
           )
 
+          # 🔴 不设 -x objective-c：.m → ObjC, .mm → ObjC++, .c → C, .cpp → C++
+          # EEProvisioning.mm 用 <cstdio> 等 C++ 标准头，必须走 ObjC++ 编译。
           xcrun -sdk iphoneos clang \
-            -x objective-c -fobjc-arc \
+            -fobjc-arc \
             -arch arm64 -miphoneos-version-min=15.0 \
             -O2 \
             -framework Foundation -framework CoreFoundation \
