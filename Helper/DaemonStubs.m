@@ -5,12 +5,14 @@
 
 #import <Foundation/Foundation.h>
 
-// CGRectZero 手动常量（避免链接 CoreGraphics）
-#if !defined(CGRectZero)
-typedef struct { double x, y, width, height; } DaemonCGRect;
-static const DaemonCGRect daemonRectZero = {0, 0, 0, 0};
-#define CGRectZero daemonRectZero
-#endif
+// CGRect/CGSize/CGPoint 手动定义（避免链接 CoreGraphics/UIKit）
+typedef struct CGPoint { double x, y; } CGPoint;
+typedef struct CGSize  { double width, height; } CGSize;
+typedef struct CGRect  { CGPoint origin; CGSize size; } CGRect;
+static inline CGRect CGRectMake(double x, double y, double w, double h) {
+    return (CGRect){{x, y}, {w, h}};
+}
+#define CGRectZero CGRectMake(0, 0, 0, 0)
 
 // ─── UIKit 桩（daemon 无 UI，全部 nil 空壳）───────────────────────────────
 
