@@ -23,11 +23,17 @@
 		<key>Minute</key>
 		<integer>0</integer>
 	</dict>
-	<!-- v1.1.150 方案B：崩溃后至少间隔 30 秒才允许再次拉起。
-	     防「崩溃→立即拉起→再崩溃」循环反复执行 launchd 注入逻辑
-	     （roothide launchdhook 每次拉起都会在 launchd 里跑一轮）。 -->
+	<!-- v1.1.150 方案B → v1.1.192：ThrottleInterval 从 30s 提高到 300s。
+	     真机实锤（22:25-22:27，31 次 Jetsam largestProcess=repro-signingd）：
+	     signingd 在 RootHide SafeMode 下泄漏超过 MemoryLimit 50MB → launchd Jetsam
+	     杀掉 → 30s 后立刻重拉 → 新实例再泄漏再被杀 → 2 分钟内 31 次循环 →
+	     整机 Jetsam 雪崩 → SpringBoard 反复被杀 → 注销动画死循环 → ResetCounter 重启。
+	     300s（5 分钟）给设备足够喘息时间：signingd 被 Jetsam 后至少等 5 分钟
+	     才可能重拉，打内泄漏循环。配合内存看门狗（45MB 独立线程 10s 检查），
+	     正常情况下在内存到 MemoryLimit 50MB 前就会被看门狗主动退出 → 正常退出
+	     不走 Jetsam 路径 → ThrottleInterval 不被触发，定时拉起照常工作。 -->
 	<key>ThrottleInterval</key>
-	<integer>30</integer>
+	<integer>300</integer>
 	<key>UserName</key>
 	<string>root</string>
 	<!-- v1.1.152：移除 POSIXSpawnType=Interactive 改默认 Background 类型。

@@ -105,68 +105,48 @@ static NSString *sLogPath   = nil;   // v1.1.152：实际写入的文件路径�
 static time_t    gResignStartTime = 0;       // 本次续签开始时间
 static BOOL      gResignInProgress = NO;     // 是否有续签正在进行
 
-// ─── 内存看门狗（v1.1.150+：RootHide 拦截器泄漏自救，方案A）────────────────
-// 背景：RootHide 的 systemhook/XPC 拦截器在常驻进程里持续泄漏内存，本 daemon
-// 曾被实测涨到 3.6~5.1GB（Jetsam physicalPages.internal 实锤）。daemon 自身
-// 代码无大分配点，无法从代码层面止住泄漏 → 只能「定期自检、超限主动重启」：
-// launchd 配了 KeepAlive=true，退出后立刻拉起新进程，泄漏随旧进程一起释放。
-// 🔴 v1.1.151 阈值 1.5GB → 400MB：用户实测「装完过一段时间设备慢慢变卡」——
-// 根因是触发线太高：泄漏从 <100MB 涨到 1.5GB 的整个过程都在白白占用物理内存
-// （iPhone 12 仅 4GB RAM，1GB 泄漏已让系统负重 → Jetsam 杀后台 → 卡顿），
-// 等涨到 1.5GB 才动手已经太晚。400MB = 正常常驻（<100MB）的 4 倍余量；
-// daemon 只负责拉起 App 调度（zsign 是 App 子进程），自身峰值远低于此。
-// 签名进行中（gResignInProgress）不退出，避免打断签名。
-// 前向声明：s_log 定义在下方（C99 要求先声明后使用）
-static void s_log(NSString *fmt, ...);
-static const uint64_t kMemWatchdogLimit = 400ULL * 1024 * 1024;  // 400 MB
+// ─── 内存看门狗（v1.1.150，2026-08-06 v1.1.192 根本性重写）─────────────
+//
+// 🔴 真机实锤（22:25-22:27，31 次 Jetsam largestProcess=repro-signingd）：
+//   旧版用 dispatch_source_timer 挂在 dispatch_get_main_queue() ——
+//   signingd 在 RootHide SafeMode 注入异常下主线程卡死时，
+//   dispatch_source timer handler 同样停摆 → 内存看门狗形同虚设 →
+//   2 分钟内暴涨到 largestProcess（>1GB）→ 触发整机 Jetsam 雪崩 31 次 →
+//   SpringBoard 反复被杀 → 用户看到注销动画死循环 → ResetCounter 整机重启。
+//
+//   现在与超时看门狗（v1.1.186/190）同一模式：独立 pthread sleep+_exit，
+//   不依赖主 runloop，不调 NSLog（避免 logd 阻塞），1 分钟检查一次。
+//   签名进行中（gResignInProgress）不退出，避免打断 zsign。
+static const uint64_t kMemWatchdogLimit = 45ULL * 1024 * 1024;  // 45 MB（< MemoryLimit 50MB，必须在 jetsam 前捕获）
 
-static void s_memWatchdogTick(void) {
-    task_vm_info_data_t info;
-    mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
-    kern_return_t kr = task_info(mach_task_self(), TASK_VM_INFO,
-                                 (task_info_t)&info, &cnt);
-    if (kr != KERN_SUCCESS) {
-        // ★ v1.1.152：task_info 失败也记 NSLog（防止"静默失败"——之前 2.87GB 时
-        // 看门狗日志 0 字节，可能就是 task_info 失败且 s_log 写文件失败导致完全无感）
-        NSLog(@"[repro-signingd] 内存看门狗: task_info 失败 kr=%d（不会主动退出）", kr);
-        return;
-    }
-    double mb = (double)info.phys_footprint / (1024.0 * 1024.0);
-    double internalMb = (double)info.internal / (1024.0 * 1024.0);
-    if (info.phys_footprint <= kMemWatchdogLimit) {
-        // 日常每 6 个 tick（约 30 分钟）记录一次水位，便于在日志里观察泄漏曲线
-        static int quiet = 0;
-        if (++quiet >= 6) { quiet = 0;
-            s_log(@"内存看门狗: phys_footprint=%.0fMB internal=%.0fMB（上限 400MB）",
-                  mb, internalMb);
+static void *s_memWatchdogMain(void *arg) {
+    (void)arg;
+    sleep(10);  // 首次 10 秒检查（泄漏可能很快超 MemoryLimit 50MB，必须早于系统 jetsam）
+    while (1) {
+        task_vm_info_data_t info;
+        mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+        kern_return_t kr = task_info(mach_task_self(), TASK_VM_INFO,
+                                     (task_info_t)&info, &cnt);
+        if (kr != KERN_SUCCESS || info.phys_footprint <= kMemWatchdogLimit) {
+            sleep(15);  // 正常或取不到数据，每 15 秒检查一次（低于 MemoryLimit 50MB 的卡点）
+            continue;
         }
-        return;
+        if (gResignInProgress) {
+            sleep(15);  // 签名中，等下轮
+            continue;
+        }
+        // 超标且非签名中：无条件 _exit(0)，不调 NSLog（避免 logd 阻塞）
+        if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
+        _exit(0);
     }
-    if (gResignInProgress) {
-        s_log(@"内存看门狗: %.0f MB 已超上限，但续签进行中，下轮再检查", mb);
-        return;
-    }
-    s_log(@"⚠️ 内存看门狗: daemon 内存 %.0f MB (internal=%.0f) 超 400MB 上限 → 主动退出，launchd 将立即重新拉起",
-          mb, internalMb);
-    s_log(@"   （针对 RootHide 容器内拦截器/资源句柄累积的自救：旧进程释放后泄漏清零）");
-    if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
-    exit(0);
+    return NULL;
 }
-
 static void s_startMemWatchdog(void) {
-    static dispatch_source_t wd = NULL;
-    if (wd) return;
-    wd = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    // ★ v1.1.152：首次触发从 5 分钟改成 30 秒。
-    // 根因：iOS 17 launchd 对 LaunchDaemon 判 "inefficient" 主动 SIGTERM，
-    // daemon 生命周期可能 < 5 分钟（exponential throttling 越拉越慢），
-    // 原 5 分钟首次检查根本来不及触发；30 秒首次能让短生命周期 daemon 也有早期保护。
-    // 后续保持 5 分钟间隔（任务轻，CPU 影响可忽略）。
-    dispatch_source_set_timer(wd, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC),
-                              5 * 60 * NSEC_PER_SEC, 10 * NSEC_PER_SEC);
-    dispatch_source_set_event_handler(wd, ^{ s_memWatchdogTick(); });
-    dispatch_resume(wd);
-    s_log(@"内存看门狗已启动（30 秒首次自检，之后每 5 分钟；超 400MB 主动重启，签名中不退出）");
+    pthread_t t;
+    if (pthread_create(&t, NULL, s_memWatchdogMain, NULL) == 0) {
+        pthread_detach(t);
+        s_log(@"内存看门狗已启动（独立线程，10 秒首次自检后每 15 秒；超 45MB 主动退出，签名中不退出）");
+    }
 }
 
 // ─── 超时看门狗（v1.1.186，方案D：防僵尸实例）──────────────────────────
