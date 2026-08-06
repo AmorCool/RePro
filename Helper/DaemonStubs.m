@@ -1,18 +1,14 @@
 // v2.1.0：signingd daemon 编译时的符号占位桩。
-// 签名管线源码（EEBackend/EEProvisioning/RPVResources 等）依赖 UIKit/AuthKit/
-// libMobileGestalt/RPVDiagnostics 等 daemon 永远用不上的符号。提供空桩实现让链接器满意。
-// daemon 的签名流程不会调用这些桩 (git gc 清洗链路保证)，仅解决链接依赖。
+// 签名管线源码依赖 UIKit/CoreGraphics/AuthKit 等 daemon 不需要的符号。
+// 提供空桩实现（匹配 SDK extern 声明，确保链接通过）。
+// daemon 运行时不调用这些桩——签名流程使用独立路径。
 
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 
-// CGRect/CGSize/CGPoint 手动定义（避免链接 CoreGraphics/UIKit）
-typedef struct CGPoint { double x, y; } CGPoint;
-typedef struct CGSize  { double width, height; } CGSize;
-typedef struct CGRect  { CGPoint origin; CGSize size; } CGRect;
-static inline CGRect CGRectMake(double x, double y, double w, double h) {
-    return (CGRect){{x, y}, {w, h}};
-}
-#define CGRectZero CGRectMake(0, 0, 0, 0)
+// ─── CoreGraphics/UIKit 全局常量 ──────────────────────────────────────────
+const CGRect CGRectZero = {{0,0},{0,0}};
+NSString *NSFontAttributeName = @"NSFont";
 
 // ─── UIKit 桩（daemon 无 UI，全部 nil 空壳）───────────────────────────────
 
