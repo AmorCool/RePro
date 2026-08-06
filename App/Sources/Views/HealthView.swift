@@ -50,7 +50,7 @@ struct HealthView: View {
             }
             // 主工具菜单（参考 TrollStoreLite 三个 Utils + RebootTools 两个重启）
             .confirmationDialog("工具", isPresented: $showToolMenu) {
-                Button("刷新状态") { refresh() }
+                // v1.1.184：「刷新状态」已从工具菜单移除（列表里本来就有一个刷新按钮，重复）。
                 Button("重启 SpringBoard") {
                     if BridgeClient.shared.respring() {
                         exit(0)
@@ -58,16 +58,22 @@ struct HealthView: View {
                         toolResult = "重启 SpringBoard 失败：未找到 SpringBoard 进程。"
                     }
                 }
-                // v1.1.182：v1.1.181 用的是 uicache -a，但 iOS 17+ RootHide 下
-                // uicache 命令本身受 namespace 限制，常见退出码 1。
-                // 改用 launchctl kickstart -k system/com.apple.lsd：重启 lsd 服务
-                // 会自动重建图标缓存，且对 RootHide 兼容（系统级服务）。
-                Button("重建图标缓存") { runHelper(["kickstart-lsd"]) }
-                // v1.1.183：路径不能写死 "/Applications/ReSign.app" ——
-                // RootHide 下 App 实际装在 <随机 jbroot>/Applications/ReSign.app，
-                // 写死路径 uicache 找不到 bundle，必然失败。直接用自身 bundlePath。
-                Button("重新注册 App") {
-                    runHelper(["uicache", "-p", Bundle.main.bundlePath])
+                // 🔴 v1.1.184：这两项过去「显示成功但桌面毫无变化」，真机取证后一次改到位：
+                //   ① iOS 17+ 起 lsd 搬到了 user/foreground 域，
+                //      `kickstart -k system/com.apple.lsd` 会被 launchctl 拒绝
+                //      （提示 Please switch to user/foreground/…）**却仍然返回 0**，
+                //      所以旧代码一路报成功、lsd 从来没重启过。
+                //   ② 光跑 uicache 也不够：真机 SpringBoard 缓存目录下连 Cache.db 都没重生成。
+                // 现在统一交给 helper 的 rebuild-icon-cache：
+                //   uicache(-a/-p) → kickstart -k user/foreground/com.apple.lsd → respring。
+                // respring 之后桌面才会真的刷新，因此 App 会随之退出。
+                Button("重建图标缓存（会重启桌面）") {
+                    runHelper(["rebuild-icon-cache"], exitAfter: true)
+                }
+                // 路径不能写死 "/Applications/ReSign.app" —— RootHide 下 App 实际装在
+                // <随机 jbroot>/Applications/ReSign.app，直接用自身 bundlePath。
+                Button("重新注册 App（会重启桌面）") {
+                    runHelper(["rebuild-icon-cache", Bundle.main.bundlePath], exitAfter: true)
                 }
                 Button("重启用户空间") { pendingReboot = .userspace }
                 Button("重启设备", role: .destructive) { pendingReboot = .device }
@@ -300,9 +306,16 @@ struct HealthView: View {
 
     /// 工具菜单执行 repro-helper 子命令，结果以 alert 回执。
     /// reboot-device / userspace-reboot 会触发设备重启，alert 不会显示属正常。
-    private func runHelper(_ args: [String]) {
+    /// - Parameter exitAfter: 该命令内部会 respring（重建图标缓存 / 重新注册 App）。
+    ///   SpringBoard 一旦重启，留在前台的 App 状态就没意义了，成功后直接退出。
+    private func runHelper(_ args: [String], exitAfter: Bool = false) {
         let code = BridgeClient.shared.runRootHelper(arguments: args)
         if code == 0 {
+            if exitAfter {
+                // 给 helper 的 SIGTERM 一点时间落地，再自杀，避免半死不活的界面。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { exit(0) }
+                return
+            }
             toolResult = "操作成功执行（退出码 0）。"
             return
         }

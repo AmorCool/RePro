@@ -25,8 +25,16 @@ rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true
 rm -rf /var/mobile/Library/ReProvision 2>/dev/null || true
 rm -f /var/mobile/Documents/ReProvisionDebug.txt 2>/dev/null || true
 rm -rf /tmp/reprovision_*.log 2>/dev/null || true
-rm -rf /var/mobile/Library/RePro 2>/dev/null || true
-echo "[ReSign] 残留数据已清理"
+# 🔴 v1.1.184：RootHide 下命名空间里的 /var/mobile/Library/RePro 是空壳，
+# 真实 IPC 目录在 /rootfs/var/mobile/Library/RePro —— 多候选路径全部清一遍。
+for d in \
+	/var/mobile/Library/RePro \
+	/rootfs/var/mobile/Library/RePro \
+	/var/jb/rootfs/var/mobile/Library/RePro \
+	/var/containers/Bundle/Application/.jbroot-*/var/mobile/Library/RePro; do
+	rm -rf "$d" 2>/dev/null || true
+done
+echo "[ReSign] 残留数据已清理（含真实 rootfs 的 RePro 目录）"
 
 echo "[ReSign] RootHide prerm 完成 $(date)"
 exit 0

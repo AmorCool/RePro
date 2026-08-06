@@ -26,13 +26,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     private static let ipcDir = "/var/mobile/Library/RePro"
 
-    /// v1.1.148: 续签冷却（与 daemon 的 kResignCooldown 一致）= 续签完成后至少间隔 1 天。
-    /// 基准是「续签完成时间」：daemon 的 s_onSigningComplete 把 lastResignTime 写成完成时刻。
-    private static let resignCooldown: TimeInterval = 24 * 3600
-
     /// v1.1.148: 提前重签天数上限（与 daemon 的 kMaxThresholdDays 一致）= 最多提前 6 天。
     /// 免费 profile 有效期 7 天，7 = 永远在窗口内 → 冷却一过就全量重签。
     private static let maxThresholdDays = 6
+
+    /// v1.1.184: 检测间隔上限（与 daemon 的 kMaxCheckIntervalHours 一致）= 最多 12 小时。
+    private static let maxCheckIntervalHours = 12
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
@@ -162,34 +161,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ///  · 续签完成后，若 App 仍处在后台（用户没打开），才干净退出；
     ///    若用户中途打开（已转到前台），则保留进程、正常显示 UI。
     private func startDaemonResign() {
-        // 🔴 v1.1.147：续签冷却双保险 —— daemon 侧 s_fire 已有 24h 冷却（定时器路径连
-        // App 都不拉起）；这里兜底旧版 daemon：若本次拉起是「daemon-timer」定时器触发且
-        // 距上次续签不足 24 小时，直接回报跳过，避免免费账号「阈值=7=永远在到期窗口内」
-        // 导致的每 2 小时全量重签（zsign 内存暴涨 → Jetsam 5GB → 整机拖垮）。
-        // ⚠️ 冷却跳过时绝不能 notifySigningComplete：daemon 收到会更新 lastResignTime=now，
-        //    导致冷却被永久重置、续签永远不再发生。直接退出即可（daemon 的 gResignInProgress
-        //    120 秒后自动失效，不影响下次定时触发）。
-        // ⚠️ 仅「daemon-timer」定时器路径受冷却约束；手动 SIGHUP / --resign-now（triggeredBy
-        //    非 daemon-timer）是用户主动操作，不受冷却限制。
-        let triggerDict = NSDictionary(contentsOfFile: "\(Self.ipcDir)/auto-resign-trigger")
-        let triggeredBy = triggerDict?["triggeredBy"] as? String ?? ""
-        if triggeredBy == "daemon-timer" {
-            let lastResPath = "\(Self.ipcDir)/last-resign-result.plist"
-            if let lastRes = NSDictionary(contentsOfFile: lastResPath),
-               let lastTs = lastRes["lastResignTime"] as? Double,
-               lastTs > 0 {
-                let elapsed = Date().timeIntervalSince1970 - lastTs
-                if elapsed < Self.resignCooldown {
-                    LogManager.shared.info(String(format: "距上次续签 %.1f 小时 < 24h，跳过本次续签（冷却期）", elapsed / 3600.0),
-                                           source: "AppDelegate")
-                    DaemonLogStop()
-                    if UIApplication.shared.applicationState == .background {
-                        exit(0)
-                    }
-                    return
-                }
-            }
-        }
+        // 🔴 v1.1.184：续签后 24 小时冷却已删除（用户要求）。
+        // 检测频率改由用户可配的「检测间隔」（1~12 小时）在 daemon 侧节流
+        // （s_fire 里按 signingd-check-state.plist 的 lastCheckTime 判断本轮干不干活），
+        // App 侧不再重复设卡。窗口内才会重签的保证来自「严格小于」阈值判定
+        // （剩余有效期 < 提前重签天数才进窗口），无需冷却兜底。
 
         // 提示横幅：用户中途打开 App 时，明确告知这是 daemon 后台续签、无需操作
         ResignProgress.shared.show(
@@ -420,6 +396,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let config: [String: Any] = [
             "autoResign":         d.object(forKey: "autoResign") as? Bool ?? true,
             "resignThreshold":    d.object(forKey: "resignThreshold") as? Int ?? 2,
+            // v1.1.184: 检测间隔（小时）。key 与设置页 @AppStorage("resignCheckInterval") 一致，
+            // daemon 的 s_parseCfg 会 clamp 到 1...12。
+            "resignCheckInterval": d.object(forKey: "resignCheckInterval") as? Int ?? 1,
             // daemon 的 s_bypassEnabled() 会按 CFPreferences → 本 plist → 容器偏好 三级回退，
             // 这里同步一份，保证 RootHide 下 cfprefsd 跨 namespace 读不到时仍能生效。
             "bypassFreeAppLimit": d.object(forKey: "bypassFreeAppLimit") as? Bool ?? false,

@@ -187,8 +187,9 @@ struct ProfilesView: View {
             Text("将删除全部已过期/损坏的描述文件，并对每个 App 只保留最新的一份（多余 \(duplicateTotal) 份、过期 \(expiredTotal) 份）。当前生效的描述文件不会被删除。")
         }
         .alert(item: $pendingDelete) { profile in
+            // v1.1.184：删除确认文案精简（用户嫌长篇大论烦）——一行问完直接删
             Alert(title: Text("删除描述文件"),
-                  message: Text("确定删除 \(profile.bundleId) 的这份描述文件吗？\n\(profile.fileName)\n\n如果它正是该 App 当前使用的那份，删除后该 App 可能无法启动，需要重新签名。"),
+                  message: Text("确定删除这份描述文件吗？"),
                   primaryButton: .destructive(Text("删除")) { runDelete(profile) },
                   secondaryButton: .cancel(Text("取消")))
         }

@@ -7,6 +7,8 @@ import Darwin
 struct SettingsView: View {
     @AppStorage("autoResign") private var autoResign: Bool = true
     @AppStorage("resignThreshold") private var resignThreshold: Int = 2
+    // v1.1.184：检测间隔（小时）。键名必须与 repro-signingd.m 的 s_parseCfg() 读取的键一致。
+    @AppStorage("resignCheckInterval") private var resignCheckInterval: Int = 1
 
     // 免费账号「同一设备最多 3 个自签应用」限制绕过。
     // 键名必须与 repro-signingd.m 的 s_bypassEnabled() 读取的键一致。
@@ -57,7 +59,6 @@ struct SettingsView: View {
     @State private var availableTeams: [DeveloperTeam] = []
     @State private var showingTeamSheet = false
 
-    @State private var showingRespringAlert = false
     @State private var showingSignOutAlert = false
     @State private var showingCertificates = false
 
@@ -82,6 +83,7 @@ struct SettingsView: View {
             }
             .onChange(of: autoResign) { _ in needsConfigSync = true }
             .onChange(of: resignThreshold) { _ in needsConfigSync = true }
+            .onChange(of: resignCheckInterval) { _ in needsConfigSync = true }
             .onChange(of: forceResignLowPower) { _ in needsConfigSync = true }
             .onChange(of: account.isSignedIn) { signedIn in
                 // 退出登录后，重置登录前输入框（带已保存凭据预填）与显示开关
@@ -98,12 +100,6 @@ struct SettingsView: View {
                 if needsConfigSync {
                     NotificationCenter.default.post(name: NSNotification.Name("com.reprovision.signingd-config-updated"), object: nil)
                 }
-            }
-            .alert("确认重启 SpringBoard", isPresented: $showingRespringAlert) {
-                Button("取消", role: .cancel) {}
-                Button("重启", role: .destructive) { performRespring() }
-            } message: {
-                Text("这将关闭所有应用并重新加载 SpringBoard。正在运行的进程将会被终止。")
             }
             .alert("退出登录", isPresented: $showingSignOutAlert) {
                 Button("取消", role: .cancel) {}
@@ -251,10 +247,17 @@ struct SettingsView: View {
             // v1.1.148: 上限从 7 改为 6 —— 免费 Apple ID 的 profile 有效期只有 7 天，
             // 若允许「提前 7 天」= 刚签完就永远在到期窗口内 → 冷却一过（24h）就再次全量重签，
             // 表现为「每隔一两天又续签」。上限 6 天 + 24h 冷却 = 免费账号最多每天签一次。
+            // 🔴 v1.1.184：24h 冷却已删除（用户要求）；窗口判定改「严格小于」——
+            // 剩余有效期必须 < 提前天数才进窗口，刚签完剩余 7 天 > 6 天窗口，自然隔天再签。
             Stepper("提前 \(resignThreshold) 天重签", value: $resignThreshold, in: 1...6)
 
             // v1.1.128：低电量强制续签（原版 ReProvision 默认低电量跳过；开启后不跳过）
             Toggle("低电量强制续签", isOn: $forceResignLowPower)
+
+            // 🔴 v1.1.184：把「检测间隔」接回设置页（v1.1.158 曾因 signingd 短命化而移除）。
+            // launchd 每小时拉起 daemon 一次，daemon 按这里的间隔决定本轮是否真正检测续签；
+            // 上限 12 小时是用户要求（改大 = 省电省流量，改小 = 到期前更及时）。
+            Stepper("检测间隔 \(resignCheckInterval) 小时", value: $resignCheckInterval, in: 1...12)
 
             // v1.1.158：已移除「检查间隔」与「下次自动续签」——signingd 短命化
             // （launchd 每 5 分钟拉起一轮）后两者均为空壳摆设：检查间隔不再由
@@ -263,8 +266,8 @@ struct SettingsView: View {
             Text("自动重签")
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
-                // v1.1.148: 把续签频率的完整逻辑讲清楚，用户无需翻代码就能理解
-                Text("续签频率 = 提前重签天数（到期窗口）+ 续签后 24 小时冷却。免费 Apple ID 的签名有效期只有 7 天，建议提前 2~3 天重签；上限 6 天，避免「签完还在窗口内」导致频繁全量重签。")
+                // v1.1.184: 冷却已取消，续签频率 = 检测间隔 + 提前重签窗口（严格小于）
+                Text("检测间隔：多久检查一次应用是否进入续签窗口（最多 12 小时）。提前重签窗口：剩余有效期严格少于设定的天数才会重签，所以刚续签完不会立刻再签。免费 Apple ID 的签名有效期只有 7 天，建议提前 2~3 天重签。")
 
                 HStack {
                     Text("日志大小：")
@@ -473,20 +476,9 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
-
-            Button {
-                showingRespringAlert = true
-            } label: {
-                HStack {
-                    Image(systemName: "arrow.clockwise")
-                    Text("重启 SpringBoard")
-                    Spacer()
-                    Text("Respring")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .foregroundColor(.red)
+            // v1.1.184：「重启 SpringBoard」已从系统操作里移除。
+            // 需要 respring 的场景（重建图标缓存 / 重新注册 App）在「系统状态 → 工具」里，
+            // 那边的入口会连带做完 uicache + 重启 lsd，比单独 respring 有用。
         } header: {
             Text("系统操作")
         }
@@ -655,13 +647,4 @@ struct SettingsView: View {
         refreshLogFileSize()
     }
 
-    private func performRespring() {
-        let result = BridgeClient.shared.respring()
-        if result {
-            LogManager.shared.info("已发送 SIGTERM 给 SpringBoard（sysctl 枚举方案）", source: "SettingsView")
-            exit(0)
-        } else {
-            LogManager.shared.error("重启 SpringBoard 失败：未找到 SpringBoard 进程", source: "SettingsView")
-        }
-    }
 }

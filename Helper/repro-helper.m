@@ -437,6 +437,7 @@ static void RPVHelperPrintUsage(void) {
             "  repro-helper reboot-device\n"
             "  repro-helper userspace-reboot\n"
             "  repro-helper kickstart-lsd\n"
+            "  repro-helper rebuild-icon-cache [App 包路径]\n"
             "  repro-helper kickstart-profiledaemon [-k]\n"
             "  repro-helper uicache <uicache 原生参数…>\n");
 }
@@ -641,20 +642,12 @@ static int RPVHelperRunUicache(int argc, char *argv[]) {
     return exitCode;
 }
 
-/// v1.1.182：重建图标缓存的兜底实现。直接用 launchctl kickstart -k 重启 lsd，
-/// 由 lsd 自己重建图标缓存。比 uicache 在 RootHide 下稳得多（lsd 是系统服务，
-/// launchctl 是 setuid root helper 直接调用，没有 namespace 副作用）。
-/// 用法：repro-helper kickstart-lsd
-static int RPVHelperRunKickstartLSD(void) {
-    RPVHelperLog(@"kickstart-lsd: 重启 com.apple.lsd 触发图标缓存重建");
-
-    // 🔴 v1.1.183：这里原来写死 "/usr/bin/launchctl"，RootHide 下必然 ENOENT
-    //    （真机日志：launchctl kickstart spawn 失败: 2）。改走候选路径探测。
-    NSString *launchctl = RPVHelperResolveTool(@"launchctl");
-    if (launchctl.length == 0) {
-        return 2;
-    }
-    const char *lc = [launchctl fileSystemRepresentation];
+/// v1.1.184：在指定服务标识上跑一次 `launchctl kickstart [-k] <target>`，返回退出码。
+/// stderr 落到 uicache.stderr.log，方便真机上看到 launchctl 的真实抱怨。
+static int RPVHelperLaunchctlKickstart(NSString *launchctlPath,
+                                       const char *serviceTarget,
+                                       BOOL forceKill) {
+    const char *lc = [launchctlPath fileSystemRepresentation];
 
     // 透传 PATH 给 launchctl，免得 launchctl 自己找不到 PATH 下的工具。
     char *env[] = {
@@ -662,28 +655,162 @@ static int RPVHelperRunKickstartLSD(void) {
         "HOME=/var/root",
         NULL
     };
-    // -k = kill 后重启（重启会触发 lsd 重新扫描已安装 app 并重建图标缓存）
-    // 必须在 system 域 —— lsd 是系统服务，不是当前用户域的。
-    const char *argv[] = { lc, "kickstart", "-k", "system/com.apple.lsd", NULL };
+    const char *argvKill[] = { lc, "kickstart", "-k", serviceTarget, NULL };
+    const char *argvSoft[] = { lc, "kickstart", serviceTarget, NULL };
+    const char **args = forceKill ? argvKill : argvSoft;
 
     pid_t pid = 0;
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
-    // stderr 落到同一诊断日志，跟 uicache 串行可读
     posix_spawn_file_actions_addopen(&actions, 2,
         "/var/mobile/Library/RePro/uicache.stderr.log",
         O_WRONLY | O_CREAT | O_APPEND, 0644);
-    int rc = posix_spawn(&pid, lc, &actions, NULL, (char *const *)argv, env);
+    int rc = posix_spawn(&pid, lc, &actions, NULL, (char *const *)args, env);
     posix_spawn_file_actions_destroy(&actions);
     if (rc != 0) {
-        RPVHelperLog(@"launchctl kickstart spawn 失败: %d（%@）", rc, launchctl);
-        return rc;
+        RPVHelperLog(@"launchctl kickstart %s spawn 失败: %d", serviceTarget, rc);
+        return -1;
     }
     int status = 0;
     waitpid(pid, &status, 0);
-    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    RPVHelperLog(@"launchctl kickstart exit=%d", exitCode);
-    return exitCode;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/// v1.1.184：重启 com.apple.lsd（图标/UTI 数据库服务）。
+///
+/// 🔴 真机实测（iPhone12,1 / iOS 17.2 / RootHide）——这就是「重建图标缓存显示成功却没反应」的真因：
+///   `launchctl kickstart -k system/com.apple.lsd`
+///     → 输出 "Please switch to user/foreground/com.apple.lsd service identifier"
+///     → **退出码仍然是 0**！所以旧代码一路报「成功」，lsd 却从来没被重启过。
+///   `launchctl kickstart -k user/foreground/com.apple.lsd`  → 退出码 0 且真的重启。
+///
+/// iOS 17 起 lsd 从 system 域搬到了 user/foreground 域，因此候选顺序必须是
+/// user/foreground → user/501 → system（最后一个只为兼容老系统）。
+static int RPVHelperKickstartLSD(void) {
+    NSString *launchctl = RPVHelperResolveTool(@"launchctl");
+    if (launchctl.length == 0) {
+        RPVHelperLog(@"kickstart-lsd: 找不到 launchctl");
+        return 2;
+    }
+
+    // ⚠️ system 域放最后：它在 iOS 17+ 上返回 0 却什么也没干，先试会误判成功。
+    const char *targets[] = {
+        "user/foreground/com.apple.lsd",
+        "user/501/com.apple.lsd",
+        "system/com.apple.lsd",
+    };
+    for (int i = 0; i < 3; i++) {
+        int code = RPVHelperLaunchctlKickstart(launchctl, targets[i], YES);
+        RPVHelperLog(@"kickstart %s exit=%d", targets[i], code);
+        if (code == 0) {
+            // user/foreground 与 user/501 成功即可确信真的重启了；
+            // system 域成功属于老系统路径，同样认可。
+            return 0;
+        }
+    }
+    RPVHelperLog(@"kickstart-lsd: 三个域全部失败");
+    return 1;
+}
+
+/// v1.1.184：结束 SpringBoard 进程（respring）。
+/// 不依赖 killall（真实 rootfs 没有这个二进制），走 sysctl(KERN_PROC_ALL)+KERN_PROCARGS2
+/// 枚举进程再 kill(SIGTERM)，与 App 侧 RPVBridge -respring 同一套实现。
+static BOOL RPVHelperKillSpringBoard(void) {
+    int maxArgumentSize = 0;
+    size_t size = sizeof(maxArgumentSize);
+    if (sysctl((int[]){ CTL_KERN, KERN_ARGMAX }, 2, &maxArgumentSize, &size, NULL, 0) == -1) {
+        maxArgumentSize = 4096;
+    }
+
+    int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
+    struct kinfo_proc *info = NULL;
+    size_t length = 0;
+    if (sysctl(mib, 3, NULL, &length, NULL, 0) < 0) return NO;
+    if (!(info = malloc(length))) return NO;
+    if (sysctl(mib, 3, info, &length, NULL, 0) < 0) {
+        free(info);
+        return NO;
+    }
+
+    int count = (int)(length / sizeof(struct kinfo_proc));
+    BOOL found = NO;
+    for (int i = 0; i < count && !found; i++) {
+        pid_t pid = info[i].kp_proc.p_pid;
+        if (pid <= 0) continue;
+
+        size_t argSize = (size_t)maxArgumentSize;
+        char *buffer = malloc((size_t)maxArgumentSize);
+        if (!buffer) continue;
+        if (sysctl((int[]){ CTL_KERN, KERN_PROCARGS2, pid }, 3, buffer, &argSize, NULL, 0) == 0) {
+            NSString *exe = [NSString stringWithUTF8String:(buffer + sizeof(int))];
+            if ([exe.lastPathComponent isEqualToString:@"SpringBoard"]) {
+                kill(pid, SIGTERM);
+                RPVHelperLog(@"respring: 已向 SpringBoard(pid=%d) 发送 SIGTERM", pid);
+                found = YES;
+            }
+        }
+        free(buffer);
+    }
+    free(info);
+    if (!found) RPVHelperLog(@"respring: 未找到 SpringBoard 进程");
+    return found;
+}
+
+/// v1.1.184：真正能看到效果的「重建图标缓存」。
+///
+/// 之前失败的两种做法各自的问题：
+///   ① `uicache -a` —— 退出码 0，但真机上 /var/mobile/Library/Caches/com.apple.springboard/
+///      连 Cache.db 都没有重新生成，桌面毫无变化（用户原话「显示操作成功是骗人的」）。
+///   ② `kickstart -k system/com.apple.lsd` —— iOS 17+ 直接被 launchctl 拒绝（见上）。
+///
+/// 正确顺序（缺一不可）：
+///   1. uicache -a       让 lsd 重新扫描所有 .app 并写入数据库
+///   2. kickstart -k lsd 强制 lsd 重启并落盘（user/foreground 域）
+///   3. respring         SpringBoard 重启后才会从 lsd 重新拉图标 —— 桌面这时才变
+///
+/// bundlePath 为空 → `uicache -a`（重建全部）；非空 → `uicache -p <path>`（只重注册一个 App）。
+static int RPVHelperRebuildIconCache(NSString *bundlePath) {
+    BOOL single = (bundlePath.length > 0);
+    RPVHelperLog(@"rebuild-icon-cache: 开始（uicache %@ → kickstart lsd → respring）",
+                 single ? [@"-p " stringByAppendingString:bundlePath] : @"-a");
+
+    // 1. uicache
+    NSString *uicache = RPVHelperResolveTool(@"uicache");
+    if (uicache.length > 0) {
+        const char *uc = [uicache fileSystemRepresentation];
+        const char *args[] = { uc,
+                               single ? "-p" : "-a",
+                               single ? [bundlePath fileSystemRepresentation] : NULL,
+                               NULL };
+        pid_t pid = 0;
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, 2,
+            "/var/mobile/Library/RePro/uicache.stderr.log",
+            O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (posix_spawn(&pid, uc, &actions, NULL, (char *const *)args, NULL) == 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+            RPVHelperLog(@"uicache %@ exit=%d", single ? @"-p" : @"-a",
+                         WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        } else {
+            RPVHelperLog(@"uicache spawn 失败");
+        }
+        posix_spawn_file_actions_destroy(&actions);
+    } else {
+        RPVHelperLog(@"rebuild-icon-cache: 找不到 uicache，跳过第 1 步");
+    }
+
+    // 2. 重启 lsd
+    int lsd = RPVHelperKickstartLSD();
+
+    // 3. respring —— 桌面视觉变化只在这一步之后才会出现
+    sleep(1);
+    BOOL sb = RPVHelperKillSpringBoard();
+
+    RPVHelperLog(@"rebuild-icon-cache: 完成（lsd=%d respring=%@）", lsd, sb ? @"YES" : @"NO");
+    // lsd 重启成功或 SpringBoard 已重启，任一成立就算成功
+    return (lsd == 0 || sb) ? 0 : 1;
 }
 
 /// v1.1.183：以 root 身份唤醒 repro-profiledaemon。
@@ -845,7 +972,15 @@ int main(int argc, char *argv[]) {
         }
 
         if ([command isEqualToString:@"kickstart-lsd"]) {
-            return RPVHelperRunKickstartLSD();
+            return RPVHelperKickstartLSD();
+        }
+
+        // v1.1.184：真正生效的「重建图标缓存 / 重新注册 App」。
+        //   rebuild-icon-cache                 → uicache -a  + 重启 lsd + respring
+        //   rebuild-icon-cache /path/to/X.app  → uicache -p X + 重启 lsd + respring
+        if ([command isEqualToString:@"rebuild-icon-cache"]) {
+            NSString *bundlePath = (argc >= 3) ? [NSString stringWithUTF8String:argv[2]] : nil;
+            return RPVHelperRebuildIconCache(bundlePath);
         }
 
         // v1.1.183：以 root 唤醒 profiledaemon（App 是 mobile，kickstart 系统域会被拒）。

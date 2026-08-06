@@ -77,10 +77,20 @@ static NSString *const kBundleRoot = @"/var/containers/Bundle/Application";
 
 static const NSInteger  kFallbackDays    = 2;
 
-// 🔴 v1.1.148 续签冷却（用户要求：续签完成后至少间隔 1 天才能再次续签）。
-// 基准是「续签完成时间」：daemon 在 s_onSigningComplete 里把 lastResignTime 写成
-// 完成时刻（不是开始时刻），App 与 daemon 两侧都以此为冷却起点。
-static const NSTimeInterval kResignCooldown = 24 * 3600;
+// 🔴 v1.1.184：**取消续签后 24 小时冷却**（用户明确要求）。
+// 冷却本来是为了压住「刚签完还在到期窗口内 → 每 2 小时全量重签」的老问题，
+// 但那个问题的真正根因是「提前重签天数 ≥ profile 有效期」，已由 kMaxThresholdDays=6
+// 和续签窗口的**严格小于**判定（见 RPVApplicationSigning）从源头解决：
+// 免费账号刚签完剩余 7 天 > 6 天窗口 → 自然要等约一天才会再次命中。
+// 冷却在此之上属于重复约束，还会让用户「改完设置马上想续签」时被静默拒绝。
+// 现改为由用户可配的「检测间隔」节流（下方 kMaxCheckIntervalHours）。
+
+// v1.1.184 检测间隔：launchd 每小时把本 daemon 拉起一次，daemon 自己按用户设定的
+// 间隔决定这一轮到底干不干活。用户要求上限 12 小时。
+static const NSInteger kDefaultCheckIntervalHours = 1;
+static const NSInteger kMaxCheckIntervalHours     = 12;
+// 记录「上一次真正执行检测的时刻」，跨进程持久化（daemon 是短命进程，内存变量留不住）
+static NSString *const kCheckStatePath = @"/var/mobile/Library/RePro/signingd-check-state.plist";
 
 // 🔴 v1.1.148 提前重签阈值上限（用户要求：最多只能提前 6 天）。
 // 根因：免费 Apple ID 的 profile 有效期只有 7 天，若阈值允许 7 天，
@@ -382,7 +392,12 @@ static BOOL s_isAppRegistered(NSString *bundleID, pid_t *outPid) {
 //   只要用户在界面上动过设置，这份数据一定存在，且不依赖 App 主动同步。
 //   读不到再依次回退到共享 plist、App 容器内的偏好文件。
 
-typedef struct { BOOL enabled; NSInteger days; BOOL forceResignLowPower; } sd_config;
+typedef struct {
+    BOOL      enabled;
+    NSInteger days;
+    BOOL      forceResignLowPower;
+    NSInteger checkIntervalHours;   // v1.1.184：用户可配检测间隔（1~12 小时）
+} sd_config;
 
 /// 本次实际生效的配置来源（--status 会打印，方便一眼确认有没有读到 App 的设置）
 static NSString *gCfgSource = @"未读取";
@@ -404,6 +419,13 @@ static BOOL s_parseCfg(NSDictionary *d, sd_config *out) {
     out->enabled = rawEn ? [rawEn boolValue] : YES;
     id rawLow = d[@"forceResignLowPower"];
     out->forceResignLowPower = rawLow ? [rawLow boolValue] : NO;
+
+    // v1.1.184：检测间隔（小时）。key 与 App 端 @AppStorage("resignCheckInterval") 一致。
+    id rawIv = d[@"resignCheckInterval"];
+    NSInteger iv = rawIv ? [rawIv integerValue] : kDefaultCheckIntervalHours;
+    if (iv < 1) iv = kDefaultCheckIntervalHours;
+    if (iv > kMaxCheckIntervalHours) iv = kMaxCheckIntervalHours;
+    out->checkIntervalHours = iv;
     return YES;
 }
 
@@ -439,7 +461,7 @@ static NSDictionary *s_readContainerPreferences(void) {
 }
 
 static sd_config s_cfg(void) {
-    sd_config cfg = (sd_config){YES, kFallbackDays};
+    sd_config cfg = (sd_config){YES, kFallbackDays, NO, kDefaultCheckIntervalHours};
     NSString *source = nil;
 
     if (s_parseCfg(s_readAppPreferences(), &cfg)) {
@@ -463,8 +485,9 @@ static sd_config s_cfg(void) {
         lastEn = (int)cfg.enabled; lastSource = srcName;
 
         if (source) {
-            s_log(@"读取配置[来源: %@]: 提前重签=%ld天 自动续签=%@",
-                  srcName, (long)cfg.days, cfg.enabled ? @"开" : @"关");
+            s_log(@"读取配置[来源: %@]: 提前重签=%ld天 自动续签=%@ 检测间隔=%ld小时",
+                  srcName, (long)cfg.days, cfg.enabled ? @"开" : @"关",
+                  (long)cfg.checkIntervalHours);
         } else {
             s_log(@"⚠️ 两个来源都没读到配置，退回默认值: 提前重签=%ld天",
                   (long)kFallbackDays);
@@ -885,19 +908,27 @@ static BOOL s_fire(void) {
         return NO;
     }
 
-    // 🔴 v1.1.147+：续签冷却 —— 距上次续签完成不足 24 小时直接跳过（连 App 都不拉起）。
-    // 根因：免费 Apple ID 签名的 profile 有效期只有 7 天；若「提前续签阈值」也设成 7 天，
-    // 刚签完的应用剩余 7 天 ≤ 7 天窗口 → 永远在到期窗口内 → 定时器（默认 120 分钟）每次
-    // 触发都命中 → 每 2 小时全量重签 → zsign 内存暴涨（Jetsam 实测 daemon 5GB）拖垮整机。
-    // v1.1.148 用户要求「至少间隔一天，以续签后的时间为基准」→ 冷却 24 小时；
-    // 同时「提前重签天数」上限收紧到 6 天（kMaxThresholdDays），从源头杜绝 7 天窗口
-    // 造成的「永远在窗口内」配置（见 s_parseCfg 的 clamp）。
-    NSDictionary *lastRes = [NSDictionary dictionaryWithContentsOfFile:kResultPath];
-    double lastTs = lastRes ? [lastRes[@"lastResignTime"] doubleValue] : 0;
-    if (lastTs > 0 && (time(NULL) - (time_t)lastTs) < kResignCooldown) {
-        s_log(@"距上次续签 %.1f 小时 < 24h，跳过本次触发（冷却期）",
-              (time(NULL) - (time_t)lastTs) / 3600.0);
-        return NO;
+    // 🔴 v1.1.184：24 小时冷却已删除（用户要求）。改由「检测间隔」节流：
+    // launchd 每小时拉起本进程一次，但只有距上一次真正检测 ≥ 用户设定的间隔
+    // （1~12 小时，设置页可调）才干活，否则本轮直接退出。
+    // 与旧冷却的本质区别：
+    //   旧冷却基准 = 上次「续签完成」时间 → 刚续签完就被锁死 24 小时，用户无法调节；
+    //   新间隔基准 = 上次「检测」时间     → 用户自己决定多久看一次，不再有隐藏锁。
+    // 至于「会不会又变成频繁全量重签」——不会：命中续签窗口的前提是剩余有效期
+    // **严格小于** 提前重签天数（上限 6 天 < 免费 profile 的 7 天），刚签完的应用
+    // 剩余 7 天不在窗口内，自然要等约一天才可能再次命中。
+    time_t nowCheck = time(NULL);
+    {
+        NSDictionary *st = [NSDictionary dictionaryWithContentsOfFile:kCheckStatePath];
+        double lastCheck = st ? [st[@"lastCheckTime"] doubleValue] : 0;
+        NSTimeInterval interval = (NSTimeInterval)c.checkIntervalHours * 3600.0;
+        if (lastCheck > 0 && (nowCheck - (time_t)lastCheck) < interval) {
+            s_log(@"距上次检测 %.1f 小时 < 设定间隔 %ld 小时，本轮跳过",
+                  (nowCheck - (time_t)lastCheck) / 3600.0, (long)c.checkIntervalHours);
+            return NO;
+        }
+        [@{ @"lastCheckTime": @(nowCheck) } writeToFile:kCheckStatePath atomically:YES];
+        chown(kCheckStatePath.UTF8String, 501, 501);
     }
 
     // 记录续签开始
@@ -1112,7 +1143,7 @@ static int s_printStatus(void) {
     if (dpid > 0 && kill(dpid, 0) == 0) {
         printf("daemon 状态      : ✅ 本轮进程运行中 (pid=%d)\n", dpid);
     } else {
-        printf("daemon 状态      : ⏸ 本轮进程未运行（短命模式正常——launchd 每 5 分钟拉起一轮）\n");
+        printf("daemon 状态      : ⏸ 本轮进程未运行（短命模式正常——launchd 每小时拉起一轮）\n");
         printf("                   判断健康请用下方「最近一次续签完成」；手动拉起: launchctl kickstart -k system/jp.soh.reprovision.signingd\n");
     }
 
@@ -1121,6 +1152,18 @@ static int s_printStatus(void) {
     printf("配置来源         : %s\n", gCfgSource.UTF8String);
     printf("自动续签开关     : %s\n", c.enabled ? "开" : "关");
     printf("提前重签阈值     : %ld 天     ← 应与 App「设置」页一致\n", (long)c.days);
+    printf("检测间隔         : %ld 小时   ← v1.1.184 起可在设置页调整（上限 12 小时）\n",
+           (long)c.checkIntervalHours);
+    {
+        NSDictionary *st = [NSDictionary dictionaryWithContentsOfFile:kCheckStatePath];
+        double lastCheck = st ? [st[@"lastCheckTime"] doubleValue] : 0;
+        if (lastCheck > 0) {
+            printf("上次检测         : %.1f 小时前\n",
+                   (time(NULL) - (time_t)lastCheck) / 3600.0);
+        } else {
+            printf("上次检测         : 无记录\n");
+        }
+    }
 
     // 2b. 免费账号 3 应用限制绕过
     {
@@ -1142,7 +1185,7 @@ static int s_printStatus(void) {
     }
 
     // 3. 下次触发（v1.1.155 短命模式：launchd StartCalendarInterval 每 5 分钟拉起一次）
-    printf("下次触发         : launchd 每 5 分钟拉起一次（无需常驻进程）\n");
+    printf("下次触发         : launchd 每小时拉起一次；是否干活由设置里的「检测间隔」决定\n");
 
     // 4. 最近一次「触发」（daemon 写 trigger 的时间）
     NSDictionary *trg = [NSDictionary dictionaryWithContentsOfFile:kTriggerPath];
@@ -1263,7 +1306,7 @@ int main(int argc, char *argv[]) {
           c.enabled ? @"是" : @"否", (long)c.days);
     s_log(@"BundleID: %@ | 触发路径: %@", kAppBundleID, kTriggerPath);
     s_log(@"架构: Daemon(短命检查+唤醒+保活) → App(后台静默签名) → daemon 退出");
-    s_log(@"      launchd 每 5 分钟重新拉起，用户无需手动打开 App");
+    s_log(@"      launchd 每小时重新拉起，用户无需手动打开 App");
 
     // 续签完成通知 → 更新统计 + 释放 BKS + 退出本轮
     int t2; notify_register_dispatch("com.reprovision.signing-complete", &t2,

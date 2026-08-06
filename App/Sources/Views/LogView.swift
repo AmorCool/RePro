@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin   // v1.1.184：sysctlbyname 取机型 identifier（hw.machine）
 
 // MARK: - 日志管理页面
 
@@ -194,7 +195,13 @@ struct LogView: View {
             return
         }
 
-        let text = filteredLogs.map { "\($0.timestamp) [\($0.level.rawValue)] [\($0.source)] \($0.message)" }.joined(separator: "\n")
+        // v1.1.184：导出文件头部预置设备信息（用户要求：日志里要有系统版本 + 手机型号名称）
+        let deviceLine = "设备型号: \(LogView.deviceModelName())"
+        let systemLine = "系统版本: iOS \(UIDevice.current.systemVersion)"
+        let exportTime = LogView.exportDateFormatter.string(from: Date())
+        let header = "==== ReSign 日志导出 ====\n\(deviceLine)\n\(systemLine)\n导出时间: \(exportTime)\n========================\n"
+
+        let text = header + filteredLogs.map { "\($0.timestamp) [\($0.level.rawValue)] [\($0.source)] \($0.message)" }.joined(separator: "\n")
 
         guard let data = text.data(using: .utf8) else {
             exportErrorMessage = "日志数据编码失败"
@@ -212,6 +219,59 @@ struct LogView: View {
             showingExportError = true
         }
     }
+
+    // MARK: 设备信息（v1.1.184）
+
+    /// hw.machine 拿到的 identifier（如 iPhone12,1）→ 用户可读的型号名
+    private static func deviceModelName() -> String {
+        var size = 0
+        sysctlbyname("hw.machine", nil, &size, nil, 0)
+        guard size > 0 else { return "未知设备" }
+        var buf = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.machine", &buf, &size, nil, 0)
+        let identifier = String(cString: buf)
+
+        if let name = Self.modelNames[identifier] {
+            return "\(name) (\(identifier))"
+        }
+        return identifier   // 新机型没收录时至少给出原始 identifier
+    }
+
+    private static let modelNames: [String: String] = [
+        // 旧款
+        "iPhone1,1": "iPhone", "iPhone1,2": "iPhone 3G", "iPhone2,1": "iPhone 3GS",
+        "iPhone3,1": "iPhone 4", "iPhone3,3": "iPhone 4 (CDMA)", "iPhone4,1": "iPhone 4s",
+        "iPhone5,1": "iPhone 5", "iPhone5,2": "iPhone 5 (CDMA)", "iPhone5,3": "iPhone 5c",
+        "iPhone6,1": "iPhone 5s", "iPhone6,2": "iPhone 5s (CDMA)",
+        "iPhone7,1": "iPhone 6 Plus", "iPhone7,2": "iPhone 6",
+        "iPhone8,1": "iPhone 6s", "iPhone8,2": "iPhone 6s Plus", "iPhone8,4": "iPhone SE (第 1 代)",
+        "iPhone9,1": "iPhone 7", "iPhone9,2": "iPhone 7 Plus", "iPhone9,3": "iPhone 7", "iPhone9,4": "iPhone 7 Plus",
+        "iPhone10,1": "iPhone 8", "iPhone10,2": "iPhone 8 Plus", "iPhone10,3": "iPhone X", "iPhone10,4": "iPhone 8", "iPhone10,5": "iPhone 8 Plus", "iPhone10,6": "iPhone X",
+        // XS 系列
+        "iPhone11,2": "iPhone XS", "iPhone11,4": "iPhone XS Max", "iPhone11,6": "iPhone XS Max", "iPhone11,8": "iPhone XR",
+        // 11 系列
+        "iPhone12,1": "iPhone 11", "iPhone12,3": "iPhone 11 Pro", "iPhone12,5": "iPhone 11 Pro Max", "iPhone12,8": "iPhone SE (第 2 代)",
+        // 12 系列
+        "iPhone13,1": "iPhone 12 mini", "iPhone13,2": "iPhone 12", "iPhone13,3": "iPhone 12 Pro", "iPhone13,4": "iPhone 12 Pro Max",
+        // 13 系列
+        "iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max", "iPhone14,4": "iPhone 13 mini", "iPhone14,5": "iPhone 13",
+        "iPhone14,6": "iPhone SE (第 3 代)",
+        // 14 系列
+        "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus",
+        "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
+        // 15 系列
+        "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus",
+        "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max",
+        // 16 系列
+        "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max",
+        "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
+    ]
+
+    private static let exportDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
 }
 
 // MARK: - 单行日志条目
