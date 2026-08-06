@@ -217,6 +217,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 RPVSigningdNotify.notifySigningComplete()
                 LogManager.shared.info("══════ 静默续签结束（未登录），已回报 daemon ══════", source: "AppDelegate")
                 DaemonLogStop()
+                // 🔴 v1.1.188：提前中止路径必须 hide 横幅（同未联网分支的修复）
+                ResignProgress.shared.hide()
                 // 🔴 v1.1.163：退出前二次确认仍处于后台（用户可能已在重试期间打开 App）。
                 Thread.sleep(forTimeInterval: 0.5)
                 if UIApplication.shared.applicationState == .background {
@@ -254,6 +256,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                         RPVSigningdNotify.notifySigningComplete()
                         LogManager.shared.info("══════ 续签结束（未联网已停止），已回报 daemon ══════", source: "AppDelegate")
                         DaemonLogStop()
+                        // 🔴 v1.1.188：提前中止路径必须 hide 横幅——旧版漏调，App 在前台时
+                        // 「ReSign 后台自动续签」横幅永远挂在界面最上方（用户实锤）。
+                        ResignProgress.shared.hide()
                         Thread.sleep(forTimeInterval: 0.5)
                         if UIApplication.shared.applicationState == .background { exit(0) }
                         return

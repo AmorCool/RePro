@@ -1195,7 +1195,7 @@ static int s_printStatus(void) {
     if (dpid > 0 && kill(dpid, 0) == 0) {
         printf("daemon 状态      : ✅ 本轮进程运行中 (pid=%d)\n", dpid);
     } else {
-        printf("daemon 状态      : ⏸ 本轮进程未运行（短命模式正常——launchd 每小时拉起一轮）\n");
+        printf("daemon 状态      : ⏸ 本轮进程未运行（非持久化定时检查正常——launchd 每小时拉起一轮）\n");
         printf("                   判断健康请用下方「最近一次续签完成」；手动拉起: launchctl kickstart -k system/jp.soh.reprovision.signingd\n");
     }
 
@@ -1325,7 +1325,7 @@ int main(int argc, char *argv[]) {
     // 进程不再常驻 → 绕开 iOS 17 launchd "inefficient" SIGKILL 杀循环，
     // 也让 RootHide XPC 拦截器的常驻泄漏彻底没有累积机会。
     s_log(@"========================================");
-    s_log(@"=== 启动 pid=%d uid=%d（短命模式，本轮做完即退出）===", getpid(), getuid());
+    s_log(@"=== 启动 pid=%d uid=%d（非持久化定时检查，本轮做完即退出）===", getpid(), getuid());
     s_log(@"管理命令:");
     s_log(@"  sudo /usr/libexec/repro-signingd --status      ← 查看是否真的续签了（推荐先看这个）");
     s_log(@"  sudo /usr/libexec/repro-signingd --resign-now  ← 手动触发续签（同步等待完成，推荐）");
@@ -1361,7 +1361,7 @@ int main(int argc, char *argv[]) {
     s_log(@"配置: 自动=%@ 阈值=%ld天",
           c.enabled ? @"是" : @"否", (long)c.days);
     s_log(@"BundleID: %@ | 触发路径: %@", kAppBundleID, kTriggerPath);
-    s_log(@"架构: Daemon(短命检查+唤醒+保活) → App(后台静默签名) → daemon 退出");
+    s_log(@"架构: Daemon(非持久化定时检查+唤醒+保活) → App(后台静默签名) → daemon 退出");
     s_log(@"      launchd 每小时重新拉起，用户无需手动打开 App");
 
     // 续签完成通知 → 更新统计 + 释放 BKS + 退出本轮

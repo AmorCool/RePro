@@ -138,7 +138,7 @@ class LogManager: ObservableObject {
         guard !lines.isEmpty else { return }
         // 过滤噪音行（前缀黑名单；匹配后整行丢弃）
         let noisePrefixes = [
-            "================================================",
+            "=====",            // 启动横幅分隔线（长度不固定，短前缀兜底）
             "=== 启动",
             "管理命令:",
             "sudo ",
