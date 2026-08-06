@@ -265,9 +265,15 @@ static void HandleManageRequests(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
 
+    // v1.1.183：只要消费过请求文件，就**必定**回写一句结果。
+    // 旧版在 HandleDeleteRequest 读到空内容返回 nil 时，请求文件已被删掉、
+    // 结果却一个字没写 —— App 那头只能干等满 60 秒报「root 侧未响应」，
+    // daemon 日志里同样查不到线索。现在哪怕是失败也要把原因回给 App。
     if ([fm fileExistsAtPath:kDeleteRequestPath]) {
         NSString *r = HandleDeleteRequest();
-        if (r.length) [parts addObject:r];
+        [parts addObject:(r.length
+                          ? r
+                          : @"ERR: 删除请求内容为空（请求文件已消费但没有有效文件名）")];
     }
     if ([fm fileExistsAtPath:kCleanupRequestPath]) {
         [fm removeItemAtPath:kCleanupRequestPath error:nil];

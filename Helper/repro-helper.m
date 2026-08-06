@@ -33,6 +33,8 @@
 #include <signal.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
+#include <mach-o/dyld.h>   // _NSGetExecutablePath：v1.1.183 推算自身所在越狱根
 
 // 系统描述文件库的命名/去重/清单/删除，与 repro-profiledaemon 共用同一份实现。
 // v1.1.171：helper 过去用「描述文件内容 SHA1」当文件名，每次重签内容都变 → 每次都新增
@@ -435,6 +437,7 @@ static void RPVHelperPrintUsage(void) {
             "  repro-helper reboot-device\n"
             "  repro-helper userspace-reboot\n"
             "  repro-helper kickstart-lsd\n"
+            "  repro-helper kickstart-profiledaemon [-k]\n"
             "  repro-helper uicache <uicache 原生参数…>\n");
 }
 
@@ -442,6 +445,74 @@ static void RPVHelperPrintUsage(void) {
 
 /// XPC 类型（xpc_connection_t / xpc_object_t / xpc_handler_t）由 SDK 的 xpc/xpc.h 提供
 /// （经 Foundation 引入），此处不再重复定义；函数一律经 dlsym 取指针，避免链接期耦合。
+
+#pragma mark - 越狱工具路径解析（v1.1.183）
+
+/// 🔴 v1.1.183 真机日志实证（repro_log_1785977443）：
+///   `launchctl kickstart spawn 失败: 2`（2 = ENOENT）。
+///   同一份日志里 helper 自身的路径是
+///   /var/containers/Bundle/Application/.jbroot-D625DCA8D846BAA3/usr/libexec/repro-helper
+///   —— **带完整 jbroot 前缀**。这说明 RootHide 进程内并没有把 /usr/bin 透明重定向到
+///   jbroot，所以代码里写死的 "/usr/bin/launchctl"、"/usr/bin/uicache" 在 RootHide 下
+///   指向的是真实 rootfs，而真实 rootfs 根本没有这些越狱工具，必然 ENOENT。
+///
+/// 本函数取 helper 自身所在的「越狱根」。helper 的安装位置固定为
+/// <root>/usr/libexec/repro-helper，把自身绝对路径去掉三级即得 <root>：
+///   RootHide → /var/containers/Bundle/Application/.jbroot-XXXX
+///   Dopamine → /var/jb
+///   rootful  → /
+static NSString *RPVHelperSelfRoot(void) {
+    static NSString *cached = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        char buf[PATH_MAX] = {0};
+        uint32_t size = (uint32_t)sizeof(buf);
+        if (_NSGetExecutablePath(buf, &size) != 0) return;
+        char resolved[PATH_MAX] = {0};
+        const char *use = realpath(buf, resolved) ? resolved : buf;
+        NSString *path = [NSString stringWithUTF8String:use];
+        if (path.length == 0) return;
+        // .../usr/libexec/repro-helper → 依次去掉 repro-helper、libexec、usr
+        NSString *root = path.stringByDeletingLastPathComponent
+                             .stringByDeletingLastPathComponent
+                             .stringByDeletingLastPathComponent;
+        if (root.length > 0) cached = [root copy];
+    });
+    return cached;
+}
+
+/// 在所有可能的 bootstrap 位置里找一个可执行的越狱工具，找不到返回 nil。
+/// 探测顺序：自身越狱根（RootHide 随机 jbroot / Dopamine /var/jb / rootful /）
+/// → /var/jb → 真实根。用 access(X_OK) 而不是 NSFileManager，RootHide 下更可靠。
+static NSString *RPVHelperResolveTool(NSString *name) {
+    if (name.length == 0) return nil;
+
+    NSMutableArray<NSString *> *roots = [NSMutableArray array];
+    NSString *selfRoot = RPVHelperSelfRoot();
+    if (selfRoot.length > 0) [roots addObject:selfRoot];
+    for (NSString *r in @[ @"/var/jb", @"/" ]) {
+        if (![roots containsObject:r]) [roots addObject:r];
+    }
+
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    for (NSString *root in roots) {
+        for (NSString *sub in @[ @"usr/bin", @"bin", @"usr/sbin", @"sbin", @"usr/local/bin" ]) {
+            NSString *p = [[root stringByAppendingPathComponent:sub]
+                           stringByAppendingPathComponent:name];
+            if (![candidates containsObject:p]) [candidates addObject:p];
+        }
+    }
+
+    for (NSString *p in candidates) {
+        if (access([p fileSystemRepresentation], X_OK) == 0) {
+            RPVHelperLog(@"工具 %@ → %@", name, p);
+            return p;
+        }
+    }
+    RPVHelperLog(@"未找到工具 %@（已尝试：%@）", name,
+                 [candidates componentsJoinedByString:@", "]);
+    return nil;
+}
 
 /// 重启设备（移植自 RebootTools/RebootRootHelper）。
 /// 必须在 root 下执行（本工具已是 setuid 4755），reboot(0) 一句即可。
@@ -524,17 +595,10 @@ static int RPVHelperRebootUserSpace(void) {
 /// 仍保留给「重新注册 App」用，但 stderr 重定向到 /var/mobile/Library/RePro/uicache.stderr.log
 /// —— 失败时用户能在 RePro 日志面板看到真因。
 static int RPVHelperRunUicache(int argc, char *argv[]) {
-    NSArray<NSString *> *candidates = @[ @"/usr/bin/uicache", @"/var/jb/usr/bin/uicache" ];
-    NSString *uicache = nil;
-    for (NSString *p in candidates) {
-        // v1.1.182：用 access() 探测可执行权限，比 NSFileManager 在 RootHide 下更稳。
-        if (access([p fileSystemRepresentation], X_OK) == 0) {
-            uicache = p;
-            break;
-        }
-    }
+    // v1.1.183：改用统一的越狱工具解析（含 RootHide 随机 jbroot），
+    // 旧版只试 /usr/bin 与 /var/jb/usr/bin，RootHide 下两处都没有 → 直接 2。
+    NSString *uicache = RPVHelperResolveTool(@"uicache");
     if (uicache.length == 0) {
-        RPVHelperLog(@"uicache 未找到（已尝试 /usr/bin、/var/jb/usr/bin）");
         return 2;
     }
 
@@ -583,6 +647,15 @@ static int RPVHelperRunUicache(int argc, char *argv[]) {
 /// 用法：repro-helper kickstart-lsd
 static int RPVHelperRunKickstartLSD(void) {
     RPVHelperLog(@"kickstart-lsd: 重启 com.apple.lsd 触发图标缓存重建");
+
+    // 🔴 v1.1.183：这里原来写死 "/usr/bin/launchctl"，RootHide 下必然 ENOENT
+    //    （真机日志：launchctl kickstart spawn 失败: 2）。改走候选路径探测。
+    NSString *launchctl = RPVHelperResolveTool(@"launchctl");
+    if (launchctl.length == 0) {
+        return 2;
+    }
+    const char *lc = [launchctl fileSystemRepresentation];
+
     // 透传 PATH 给 launchctl，免得 launchctl 自己找不到 PATH 下的工具。
     char *env[] = {
         "PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin",
@@ -591,12 +664,8 @@ static int RPVHelperRunKickstartLSD(void) {
     };
     // -k = kill 后重启（重启会触发 lsd 重新扫描已安装 app 并重建图标缓存）
     // 必须在 system 域 —— lsd 是系统服务，不是当前用户域的。
-    char *argv[] = {
-        "/usr/bin/launchctl",
-        "kickstart", "-k",
-        "system/com.apple.lsd",
-        NULL
-    };
+    const char *argv[] = { lc, "kickstart", "-k", "system/com.apple.lsd", NULL };
+
     pid_t pid = 0;
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
@@ -604,10 +673,10 @@ static int RPVHelperRunKickstartLSD(void) {
     posix_spawn_file_actions_addopen(&actions, 2,
         "/var/mobile/Library/RePro/uicache.stderr.log",
         O_WRONLY | O_CREAT | O_APPEND, 0644);
-    int rc = posix_spawn(&pid, argv[0], &actions, NULL, argv, env);
+    int rc = posix_spawn(&pid, lc, &actions, NULL, (char *const *)argv, env);
     posix_spawn_file_actions_destroy(&actions);
     if (rc != 0) {
-        RPVHelperLog(@"launchctl kickstart spawn 失败: %d", rc);
+        RPVHelperLog(@"launchctl kickstart spawn 失败: %d（%@）", rc, launchctl);
         return rc;
     }
     int status = 0;
@@ -615,6 +684,52 @@ static int RPVHelperRunKickstartLSD(void) {
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     RPVHelperLog(@"launchctl kickstart exit=%d", exitCode);
     return exitCode;
+}
+
+/// v1.1.183：以 root 身份唤醒 repro-profiledaemon。
+///
+/// 🔴 为什么必须由 helper 来做，而不是 App 自己 spawn launchctl：
+///   ① 路径：App/helper 都看不到「真实 rootfs 的 launchctl」，只有越狱 bootstrap
+///      里才有一份，RootHide 下还带随机 jbroot 前缀 —— 必须探测（同 kickstart-lsd）。
+///   ② 权限：profiledaemon 由 postinst 用 `bootstrap system` 加载在 **system 域**，
+///      而 App 是 uid 501(mobile)，`launchctl kickstart system/...` 会被拒（EPERM）。
+///      helper 是 setuid root，才真正有资格 kickstart 系统域的 job。
+///   这两点叠加，导致 App 侧的 RPVKickstartProfileDaemonEx() 从引入起就是个静默空操作，
+///   描述文件安装/删除全靠 plist 里的 notifyd LaunchEvents 兜底 —— 一旦通知投递
+///   落在 daemon「即将退出」的窗口里，就表现为 App 干等 60 秒报「root 侧未响应」。
+///
+/// force=YES 用 `kickstart -k`（先杀再拉，仅用于确认 daemon 已卡死的兜底）；
+/// force=NO 是软唤醒（活着就不动它，让它把活干完）——见 v1.1.180 的血泪教训。
+static int RPVHelperKickstartProfileDaemon(BOOL force) {
+    NSString *launchctl = RPVHelperResolveTool(@"launchctl");
+    if (launchctl.length == 0) {
+        return 2;
+    }
+    const char *lc = [launchctl fileSystemRepresentation];
+
+    // roothide 把 jbroot 下的 LaunchDaemons 加载在 system 域（postinst 用的是
+    // `bootstrap system`）；历史上也出现过挂在 user/501 的情况，两个域都试一次。
+    const char *domains[] = { "system/jp.soh.reprovision.profiledaemon",
+                              "user/501/jp.soh.reprovision.profiledaemon" };
+    for (int d = 0; d < 2; d++) {
+        const char *argvKill[] = { lc, "kickstart", "-k", domains[d], NULL };
+        const char *argvSoft[] = { lc, "kickstart", domains[d], NULL };
+        const char **args = force ? argvKill : argvSoft;
+
+        pid_t pid = 0;
+        if (posix_spawn(&pid, lc, NULL, NULL, (char *const *)args, NULL) != 0) {
+            continue;
+        }
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            RPVHelperLog(@"kickstart profiledaemon 成功（%s%@）",
+                         domains[d], force ? @", 强制重启" : @"");
+            return 0;
+        }
+    }
+    RPVHelperLog(@"kickstart profiledaemon 失败（system 与 user/501 两个域均未成功）");
+    return 1;
 }
 
 int main(int argc, char *argv[]) {
@@ -731,6 +846,12 @@ int main(int argc, char *argv[]) {
 
         if ([command isEqualToString:@"kickstart-lsd"]) {
             return RPVHelperRunKickstartLSD();
+        }
+
+        // v1.1.183：以 root 唤醒 profiledaemon（App 是 mobile，kickstart 系统域会被拒）。
+        if ([command isEqualToString:@"kickstart-profiledaemon"]) {
+            BOOL force = (argc >= 3 && strcmp(argv[2], "-k") == 0);
+            return RPVHelperKickstartProfileDaemon(force);
         }
 
         RPVHelperLog(@"未知命令: %@", command);

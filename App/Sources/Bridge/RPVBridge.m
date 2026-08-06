@@ -715,12 +715,22 @@ static NSString *RPVResolvedRootHelperPath(void) {
 
 /// 同步拉起 repro-helper 干一件需要 root 的活，退出码 0 视为成功。
 /// 用 posix_spawn 而不是 XPC —— helper 是 setuid root 的一次性进程，做完就退出。
-static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *arguments) {
-    if (helperPath.length == 0) return NO;
+///
+/// v1.1.183：加 quiet 参数。等待循环里每 5 秒补发一次唤醒，若每次都写一条完整
+/// 诊断（含 helper 全部输出），一次删除操作会刷十几屏，把真正有用的信息淹掉。
+/// quiet=YES 时只在失败时记一行简短日志。
+///
+/// v1.1.183：核心实现改为返回**真实退出码**（spawn 失败返回负数）。
+/// 之前工具菜单统一把失败折成 1，用户看到的永远是「退出码 1」，
+/// 而日志里其实写着 exit=2（ENOENT，工具没找到）—— 关键信息在 UI 上丢失了。
+static int RPVRunRootHelperCore(NSString *helperPath,
+                                NSArray<NSString *> *arguments,
+                                BOOL quiet) {
+    if (helperPath.length == 0) return -2;
 
     NSUInteger count = arguments.count;
     const char **argv = (const char **)calloc(count + 2, sizeof(char *));
-    if (!argv) return NO;
+    if (!argv) return -3;
     argv[0] = [helperPath UTF8String];
     for (NSUInteger i = 0; i < count; i++) {
         argv[i + 1] = [arguments[i] UTF8String];
@@ -746,7 +756,7 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     if (spawnRC != 0) {
         RPVDiagnostic(RPVDiagError, @"repro-helper", @"repro-helper 启动失败: %d (%@)", spawnRC, helperPath);
         [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
-        return NO;
+        return -spawnRC;
     }
 
     int status = 0;
@@ -756,23 +766,39 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
     NSString *log = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
 
-    RPVDiagnostic(exitCode == 0 ? RPVDiagInfo : RPVDiagError,
-                  @"repro-helper",
-                  @"repro-helper %@ exit=%d\n%@",
-                  [arguments componentsJoinedByString:@" "], exitCode, log.length ? log : @"(无输出)");
+    if (!quiet) {
+        RPVDiagnostic(exitCode == 0 ? RPVDiagInfo : RPVDiagError,
+                      @"repro-helper",
+                      @"repro-helper %@ exit=%d\n%@",
+                      [arguments componentsJoinedByString:@" "], exitCode, log.length ? log : @"(无输出)");
+    } else if (exitCode != 0) {
+        RPVDiagnostic(RPVDiagWarning, @"repro-helper",
+                      @"repro-helper %@ exit=%d",
+                      [arguments componentsJoinedByString:@" "], exitCode);
+    }
 
-    return exitCode == 0;
+    return exitCode;
+}
+
+static BOOL RPVRunRootHelperEx(NSString *helperPath,
+                               NSArray<NSString *> *arguments,
+                               BOOL quiet) {
+    return RPVRunRootHelperCore(helperPath, arguments, quiet) == 0;
+}
+
+static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *arguments) {
+    return RPVRunRootHelperEx(helperPath, arguments, NO);
 }
 
 /// v1.1.181：工具菜单（重建图标缓存 / 重新注册 App / 重启用户空间 / 重启设备）。
-/// 直接复用同步 helper 运行器，返回其退出码（0=成功）。
+/// v1.1.183：改为透传 helper 的真实退出码，界面能直接显示 2（工具未找到）之类的信息。
 - (int)runRootHelperWithArguments:(NSArray<NSString *> *)arguments {
     NSString *helperPath = RPVResolvedRootHelperPath();
     if (helperPath.length == 0) {
         RPVDiagnostic(RPVDiagError, @"repro-helper", @"未找到 repro-helper，无法执行工具命令");
         return -2;
     }
-    return RPVRunRootHelper(helperPath, arguments) ? 0 : 1;
+    return RPVRunRootHelperCore(helperPath, arguments, NO);
 }
 
 // 描述文件安装已对齐 test2：统一走 App 进程内 MCProfileConnection（见
@@ -882,34 +908,96 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 /// 描述文件根本没装进真实库，App 那头却只看到一句超时，
 /// 正是「签名成功、App 却 0xe8008015 秒退」的成因之一。
 /// 所以补发唤醒**必须**用不带 `-k` 的版本：活着就让它把活干完，死了才拉新实例。
+///
+/// 🔴🔴🔴 v1.1.183 根因订正：**这个函数此前一直是个静默空操作**。
+/// 两个各自独立、都足以致命的原因：
+///   ① 路径错。旧版只试 "/bin/launchctl"、"/usr/bin/launchctl" 两个写死路径。
+///      RootHide 进程内没有把 /usr/bin 透明重定向到 jbroot（真机日志实证：
+///      helper 自身路径就是带 .jbroot-XXXX 前缀的全路径），这两个位置根本没有
+///      launchctl，posix_spawn 直接 ENOENT(2) —— 而旧代码对 spawn 失败是
+///      `break` 掉、一声不吭，所以谁也没发现。
+///   ② 权限不足。profiledaemon 由 postinst 用 `bootstrap system` 装在 **system 域**，
+///      App 是 uid 501(mobile)，就算路径对了，`launchctl kickstart system/...`
+///      也会被拒。只有 setuid root 的 repro-helper 才有资格。
+/// 结果：安装/删除描述文件的唤醒完全落在 plist 的 notifyd LaunchEvents 上，
+/// 一旦通知恰好投在 daemon「空闲 60 秒即将自退」的窗口里被那个将死的进程收走，
+/// launchd 就不再拉新实例，请求悬在盘上没人处理 → App 干等满 60 秒 →
+/// 用户看到的「删除失败：root 侧未响应」。v1.1.179/180/181 三轮在等待循环上
+/// 打的补丁（补发唤醒、30 秒强制重启兜底）因此全部无效——它们补发的正是这个空操作。
+/// 现在统一改走 `repro-helper kickstart-profiledaemon [-k]`，路径探测 + root 身份都由
+/// helper 解决。
 static void RPVKickstartProfileDaemonEx(BOOL forceRestart) {
-    // roothide 把 jbroot 下的 LaunchDaemons 加载在 user/501 域（真机 launchctl print 已确认），
-    // rootless/rootful 则在 system 域，两个都试一次。
-    static const char *kLaunchctlPaths[] = { "/bin/launchctl", "/usr/bin/launchctl" };
-    static const char *kDomains[] = { "user/501/jp.soh.reprovision.profiledaemon",
-                                      "system/jp.soh.reprovision.profiledaemon" };
+    NSString *helperPath = RPVResolvedRootHelperPath();
+    if (helperPath.length == 0) return;
 
-    for (int p = 0; p < 2; p++) {
-        for (int d = 0; d < 2; d++) {
-            pid_t kp = 0;
-            const char *argvKill[] = { kLaunchctlPaths[p], "kickstart", "-k", kDomains[d], NULL };
-            const char *argvSoft[] = { kLaunchctlPaths[p], "kickstart", kDomains[d], NULL };
-            const char **argv = forceRestart ? argvKill : argvSoft;
-            if (posix_spawn(&kp, kLaunchctlPaths[p], NULL, NULL,
-                            (char *const *)argv, NULL) != 0) {
-                break; // 这个 launchctl 路径不存在，换下一个
-            }
-            int st = 0;
-            if (waitpid(kp, &st, 0) == kp && WIFEXITED(st) && WEXITSTATUS(st) == 0) {
-                return; // 拉起成功
-            }
-        }
-    }
+    NSArray<NSString *> *args = forceRestart
+        ? @[@"kickstart-profiledaemon", @"-k"]
+        : @[@"kickstart-profiledaemon"];
+
+    // quiet=YES：等待循环每 5 秒调一次，只有失败才记一行，避免刷屏。
+    (void)RPVRunRootHelperEx(helperPath, args, YES);
 }
 
-/// 首次触发仍用强制重启：此刻请求刚写盘、daemon 要么没跑要么正在死，
-/// 杀掉重来能立刻拿到一个干净实例；真正危险的是「干活途中被杀」，那条路走上面的软唤醒。
-static void RPVKickstartProfileDaemon(void) { RPVKickstartProfileDaemonEx(YES); }
+/// 首次触发用**软唤醒**。
+///
+/// ⚠️ v1.1.183 必须同步改这里：在此之前 kickstart 是个空操作（见上），
+/// 所以「首次触发用 -k」写了也没真的杀过谁。现在 kickstart 真的生效了，
+/// 若仍沿用 -k，每次安装/删除都会先杀掉一个可能正在干活的 daemon —— 那正是
+/// v1.1.180 修掉的那类事故，只是换个位置重演。
+///
+/// 软唤醒足够覆盖全部情形：
+///   · daemon 已死 → launchd 拉起新实例；
+///   · daemon 活着且空闲 → kickstart 不重启它，紧随其后的 notify_post 立刻唤醒回调；
+///   · daemon 活着且在忙 → 不打扰它，它的 5 秒轮询兜底一定会捞到这次请求。
+/// 只有「等满 30 秒仍无结果」才升级为强制重启（那时 daemon 基本可判定为卡死）。
+static void RPVKickstartProfileDaemon(void) { RPVKickstartProfileDaemonEx(NO); }
+
+/// v1.1.183：超时时把盘上的真实状态打出来。
+/// 「root 侧未响应」这句话本身不含任何信息，用户报障后只能靠猜。
+/// 这里把三件能一锤定音的事实记进日志：
+///   · 请求文件还在不在 —— 还在＝daemon 压根没被唤醒（唤醒链路问题）；
+///     已不在＝daemon 读走了却没回结果（daemon 内部或被中途杀掉）。
+///   · 清单快照的时间戳 —— 是否在本次操作期间被刷新过。
+///   · daemon 二进制与 plist 是否真的装在越狱根下（排除装包不完整）。
+static void RPVLogProfileDaemonTimeoutDiagnostics(NSString *stage) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+
+    NSArray<NSString *> *watched = @[
+        @"/var/mobile/Library/RePro/profile-to-install.mobileprovision",
+        @"/var/mobile/Library/RePro/profile-delete-request",
+        @"/var/mobile/Library/RePro/profile-cleanup-request",
+        @"/var/mobile/Library/RePro/profile-manage-result",
+        @"/var/mobile/Library/RePro/profile-install-result",
+        @"/var/mobile/Library/RePro/profiles-inventory.plist",
+    ];
+    for (NSString *p in watched) {
+        NSDictionary *attrs = [fm attributesOfItemAtPath:p error:nil];
+        if (attrs) {
+            [lines addObject:[NSString stringWithFormat:@"  %@ 存在 (%llu 字节, 修改于 %@)",
+                              p.lastPathComponent,
+                              (unsigned long long)[attrs fileSize],
+                              [attrs fileModificationDate]]];
+        } else {
+            [lines addObject:[NSString stringWithFormat:@"  %@ 不存在", p.lastPathComponent]];
+        }
+    }
+
+    NSString *jb = RPVResolvedRootHideRoot();
+    NSString *root = jb.length ? jb : ([fm fileExistsAtPath:@"/var/jb"] ? @"/var/jb" : @"/");
+    NSString *daemonBin = [root stringByAppendingPathComponent:@"usr/libexec/repro-profiledaemon"];
+    NSString *daemonPlist = [root stringByAppendingPathComponent:
+                             @"Library/LaunchDaemons/jp.soh.reprovision.profiledaemon.plist"];
+    [lines addObject:[NSString stringWithFormat:@"  daemon 二进制 %@: %@",
+                      [fm isExecutableFileAtPath:daemonBin] ? @"就位" : @"缺失", daemonBin]];
+    [lines addObject:[NSString stringWithFormat:@"  daemon plist %@: %@",
+                      [fm fileExistsAtPath:daemonPlist] ? @"就位" : @"缺失", daemonPlist]];
+    [lines addObject:[NSString stringWithFormat:@"  repro-helper: %@",
+                      RPVResolvedRootHelperPath() ?: @"未找到"]];
+
+    RPVDiagnostic(RPVDiagError, @"profiledaemon",
+                  @"【%@ 超时诊断】\n%@", stage, [lines componentsJoinedByString:@"\n"]);
+}
 
 static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
     if (profilePath.length == 0) return NO;
@@ -993,6 +1081,7 @@ static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
 
     RPVDiagnostic(RPVDiagError, @"profiledaemon",
                   @"repro-profiledaemon 60 秒内未返回结果（daemon 可能未运行或未加载）");
+    RPVLogProfileDaemonTimeoutDiagnostics(@"描述文件安装");
     return NO;
 }
 
@@ -1145,6 +1234,9 @@ static NSString *RPVRunProfileManageRequest(NSArray<NSString *> *deleteNames, BO
             }
         }
     }
+
+    RPVLogProfileDaemonTimeoutDiagnostics(
+        deleteNames.count > 0 ? @"描述文件删除" : (cleanup ? @"描述文件清理" : @"清单刷新"));
     return nil;
 }
 

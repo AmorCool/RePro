@@ -63,7 +63,12 @@ struct HealthView: View {
                 // 改用 launchctl kickstart -k system/com.apple.lsd：重启 lsd 服务
                 // 会自动重建图标缓存，且对 RootHide 兼容（系统级服务）。
                 Button("重建图标缓存") { runHelper(["kickstart-lsd"]) }
-                Button("重新注册 App") { runHelper(["uicache", "-p", "/Applications/ReSign.app"]) }
+                // v1.1.183：路径不能写死 "/Applications/ReSign.app" ——
+                // RootHide 下 App 实际装在 <随机 jbroot>/Applications/ReSign.app，
+                // 写死路径 uicache 找不到 bundle，必然失败。直接用自身 bundlePath。
+                Button("重新注册 App") {
+                    runHelper(["uicache", "-p", Bundle.main.bundlePath])
+                }
                 Button("重启用户空间") { pendingReboot = .userspace }
                 Button("重启设备", role: .destructive) { pendingReboot = .device }
                 Button("取消", role: .cancel) {}
@@ -112,8 +117,10 @@ struct HealthView: View {
                       status: statusForJailbreak)
 
             // v1.1.181→v1.1.182：保留点按跳转 filza 的功能（用户工作流依赖），
-            // 但视觉样式用普通 HealthRow：默认色文字、完整路径（不截断、不限制行数）、
-            // 右上角绿勾、无 Footer。
+            // 视觉样式与 HealthRow(status: .good) 完全一致：标题默认色、
+            // 路径**绿色**、完整路径（不截断、不限制行数）、右侧绿勾、无 Footer。
+            // v1.1.183：路径文字从 .primary 改回 .green —— v1.1.182 误按「默认色」处理，
+            // 与其它正常项（绿字＋绿勾）不统一，用户一眼就看出来了。
             if let root = snapshot?.jailbreakRoot, !root.isEmpty {
                 Button {
                     openInFileManager(root)
@@ -123,7 +130,7 @@ struct HealthView: View {
                             .foregroundColor(.primary)
                         Spacer(minLength: 12)
                         Text(root)
-                            .foregroundColor(.primary)
+                            .foregroundColor(.green)
                             .multilineTextAlignment(.trailing)
                             .font(.callout)
                         Image(systemName: "checkmark.circle.fill")
@@ -132,6 +139,7 @@ struct HealthView: View {
                     }
                     .contentShape(Rectangle())
                 }
+                .buttonStyle(.borderless)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("越狱根目录：\(root)")
                 .accessibilityHint("点按用 Filza 打开该目录")
@@ -296,9 +304,20 @@ struct HealthView: View {
         let code = BridgeClient.shared.runRootHelper(arguments: args)
         if code == 0 {
             toolResult = "操作成功执行（退出码 0）。"
-        } else {
-            toolResult = "操作失败（退出码 \(code)）。请确认设备已越狱且 root helper 正常。"
+            return
         }
+        // v1.1.183：退出码是真实的 helper 退出码了，对常见值给出可执行的说明，
+        // 而不是笼统一句「请确认已越狱」。
+        let reason: String
+        switch code {
+        case 2:
+            reason = "未在越狱环境中找到所需命令行工具。详情见日志页的 repro-helper 记录。"
+        case -2:
+            reason = "未找到 repro-helper（root 助手），请重新安装 ReSign 的 deb 包。"
+        default:
+            reason = "详情见日志页的 repro-helper 记录。"
+        }
+        toolResult = "操作失败（退出码 \(code)）。\n\(reason)"
     }
 
     // 静态 formatter 复用（refresh 每次调用都创建新 formatter，不必要）
