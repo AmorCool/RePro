@@ -1094,6 +1094,12 @@ static BOOL s_signAndInstallOneApp(NSString *appPath, NSString *identity,
         return NO;
     }
     s_log(@"已复制 %@ → %@，开始签名", [appPath lastPathComponent], tmpApp);
+    // 🔴 v2.1.8-diagnostic：确认临时 .app 里是否有 embedded.mobileprovision
+    {
+        NSString *mp = [tmpApp stringByAppendingPathComponent:@"embedded.mobileprovision"];
+        unsigned long long sz = [[[NSFileManager defaultManager] attributesOfItemAtPath:mp error:nil] fileSize];
+        s_log(@"  临时 app 内 profile: %@（%@ 字节）", sz > 0 ? @"✅ 存在" : @"❌ 缺失", sz > 0 ? @(sz) : @"0");
+    }
 
     // 2. EEBackend 签名（内部：EEProvisioning 四阶段 + RZSignRunner/zsign）。
     //    completion 是异步回调 → 用信号量同步等待（上限 5 分钟，防卡死）。
