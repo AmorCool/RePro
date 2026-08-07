@@ -32,12 +32,20 @@ static NSDictionary *RPVDaemonCredentials(void) {
 + (instancetype)currentDevice;
 - (NSString *)systemVersion;
 - (NSString *)model;
+- (NSString *)name;
+- (NSString *)systemName;
+- (NSString *)localizedModel;
+- (NSUUID *)identifierForVendor;
 - (NSString *)uniqueIdentifier;
 @end
 @implementation UIDevice
 + (instancetype)currentDevice { static id d; if (!d) d = [[self alloc] init]; return d; }
 - (NSString *)systemVersion { return @"17.0"; }
-- (NSString *)model { return @"iPhone"; }
+- (NSString *)systemName   { return @"iOS"; }
+- (NSString *)model        { return @"iPhone"; }
+- (NSString *)name         { return @"iPhone"; }  // 🔴 v2.1.6：EEProvisioning 设备注册必调
+- (NSString *)localizedModel { return @"iPhone"; }
+- (NSUUID *)identifierForVendor { return nil; }
 - (NSString *)uniqueIdentifier { return @""; }
 @end
 
