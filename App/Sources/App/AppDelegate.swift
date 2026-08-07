@@ -382,6 +382,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 这里只是前台激活时的额外保险。
         RPVBridge.migrateKeychainAccessibility()
 
+        // 🔴 v2.1.3：刷新 Anisette 缓存（daemon 签名用）。
+        // daemon（root）进程的 AKAppleIDSession 缺 X-Apple-I-MD → Apple 拒绝签名请求
+        // （"No Team ID present!"）。App 进程生成的 Anisette 完整，缓存在共享 IPC 目录
+        // 供 daemon 复用。每次进前台刷新（Anisette 有时效，且用户可能换了 Apple ID）。
+        RPVSigningdNotify.refreshAnisetteCache()
+
         // 🔴 v1.1.189：通知权限申请补到前台激活后调用——
         // 用户实锤「首次安装进 App 不弹权限框，杀后台重开才有」：didFinishLaunching 里
         // 同步调 requestAuthorization 时系统授权 UI 尚未就绪（RootHide 下尤其明显），

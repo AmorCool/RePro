@@ -13,9 +13,12 @@
 #include <notify.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <dlfcn.h>
 
 @interface RPVSigningdNotify : NSObject
 + (instancetype)shared;
+/// v2.1.3：App 进程生成完整 Anisette 缓存，供 daemon 复用
++ (void)refreshAnisetteCache;
 @end
 
 @implementation RPVSigningdNotify {
@@ -61,6 +64,40 @@
 
 + (void)notifyConfigUpdated {
     notify_post("cn.analy.resign.signingd-config-updated");
+}
+
+// 🔴 v2.1.3：Anisette 缓存刷新。
+// 背景：daemon（root、无 App 沙盒上下文）进程里 AKAppleIDSession 生成的 Anisette
+// 缺 X-Apple-I-MD / X-Apple-I-MD-M（AuthKit machine data XPC 访问受限）→ Apple 拒绝
+// 所有 developerservices2 请求（listTeams 返回无 teams → "No Team ID present!"，
+// 真机 18:14/18:43 实锤）。App 进程有 AuthKit 上下文，生成的 Anisette 完整可用
+// （App 登录成功即证明）。本方法把完整 headers 缓存到共享 IPC 目录，daemon 读取复用。
++ (void)refreshAnisetteCache {
+    static Class AKAppleIDSession = nil;
+    if (!AKAppleIDSession) {
+        dlopen("/System/Library/PrivateFrameworks/AuthKit.framework/AuthKit", RTLD_NOW | RTLD_GLOBAL);
+        AKAppleIDSession = NSClassFromString(@"AKAppleIDSession");
+    }
+    NSDictionary *headers = nil;
+    if (AKAppleIDSession) {
+        id session = [[AKAppleIDSession alloc] initWithIdentifier:@"com.apple.gs.xcode.auth"];
+        if ([session respondsToSelector:@selector(appleIDHeadersForRequest:)]) {
+            headers = [session appleIDHeadersForRequest:nil];
+        }
+    }
+    NSMutableDictionary *cache = [headers isKindOfClass:[NSDictionary class]]
+        ? [headers mutableCopy] : [NSMutableDictionary dictionary];
+    // 与 RPVAuthentication.appleIDHeadersForRequest 一致的覆盖参数
+    cache[@"X-Apple-App-Info"] = @"com.apple.gs.xcode.auth";
+    cache[@"X-MMe-Client-Info"] =
+        @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+    if ([cache[@"X-Apple-I-MD"] length] > 0 && [cache[@"X-Apple-I-MD-M"] length] > 0) {
+        BOOL ok = [cache writeToFile:@"/var/mobile/Library/Resign/anisette.cache" atomically:YES];
+        NSLog(@"[ReSign] Anisette 缓存已%@（X-Apple-I-MD=%lu 字符）",
+              ok ? @"刷新" : @"写入失败", (unsigned long)[cache[@"X-Apple-I-MD"] length]);
+    } else {
+        NSLog(@"[ReSign] ⚠️ AKAppleIDSession 未生成完整 Anisette（缺 X-Apple-I-MD），跳过缓存刷新");
+    }
 }
 
 + (void)notifySigningComplete {

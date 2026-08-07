@@ -96,9 +96,24 @@ static NSDictionary *RPVDaemonCredentials(void) {
 @end
 @implementation RPVAuthentication
 
-// 真实 Anisette：dlopen AuthKit → AKAppleIDSession 生成 headers（与 App 侧完全一致）
+// 真实 Anisette：优先用 App 进程缓存的完整 headers（root 进程 AKAppleIDSession
+// 缺 X-Apple-I-MD → Apple 拒绝；App 生成的完整可用，v2.1.3 实锤修复），
+// 无缓存时 fallback 到 dlopen AuthKit → AKAppleIDSession。
 - (NSDictionary *)appleIDHeadersForRequest:(NSURLRequest *)request {
-    // 动态取类（daemon 不静态链接 AuthKit 私有框架）
+    // 🔴 v2.1.3：App 每次进前台把完整 Anisette 写到 /var/mobile/Library/Resign/anisette.cache。
+    // daemon（root、无 App 沙盒上下文）自己 dlopen AuthKit 生成的 headers 缺
+    // X-Apple-I-MD / X-Apple-I-MD-M → Apple 拒签（"No Team ID present!"，18:14 实锤）。
+    // 缓存由 App 进程生成（AKAppleIDSession 可用），daemon 直接复用同一设备的机器数据。
+    NSDictionary *cached = [NSDictionary dictionaryWithContentsOfFile:
+                            @"/var/mobile/Library/Resign/anisette.cache"];
+    if ([cached isKindOfClass:[NSDictionary class]] && [cached[@"X-Apple-I-MD"] length] > 0) {
+        NSMutableDictionary *result = [NSMutableDictionary dictionaryWithDictionary:cached];
+        result[@"X-Apple-App-Info"] = @"com.apple.gs.xcode.auth";
+        result[@"X-MMe-Client-Info"] =
+            @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        return result;
+    }
+    // fallback：动态取类（daemon 不静态链接 AuthKit 私有框架）
     static Class AKAppleIDSession = nil;
     if (!AKAppleIDSession) {
         dlopen("/System/Library/PrivateFrameworks/AuthKit.framework/AuthKit", RTLD_NOW | RTLD_GLOBAL);
