@@ -1397,6 +1397,14 @@ static void s_manualResign(NSString *reason) {
     // 🔴 v2.1.0：手动触发同样走 daemon 自签名管线（不再唤醒 App）
     s_selfSignPipeline(c);
 
+    // 🔴 v2.1.19：手动触发也更新「检测时间」（check-state 的 lastCheckTime）。
+    // 否则 check-state 停在旧值，App「下次检测」按旧 lastCheckTime + 间隔计算
+    // 会显示「即将检测」（真机 00:13 实锤：23:57 手动签成功，check-state 还是
+    // 23:11 的值 → App 显示下次检测 00:11 已过 =「即将检测」）。
+    // 与自动路径 s_fire 的节流写入保持一致（自动/手动都算一次检测）。
+    [@{ @"lastCheckTime": @(time(NULL)) } writeToFile:kCheckStatePath atomically:YES];
+    chown(kCheckStatePath.UTF8String, 501, 501);
+
     s_log(@"[%@] 自签名流程结束 — 结果见上方日志", reason);
 }
 
