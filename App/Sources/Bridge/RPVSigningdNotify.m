@@ -27,6 +27,16 @@
 - (id)appleIDHeadersForRequest:(id)arg1;
 @end
 
+// v2.1.15：LSApplicationWorkspace 安装签名后的 app。
+// RootHide 下 daemon（root、无 UI 会话）调 installApplication 被 installd 拒
+// （"Operation not permitted"，真机 23:12 实锤）；App 进程有 UI 会话能装
+// （v1.x 时代 App 侧安装一直成功）。daemon 签名 → 写 pending-install 标记 →
+// 唤醒 App 后台 → 本方法执行安装 → 写结果。
+@interface LSApplicationWorkspace : NSObject
++ (instancetype)defaultWorkspace;
+- (BOOL)installApplication:(NSURL *)arg1 withOptions:(NSDictionary *)arg2 error:(NSError **)arg3;
+@end
+
 @implementation RPVSigningdNotify {
     int _token;
 }
@@ -118,6 +128,58 @@
 }
 
 + (void)notifySigningComplete {
+    notify_post("cn.analy.resign.signing-complete");
+}
+
+// 🔴 v2.1.15：执行 daemon 签名后的安装（App 进程有 UI 会话，RootHide 下才能装）。
+// daemon 签名成功 → 复制签名结果到 /var/mobile/Library/Resign/pending-install/ →
+// 写 pending-install.plist 标记 → 唤醒 App 后台（setupCommon 每次启动必跑本方法）。
+// 安装完成写 install-result.plist 供 daemon 轮询读取，并删除 pending 标记。
++ (void)processPendingInstallIfNeeded {
+    NSString *pendingPath = @"/var/mobile/Library/Resign/pending-install.plist";
+    NSDictionary *pending = [NSDictionary dictionaryWithContentsOfFile:pendingPath];
+    NSString *bundleId = pending[@"bundleId"];
+    NSString *appPath = pending[@"appPath"];
+    if (bundleId.length == 0 || appPath.length == 0) return;
+
+    NSLog(@"[ReSign] 检测到 daemon 待安装标记 → 执行安装 %@（%@）", bundleId, appPath);
+    BOOL ok = NO;
+    NSString *errMsg = @"";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:appPath]) {
+        errMsg = @"签名结果不存在（可能已被清理）";
+    } else {
+        dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+        if (!wsClass) {
+            errMsg = @"LSApplicationWorkspace 不可用";
+        } else {
+            id workspace = [wsClass performSelector:@selector(defaultWorkspace)];
+            NSURL *appURL = [NSURL fileURLWithPath:appPath];
+            NSDictionary *opts = @{
+                @"CFBundleIdentifier": bundleId ?: @"",
+                @"AllowInstallLocalProvisioned": @YES,
+            };
+            NSError *err = nil;
+            @try {
+                ok = [workspace installApplication:appURL withOptions:opts error:&err];
+            } @catch (NSException *e) {
+                errMsg = e.description ?: @"安装异常";
+            }
+            if (!ok && !errMsg.length) errMsg = err.localizedDescription ?: @"未知错误";
+        }
+    }
+    NSLog(@"[ReSign] 安装结果: %@ %@", ok ? @"✅ 成功" : @"❌ 失败", ok ? @"" : errMsg);
+
+    // 写结果供 daemon 轮询（不删 pending.plist——由 daemon 侧下一轮覆盖/清理，
+    // 这里删除会导致 daemon 判断时序竞态：daemon 先删标记再读结果）
+    NSDictionary *result = @{
+        @"bundleId": bundleId,
+        @"ok": @(ok),
+        @"error": ok ? @"" : errMsg,
+        @"ts": @([[NSDate date] timeIntervalSince1970]),
+    };
+    [result writeToFile:@"/var/mobile/Library/Resign/install-result.plist" atomically:YES];
+    // 通知 daemon（虽然 daemon 在轮询，双保险）
     notify_post("cn.analy.resign.signing-complete");
 }
 

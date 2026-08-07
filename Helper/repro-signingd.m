@@ -1013,10 +1013,14 @@ static BOOL s_readCredentials(NSString **identityOut, NSString **gsTokenOut, NSS
 
 /// 递归收集 root 下的所有 .app bundle 路径（深度上限 3：
 /// 普通 app = Application/xxx/app.app；RootHide 越狱 app = Application/.jbroot-XXX/Applications/app.app）
+/// 🔴 v2.1.15：跳过名为 tmp 的目录（jbroot/tmp、jbroot/var/tmp、系统 /tmp）——
+/// 否则会把 daemon 自己的签名临时副本（…/tmp/repro-sign/xxx.app）也枚举进来，
+/// 当成待续签 app 重复处理（真机 23:12 实锤：同一 Relaxin 被处理 2 次）。
 static void s_collectAppBundles(NSString *dir, NSMutableArray<NSString *> *outPaths, int depth) {
     if (depth > 3) return;
     NSArray *entries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
     for (NSString *name in entries ?: @[]) {
+        if ([name isEqualToString:@"tmp"]) continue;   // v2.1.15：绝不进入临时目录
         NSString *path = [dir stringByAppendingPathComponent:name];
         BOOL isDir = NO;
         if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir]) continue;
@@ -1064,21 +1068,52 @@ static NSMutableArray<NSDictionary *> *s_enumerateExpiredApps(NSInteger threshol
 }
 
 /// LSApplicationWorkspace 安装签名后的 app（与 App 侧 RPVApplicationSigning 同 API）。
-/// 动态取类（LSApplicationWorkspace 不在公开 SDK 头），-framework MobileCoreServices 保证链接。
+/// 🔴 v2.1.15：daemon（root、无 UI 会话）直接调 LSApplicationWorkspace 安装被
+/// installd 拒（真机 23:12 实锤 "Operation not permitted"，App 进程能装）。
+/// 因此安装改由 App 进程执行：daemon 只负责把签名结果放到共享目录 + 唤醒 App。
 static BOOL s_installSignedApp(NSString *appPath, NSString *bundleId) {
-    dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
-    Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
-    if (!wsClass) { s_log(@"安装失败: LSApplicationWorkspace 不可用"); return NO; }
-    id workspace = [wsClass performSelector:@selector(defaultWorkspace)];
-    NSURL *appURL = [NSURL fileURLWithPath:appPath];
-    NSDictionary *opts = @{
-        @"CFBundleIdentifier": bundleId ?: @"",
-        @"AllowInstallLocalProvisioned": @YES,
+    // 1. 把签名后的 .app 复制到共享 IPC 目录（App 与 daemon 都能读写的地方）
+    NSString *pendingDir = @"/var/mobile/Library/Resign/pending-install";
+    [[NSFileManager defaultManager] removeItemAtPath:pendingDir error:nil];
+    [[NSFileManager defaultManager] createDirectoryAtPath:pendingDir
+                             withIntermediateDirectories:YES
+                                              attributes:nil error:nil];
+    NSString *destApp = [pendingDir stringByAppendingPathComponent:[appPath lastPathComponent]];
+    NSError *copyErr = nil;
+    if (![[NSFileManager defaultManager] copyItemAtPath:appPath toPath:destApp error:&copyErr]) {
+        s_log(@"复制签名结果到共享目录失败: %@", copyErr.localizedDescription ?: @"?");
+        return NO;
+    }
+    // 2. 写 pending-install 标记（App 启动时读取并执行安装）
+    NSDictionary *pending = @{
+        @"appPath": destApp,
+        @"bundleId": bundleId ?: @"",
+        @"ts": @([[NSDate date] timeIntervalSince1970]),
     };
-    NSError *err = nil;
-    BOOL ok = [workspace installApplication:appURL withOptions:opts error:&err];
-    if (!ok) s_log(@"安装失败 %@: %@", bundleId, err.localizedDescription ?: @"未知错误");
-    return ok;
+    if (![pending writeToFile:@"/var/mobile/Library/Resign/pending-install.plist" atomically:YES]) {
+        s_log(@"写 pending-install 标记失败");
+        return NO;
+    }
+    s_log(@"已写 pending-install 标记 → 唤醒 App 后台安装 %@", bundleId);
+    // 3. 唤醒 App（后台静默启动，setupCommon → processPendingInstallIfNeeded 执行安装）
+    s_launchAppInBackground();
+    // 4. 轮询安装结果（上限 90 秒，App 安装通常几秒内完成）
+    NSDictionary *result = nil;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:90];
+    while ([[NSDate date] compare:deadline] == NSOrderedAscending) {
+        NSDictionary *r = [NSDictionary dictionaryWithContentsOfFile:
+                           @"/var/mobile/Library/Resign/install-result.plist"];
+        if ([r[@"bundleId"] isEqualToString:bundleId]) { result = r; break; }
+        usleep(3000000);  // 3s
+    }
+    if (result) {
+        BOOL ok = [result[@"ok"] boolValue];
+        if (!ok) s_log(@"App 安装失败 %@: %@", bundleId, result[@"error"] ?: @"?");
+        else s_log(@"App 安装成功: %@", bundleId);
+        return ok;
+    }
+    s_log(@"安装结果等待超时（App 可能没被拉起）→ 本轮视为失败，下轮重试");
+    return NO;
 }
 
 /// 单个应用：复制到临时目录 → EEBackend 签名 → 装 profile → 安装回。

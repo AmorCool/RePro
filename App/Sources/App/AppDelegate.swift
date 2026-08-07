@@ -82,6 +82,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 后台拉起等场景 → 改到 setupCommon（每次启动必跑）。
         RPVSigningdNotify.refreshAnisetteCache()
 
+        // 🔴 v2.1.15：daemon 签名完成后由 App 进程执行安装（RootHide 下 daemon
+        // 无 UI 会话调 LSApplicationWorkspace 被 installd 拒，App 进程能装）。
+        // daemon 会写 pending-install 标记并后台拉起本 App；这里每次启动检查并执行。
+        RPVSigningdNotify.processPendingInstallIfNeeded()
+
         // 兜底：若 App 是在「锁屏状态」下被 daemon 拉起的，上面那次迁移读不到 Keychain
         // 而无法完成。此时注册系统的「保护数据可用」通知 —— 用户下次解锁设备的瞬间
         // 系统会发出它，那一刻 Keychain 可读，迁移即自动完成。全程无需用户打开 App。
