@@ -130,8 +130,12 @@ static void s_log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 //
 //   现在与超时看门狗（v1.1.186/190）同一模式：独立 pthread sleep+_exit，
 //   不依赖主 runloop，不调 NSLog（避免 logd 阻塞），1 分钟检查一次。
-//   签名进行中（gResignInProgress）不退出，避免打断 zsign。
-static const uint64_t kMemWatchdogLimit = 45ULL * 1024 * 1024;  // 45 MB（< MemoryLimit 50MB，必须在 jetsam 前捕获）
+//   🔴 v2.1.2：签名中不再豁免。v2.1.0 起签名管线（EEBackend/ChOma/zsign）
+//   在 daemon 进程内执行，签名卡死时内存失控恰好落在旧豁免区 → 涨到
+//   largestProcess 触发整机 Jetsam（真机 17:14 实锤）。签名峰值放宽到
+//   250MB（4GB 设备远低于危险线），超限无条件 _exit，launchd 下轮拉起。
+static const uint64_t kMemWatchdogLimit = 45ULL * 1024 * 1024;        // 非签名：45 MB（< MemoryLimit 50MB）
+static const uint64_t kMemWatchdogSigningLimit = 250ULL * 1024 * 1024; // 签名中：250 MB（防 Jetsam 级暴涨）
 
 static void *s_memWatchdogMain(void *arg) {
     (void)arg;
@@ -141,15 +145,12 @@ static void *s_memWatchdogMain(void *arg) {
         mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
         kern_return_t kr = task_info(mach_task_self(), TASK_VM_INFO,
                                      (task_info_t)&info, &cnt);
-        if (kr != KERN_SUCCESS || info.phys_footprint <= kMemWatchdogLimit) {
+        uint64_t limit = gResignInProgress ? kMemWatchdogSigningLimit : kMemWatchdogLimit;
+        if (kr != KERN_SUCCESS || info.phys_footprint <= limit) {
             sleep(15);  // 正常或取不到数据，每 15 秒检查一次（低于 MemoryLimit 50MB 的卡点）
             continue;
         }
-        if (gResignInProgress) {
-            sleep(15);  // 签名中，等下轮
-            continue;
-        }
-        // 超标且非签名中：无条件 _exit(0)，不调 NSLog（避免 logd 阻塞）
+        // 超标（签名中 250MB / 非签名 45MB）：无条件 _exit(0)，不调 NSLog（避免 logd 阻塞）
         if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
         _exit(0);
     }
@@ -159,7 +160,7 @@ static void s_startMemWatchdog(void) {
     pthread_t t;
     if (pthread_create(&t, NULL, s_memWatchdogMain, NULL) == 0) {
         pthread_detach(t);
-        s_log(@"内存看门狗已启动（独立线程，10 秒首次自检后每 15 秒；超 45MB 主动退出，签名中不退出）");
+        s_log(@"内存看门狗已启动（独立线程，10 秒首次自检后每 15 秒；非签名超 45MB / 签名中超 250MB 主动退出）");
     }
 }
 
@@ -187,12 +188,19 @@ static void s_startMemWatchdog(void) {
 static void *s_runWatchdogMain(void *arg) {
     (void)arg;
     time_t idleSince = time(NULL);
+    time_t signSince = 0;   // 🔴 v2.1.2：签名开始时间（防签名卡死永不结束）
     while (1) {
         sleep(60);
         if (gResignInProgress) {
-            idleSince = time(NULL);   // 签名中：重置空闲计时
+            if (signSince == 0) signSince = time(NULL);
+            // 🔴 v2.1.2：签名中加整体硬超时（20 分钟）。v2.1.0 签名在 daemon 内，
+            // 单 app 5 分钟超时已 _exit；此兜底覆盖多 app 串行整体卡死场景。
+            if ((time(NULL) - signSince) >= 20 * 60) {
+                _exit(0);
+            }
             continue;
         }
+        signSince = 0;
         if ((time(NULL) - idleSince) >= 10 * 60) {
             // 无条件终止进程——NSLog 放 _exit 之后（不可达），避免 logd 阻塞拖死看门狗
             _exit(0);
@@ -204,7 +212,7 @@ static void s_startRunWatchdog(void) {
     pthread_t t;
     if (pthread_create(&t, NULL, s_runWatchdogMain, NULL) == 0) {
         pthread_detach(t);
-        s_log(@"超时看门狗已启动（独立线程，空闲超 10 分钟强制退出；签名中不计时）");
+        s_log(@"超时看门狗已启动（独立线程，空闲超 10 分钟 / 签名整体超 20 分钟强制退出）");
     }
 }
 
@@ -1092,8 +1100,13 @@ static BOOL s_signAndInstallOneApp(NSString *appPath, NSString *identity,
     }];
     long waitRC = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * 60 * NSEC_PER_SEC));
     if (waitRC != 0 || !done) {
-        s_log(@"签名超时（5 分钟）: %@", tmpApp);
-        return NO;
+        // 🔴 v2.1.2：签名超时直接 _exit(0)（不留残留线程）。
+        // 旧逻辑 return NO 后 EEBackend 的 completion block 仍可能在后台继续跑
+        // （网络/Anisette XPC/ChOma 线程残留）→ 内存持续暴涨 → 整机 Jetsam
+        // （真机 17:14 实锤 largestProcess=repro-signingd）。短命 daemon 自杀最干净。
+        s_log(@"签名超时（5 分钟）: %@ → 立即退出本轮，launchd 下轮拉起", tmpApp);
+        if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
+        _exit(0);
     }
     if (signErr) {
         s_log(@"签名失败 %@: %@", [appPath lastPathComponent], signErr.localizedDescription);
@@ -1258,7 +1271,11 @@ static void s_manualResign(NSString *reason) {
 
 static void s_gracefulExit(int sig) {
     s_log(@"收到信号 %d → 释放资源并退出", sig);
-    s_releaseBKSAssertion();
+    // 🔴 v2.1.2：不再调 s_releaseBKSAssertion()。
+    // 它走 BKS XPC（performSelector invalidate），RootHide 下 XPC 不可达会
+    // 永久阻塞 → _exit 永远执行不到 → 进程残留占住 job、内存继续涨
+    // （真机 17:03 卡死实例实锤：打印"退出"后进程仍存活到 17:14 Jetsam）。
+    // 短命 daemon 不需要优雅清理，OS 会自动回收一切，直接 _exit 最稳。
     if (gLogFile) { fflush(gLogFile); fclose(gLogFile); gLogFile = NULL; }
     _exit(0);
 }
