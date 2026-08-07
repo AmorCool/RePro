@@ -217,10 +217,21 @@ static NSDictionary *RPVDaemonCredentials(void) {
 }
 @end
 
-// ─── RPVDiagnostic（daemon 用 s_log 自记，桩空实现）────────────────────────
+// ─── RPVDiagnostic（daemon 用 s_log 自记，改为追加写入同一个日志文件）────────
 
 void RPVDiagnostic(int level, NSString *tag, NSString *fmt, ...) {
-    // 空：daemon 的日志走 s_log
+    // 🔴 v2.1.10：RZSignRunner 用 RPVDiagnostic 打印 zsign 完整命令行，之前空实现
+    // → zsign 到底传了什么参数永远看不到（真机 21:31 实锤：Stage 1-4 全成功但
+    // zsign 报 Can't find provision file）。这里追加写入 daemon 日志文件。
+    va_list args;
+    va_start(args, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+    FILE *f = fopen("/var/mobile/Library/Resign/reprorefresh_at.log", "a");
+    if (f) {
+        fprintf(f, "[RPVDiagnostic:%@] %s\n", tag, msg.UTF8String);
+        fclose(f);
+    }
 }
 
 // ─── libMobileGestalt（daemon 不需要设备信息查询）──────────────────────────
