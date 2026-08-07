@@ -100,6 +100,11 @@ NSString *const REProtocolVersion = @"QH65B2";
             NSData *unpacked = [data isGzippedData] ? [data gunzippedData] : data;
             NSDictionary *plist = [method isEqualToString:@"POST"] ? [NSPropertyListSerialization propertyListWithData:unpacked options:NSPropertyListImmutable format:nil error:nil] : [NSJSONSerialization JSONObjectWithData:unpacked options:0 error:nil];
             ;
+            // 🔴 v2.1.5-diagnostic：打印 HTTP 状态码 + response body，定位 Apple 拒绝的真正原因
+            NSHTTPURLResponse *httpResp = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+            NSLog(@"[repro-signingd] HTTP %ld %@ — body: %@",
+                  (long)httpResp.statusCode, request.URL,
+                  unpacked ? ([[NSString alloc] initWithData:unpacked encoding:NSUTF8StringEncoding] ?: @"(binary)") : @"(null)");
 
             if (!plist)
                 completionHandler(error, nil);
@@ -385,6 +390,9 @@ NSString *const REProtocolVersion = @"QH65B2";
 - (void)updateCurrentTeamIDWithTeamIDCheck:(NSString * (^)(NSArray *))teamIDCallback andCallback:(void (^)(NSError *, NSString *))completionHandler {
     // We also want to pull the Team ID for this user, rather than find it on installation.
     [self listTeamsWithCompletionHandler:^(NSError *error, NSDictionary *plist) {
+        // 🔴 v2.1.5-diagnostic：打印 Apple listTeams 响应，看清拒绝的真实原因
+        NSLog(@"[repro-signingd] listTeams response — error=%@ plist=%@",
+              error.localizedDescription ?: @"(none)", plist ?: @"(null)");
         if (error) {
             // XXX: It is possible for a user to never have signed up for a development
             // account with Apple with their existing ID. Thus, we should hit here if
