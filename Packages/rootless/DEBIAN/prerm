@@ -18,14 +18,21 @@ for c in "${JB_PREFIX}/bin/launchctl" "${JB_PREFIX}/usr/bin/launchctl" "/bin/lau
 done
 pkill -x repro-signingd 2>/dev/null || true
 
-# 清理残留数据
+# 清理残留数据（日志/临时文件，升级时也可清）
 rm -rf /var/mobile/Library/Logs/RePro 2>/dev/null || true
 rm -rf /var/mobile/Library/Resignvision 2>/dev/null || true
 rm -f /var/mobile/Documents/ReProvisionDebug.txt 2>/dev/null || true
 rm -rf /tmp/reprovision_*.log 2>/dev/null || true
-# v1.1.184：/rootfs 候选仅为兼容 RootHide 系的真实 rootfs 视角（Dopamine 下不存在，静默跳过）
-rm -rf /var/mobile/Library/Resign /rootfs/var/mobile/Library/Resign 2>/dev/null || true
-echo "[ReSign] 残留数据已清理"
+# 🔴 v2.1.14：升级（upgrade）时绝不清理 Resign 目录！里面是 credentials.cache /
+# anisette.cache（凭据+Anisette 缓存），清了 daemon 就报「凭据缓存缺失」。
+# 只有真卸载（remove）才清。dpkg prerm 传参：remove | upgrade <new-version>
+if [ "$1" = "remove" ]; then
+	# v1.1.184：/rootfs 候选仅为兼容 RootHide 系的真实 rootfs 视角（Dopamine 下不存在，静默跳过）
+	rm -rf /var/mobile/Library/Resign /rootfs/var/mobile/Library/Resign 2>/dev/null || true
+	echo "[ReSign] 残留数据已清理"
+else
+	echo "[ReSign] 升级模式：保留凭据/Anisette 缓存（/var/mobile/Library/Resign）"
+fi
 
 echo "[ReSign] rootless prerm 完成 $(date)"
 exit 0
