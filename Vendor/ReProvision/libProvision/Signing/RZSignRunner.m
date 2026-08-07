@@ -120,25 +120,35 @@
         if ([[NSFileManager defaultManager] fileExistsAtPath:embedded]) {
             [args addObject:@"-m"]; [args addObject:embedded];
             NSLog(@"[ReSign] ⚠️ provisioningPaths 为空，兜底使用 bundle 内嵌 profile: %@", embedded);
-            RPVDiagnostic(RPVDiagInfo, @"zsign",
-                          @"⚠️ provisioningPaths 为空，兜底 bundle 内嵌 profile，大小=%lld 字节",
-                          (long long)[[[NSFileManager defaultManager] attributesOfItemAtPath:embedded error:nil] fileSize]);
+            FILE *lf = fopen("/var/mobile/Library/Resign/reprorefresh_at.log", "a");
+            if (lf) {
+                fprintf(lf, "[zsign-cmd] 兜底 -m bundle 内嵌 profile: %s (大小=%lld)\n",
+                        embedded.UTF8String,
+                        (long long)[[[NSFileManager defaultManager] attributesOfItemAtPath:embedded error:nil] fileSize]);
+                fclose(lf);
+            }
         } else {
-            RPVDiagnostic(RPVDiagInfo, @"zsign",
-                          @"❌ 无 -m 且 bundle 内也无 embedded.mobileprovision（inputPath=%@）", inputPath);
+            FILE *lf = fopen("/var/mobile/Library/Resign/reprorefresh_at.log", "a");
+            if (lf) {
+                fprintf(lf, "[zsign-cmd] ❌ 无 -m 且 bundle 内也无 profile (input=%@)\n", inputPath.UTF8String);
+                fclose(lf);
+            }
         }
     } else {
         // 打印最终 -m 参数指向的文件是否可读（诊断 zsign 'Can't find provision file' 的根源）
-        NSArray *copied = [NSArray arrayWithArray:args];
-        for (NSUInteger i = 0; i + 1 < copied.count; i++) {
-            if ([copied[i] isEqualToString:@"-m"]) {
-                NSString *p = copied[i + 1];
-                RPVDiagnostic(RPVDiagInfo, @"zsign",
-                              @"-m %@ → 存在=%@ 大小=%lld 字节",
-                              p,
-                              [[NSFileManager defaultManager] fileExistsAtPath:p] ? @"是" : @"否",
-                              (long long)[[[NSFileManager defaultManager] attributesOfItemAtPath:p error:nil] fileSize]);
+        FILE *lf = fopen("/var/mobile/Library/Resign/reprorefresh_at.log", "a");
+        if (lf) {
+            NSArray *copied = [NSArray arrayWithArray:args];
+            for (NSUInteger i = 0; i + 1 < copied.count; i++) {
+                if ([copied[i] isEqualToString:@"-m"]) {
+                    NSString *p = copied[i + 1];
+                    fprintf(lf, "[zsign-cmd] -m %s → 存在=%s 大小=%lld\n",
+                            p.UTF8String,
+                            [[NSFileManager defaultManager] fileExistsAtPath:p] ? "是" : "否",
+                            (long long)[[[NSFileManager defaultManager] attributesOfItemAtPath:p error:nil] fileSize]);
+                }
             }
+            fclose(lf);
         }
     }
 
@@ -159,6 +169,15 @@
 
     // 把真实命令行记进日志。参数传错（比如 -m 少给了某个 bundle 的描述文件、
     // -e 指到了不存在的文件）以前只能靠猜，现在直接可见。
+    // 🔴 v2.1.11：RPVDiagnostic 在 daemon 侧 ABI 不匹配输出乱码，直接 fprintf 日志文件。
+    {
+        FILE *lf = fopen("/var/mobile/Library/Resign/reprorefresh_at.log", "a");
+        if (lf) {
+            fprintf(lf, "[zsign-cmd] %s %s\n", zsign.UTF8String,
+                    [[args componentsJoinedByString:@" "] UTF8String]);
+            fclose(lf);
+        }
+    }
     RPVDiagnostic(RPVDiagInfo, @"zsign", @"执行: %@ %@", zsign, [args componentsJoinedByString:@" "]);
 
     // Convert to a C string array for posix_spawn.
