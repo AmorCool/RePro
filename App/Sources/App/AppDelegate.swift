@@ -75,6 +75,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 因此只要设备当时是解锁的，迁移就会自动完成。
         RPVBridge.migrateKeychainAccessibility()
 
+        // 🔴 v2.1.4：每次启动（含 daemon 后台拉起）都刷新 Anisette 缓存。
+        // daemon（root）进程的 AKAppleIDSession 缺 X-Apple-I-MD → Apple 拒签
+        // （"No Team ID present!"）。App 进程生成的 Anisette 完整，缓存在共享 IPC
+        // 目录供 daemon 复用。v2.1.3 只在 applicationDidBecomeActive 刷，覆盖不到
+        // 后台拉起等场景 → 改到 setupCommon（每次启动必跑）。
+        RPVSigningdNotify.refreshAnisetteCache()
+
         // 兜底：若 App 是在「锁屏状态」下被 daemon 拉起的，上面那次迁移读不到 Keychain
         // 而无法完成。此时注册系统的「保护数据可用」通知 —— 用户下次解锁设备的瞬间
         // 系统会发出它，那一刻 Keychain 可读，迁移即自动完成。全程无需用户打开 App。

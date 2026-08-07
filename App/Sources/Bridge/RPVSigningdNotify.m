@@ -99,10 +99,21 @@
         @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
     if ([cache[@"X-Apple-I-MD"] length] > 0 && [cache[@"X-Apple-I-MD-M"] length] > 0) {
         BOOL ok = [cache writeToFile:@"/var/mobile/Library/Resign/anisette.cache" atomically:YES];
+        // 成功则清掉失败诊断文件（若存在）
+        [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/Library/Resign/anisette-fail.log" error:nil];
         NSLog(@"[ReSign] Anisette 缓存已%@（X-Apple-I-MD=%lu 字符）",
               ok ? @"刷新" : @"写入失败", (unsigned long)[cache[@"X-Apple-I-MD"] length]);
     } else {
-        NSLog(@"[ReSign] ⚠️ AKAppleIDSession 未生成完整 Anisette（缺 X-Apple-I-MD），跳过缓存刷新");
+        // 🔴 生成失败：写诊断文件（unified log 在 RootHide 下读不到，落盘才能看到）
+        NSMutableString *diag = [NSMutableString stringWithFormat:@"[%@] AKAppleIDSession 未生成完整 Anisette，headers keys: ",
+                                 [NSDate date]];
+        [diag appendString:[[cache allKeys] componentsJoinedByString:@","] ?: @"(空)"];
+        [diag appendString:@"\nAKAppleIDSession 类可用: "];
+        [diag appendString:(AKAppleIDSession ? @"是" : @"否")];
+        [diag appendString:@"\n"];
+        [diag writeToFile:@"/var/mobile/Library/Resign/anisette-fail.log"
+               atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[ReSign] ⚠️ AKAppleIDSession 未生成完整 Anisette（缺 X-Apple-I-MD），已写诊断文件");
     }
 }
 

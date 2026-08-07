@@ -57,5 +57,12 @@
       <string>InstallForLaunchServices</string>
       <string>BrowseForLaunchServices</string>
     </array>
+
+    <!-- v2.1.4：尝试让 daemon 进程的 AKAppleIDSession 能生成完整 Anisette
+         （X-Apple-I-MD 等，Apple developerservices2 必需） -->
+    <key>com.apple.private.ak.anisette</key>
+    <true/>
+    <key>com.apple.authkit.internal</key>
+    <true/>
 </dict>
 </plist>

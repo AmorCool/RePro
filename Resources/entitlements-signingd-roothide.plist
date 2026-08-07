@@ -62,5 +62,14 @@
       <string>InstallForLaunchServices</string>
       <string>BrowseForLaunchServices</string>
     </array>
+
+    <!-- v2.1.4：尝试让 daemon 进程的 AKAppleIDSession 能生成完整 Anisette
+         （X-Apple-I-MD 等，Apple developerservices2 必需）。App 进程登录成功
+         说明 platform-application 上下文够用；此 entitlement 是 anisette XPC
+         的访问控制，若 RootHide 放行则 daemon 不再依赖 App 缓存。 -->
+    <key>com.apple.private.ak.anisette</key>
+    <true/>
+    <key>com.apple.authkit.internal</key>
+    <true/>
 </dict>
 </plist>
