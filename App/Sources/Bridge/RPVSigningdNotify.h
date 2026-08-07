@@ -27,6 +27,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 每次进前台调用刷新。
 + (void)refreshAnisetteCache;
 
+/// v2.1.18：响应 daemon 的 Anisette 刷新请求（冷启动路径调用；进程内 notify
+/// 通道在 setup 里已注册）。App 只生成 Anisette 缓存，刷新后自动退出。
++ (void)processAnisetteRefreshIfNeeded;
+
 @end
 
 NS_ASSUME_NONNULL_END

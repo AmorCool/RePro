@@ -82,6 +82,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 后台拉起等场景 → 改到 setupCommon（每次启动必跑）。
         RPVSigningdNotify.refreshAnisetteCache()
 
+        // 🔴 v2.1.18：响应 daemon 的 Anisette 刷新请求（daemon 签名前缓存过期时
+        // 会写标记并拉起本 App，App 刷新缓存后自动退出，不参与签名/安装）。
+        RPVSigningdNotify.processAnisetteRefreshIfNeeded()
+
         // 兜底：若 App 是在「锁屏状态」下被 daemon 拉起的，上面那次迁移读不到 Keychain
         // 而无法完成。此时注册系统的「保护数据可用」通知 —— 用户下次解锁设备的瞬间
         // 系统会发出它，那一刻 Keychain 可读，迁移即自动完成。全程无需用户打开 App。

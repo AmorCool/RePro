@@ -1223,6 +1223,50 @@ static BOOL s_signAndInstallOneApp(NSString *appPath, NSString *identity,
     return s_installSignedApp(tmpApp, signedBundleId);
 }
 
+/// 🔴 v2.1.18：签名前确保 Anisette 缓存新鲜。
+/// RootHide 下 daemon 无法自生成 Anisette（anisette XPC 不放行，23:43 实测
+/// "daemon 自生成缺 X-Apple-I-MD"），新鲜 Anisette 只能 App 进程生成（AuthKit
+/// 上下文）。App 生成的 anisette.cache 时效约 15-20 分钟（真机 23:12 成功 /
+/// 23:29 失败实锤），daemon 每小时跑必用旧缓存 → resultCode=1100 失败。
+/// 方案：签名前检查缓存年龄，过期则写 anisette-refresh-request 标记 +
+/// 唤醒 App 后台 → App setupCommon 读到标记只做「刷新 Anisette 缓存」然后
+/// exit(0)（不参与签名/安装）→ daemon 轮询缓存 mtime 变新后用新缓存签名。
+static void s_ensureFreshAnisette(void) {
+    NSString *cachePath = @"/var/mobile/Library/Resign/anisette.cache";
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:cachePath error:nil];
+    NSDate *mtime = attrs[NSFileModificationDate];
+    if (mtime) {
+        NSTimeInterval age = -[mtime timeIntervalSinceNow];
+        if (age < 10 * 60) {
+            s_log(@"Anisette 缓存年龄 %.1f 分钟 → 新鲜，无需刷新", age / 60.0);
+            return;
+        }
+        s_log(@"Anisette 缓存年龄 %.1f 分钟 → 过期，唤醒 App 刷新", age / 60.0);
+    } else {
+        s_log(@"Anisette 缓存缺失 → 唤醒 App 生成");
+    }
+
+    // 写刷新请求标记 + 唤醒 App（后台启动，App 刷新后自动退出）
+    [@{@"timestamp": @([[NSDate date] timeIntervalSince1970])}
+        writeToFile:@"/var/mobile/Library/Resign/anisette-refresh-request" atomically:YES];
+    if (!s_launchAppInBackground()) {
+        s_log(@"⚠️ 唤醒 App 刷新 Anisette 失败（SBS 拉起失败）→ 用旧缓存继续，可能 1100");
+        return;
+    }
+    // 轮询缓存 mtime 变新（上限 60 秒，App 刷新通常 2-3 秒）
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:60];
+    while ([[NSDate date] compare:deadline] == NSOrderedAscending) {
+        NSDictionary *a2 = [[NSFileManager defaultManager] attributesOfItemAtPath:cachePath error:nil];
+        NSDate *m2 = a2[NSFileModificationDate];
+        if (m2 && (!mtime || [m2 compare:mtime] == NSOrderedDescending)) {
+            s_log(@"✅ Anisette 缓存已由 App 刷新（%s）", m2.description.UTF8String);
+            return;
+        }
+        usleep(2000000);  // 2s
+    }
+    s_log(@"⚠️ 等待 App 刷新 Anisette 超时（60s）→ 用旧缓存继续，可能 1100");
+}
+
 /// v2.1.0：daemon 自签名主流程。返回 YES 表示执行了（无论成败），NO 表示本轮跳过。
 static BOOL s_selfSignPipeline(sd_config c) {
     // 1. 凭据
@@ -1231,6 +1275,9 @@ static BOOL s_selfSignPipeline(sd_config c) {
         s_log(@"续签中止：无可用凭据（请在 App 里重新登录）");
         return NO;
     }
+
+    // 🔴 v2.1.18：签名前确保 Anisette 新鲜（过期则唤醒 App 后台刷新，用户无感）
+    s_ensureFreshAnisette();
 
     // 2. 枚举到期应用
     NSArray *expired = s_enumerateExpiredApps(c.days);

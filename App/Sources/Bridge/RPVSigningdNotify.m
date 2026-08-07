@@ -66,6 +66,17 @@
                 NSLog(@"[ReSign] 收到 daemon 续签信号但 trigger 缺失/已过期（可能已被冷启动路径消费），忽略");
             }
         });
+
+    // 🔴 v2.1.18：daemon 请求刷新 Anisette 缓存的进程内通道。
+    // App 已存活（用户挂后台）时 SBS 拉起不会重走 setupCommon，必须靠 notify
+    // 通知进程内刷新。刷新后自动退出（daemon 短命模式，App 不常驻）。
+    int refreshToken = 0;
+    notify_register_dispatch("cn.analy.resign.anisette-refresh",
+        &refreshToken,
+        dispatch_get_main_queue(),
+        ^(int unused) {
+            [RPVSigningdNotify processAnisetteRefreshIfNeeded];
+        });
 }
 
 + (void)notifyConfigUpdated {
@@ -119,6 +130,27 @@
 
 + (void)notifySigningComplete {
     notify_post("cn.analy.resign.signing-complete");
+}
+
+// 🔴 v2.1.18：响应 daemon 的 Anisette 刷新请求。
+// RootHide 下新鲜 Anisette 只能 App 进程生成（daemon 的 anisette XPC 不放行，
+// 真机 23:43 实测）。daemon 签名前若缓存过期，会写 anisette-refresh-request
+// 标记 + SBS 拉起本 App（或 notify 进程内通道）→ 本方法刷新缓存后自动退出。
+// App 只做「生成 Anisette」这一件事，不参与签名/安装（那些都在 daemon）。
++ (void)processAnisetteRefreshIfNeeded {
+    NSString *reqPath = @"/var/mobile/Library/Resign/anisette-refresh-request";
+    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:reqPath];
+    NSNumber *ts = req[@"timestamp"];
+    if (!ts || [[NSDate date] timeIntervalSince1970] - [ts doubleValue] >= 180.0) {
+        return;  // 无标记或已过期 → 不是 daemon 的刷新请求
+    }
+    NSLog(@"[ReSign] 收到 daemon Anisette 刷新请求 → 刷新缓存");
+    [RPVSigningdNotify refreshAnisetteCache];
+    [[NSFileManager defaultManager] removeItemAtPath:reqPath error:nil];
+    // daemon 短命模式：App 也不常驻，刷新完自动退出
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        exit(0);
+    });
 }
 
 + (void)notifyBypass3AppRequest {
