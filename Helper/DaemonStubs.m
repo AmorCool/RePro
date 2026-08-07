@@ -104,32 +104,15 @@ static NSDictionary *RPVDaemonCredentials(void) {
 @end
 @implementation RPVAuthentication
 
-// 真实 Anisette：优先用 App 进程缓存的完整 headers（root 进程 AKAppleIDSession
-// 缺 X-Apple-I-MD → Apple 拒绝；App 生成的完整可用，v2.1.3 实锤修复），
-// 无缓存时 fallback 到 dlopen AuthKit → AKAppleIDSession。
+// 真实 Anisette：优先 daemon 自己生成（v2.1.16）。
+// 🔴 v2.1.16 根因（真机 23:12 成功 / 23:29 失败实锤）：App 生成的 anisette.cache
+// 时效极短（约 15-20 分钟，23:11 缓存 23:12 有效、23:29 已被 Apple 拒 1100）。
+// daemon 每小时跑一次，用的必然是几十分钟前的旧缓存 → 大部分时间失败。
+// v2.1.4 已给 daemon entitlements 加 com.apple.private.ak.anisette +
+// com.apple.authkit.internal——若 RootHide 放行，daemon 的 AKAppleIDSession 能
+// 生成完整 Anisette（永远新鲜），不再依赖 App 缓存时效。本方法先自生成，
+// 打日志确认 MD 是否出来；缺 MD（entitlement 未放行）才 fallback App 缓存。
 - (NSDictionary *)appleIDHeadersForRequest:(NSURLRequest *)request {
-    // 🔴 v2.1.3：App 每次进前台把完整 Anisette 写到 /var/mobile/Library/Resign/anisette.cache。
-    // daemon（root、无 App 沙盒上下文）自己 dlopen AuthKit 生成的 headers 缺
-    // X-Apple-I-MD / X-Apple-I-MD-M → Apple 拒签（"No Team ID present!"，18:14 实锤）。
-    // 缓存由 App 进程生成（AKAppleIDSession 可用），daemon 直接复用同一设备的机器数据。
-    NSDictionary *cached = [NSDictionary dictionaryWithContentsOfFile:
-                            @"/var/mobile/Library/Resign/anisette.cache"];
-    if ([cached isKindOfClass:[NSDictionary class]] && [cached[@"X-Apple-I-MD"] length] > 0) {
-        NSMutableDictionary *result = [NSMutableDictionary dictionaryWithDictionary:cached];
-        // 🔴 v2.1.5：更新 Client-Time 为当前时间。缓存可能过旧，Apple listTeams
-        // 对 X-Apple-I-Client-Time 有时效要求（真机 20:30 实锤：MD 完整、gsToken
-        // 有效，但 Client-Time 是 1 小时前的 → 仍 No Team ID）。
-        NSDateFormatter *utcFmt = [[NSDateFormatter alloc] init];
-        utcFmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-        utcFmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-        utcFmt.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
-        result[@"X-Apple-I-Client-Time"] = [utcFmt stringFromDate:[NSDate date]];
-        result[@"X-Apple-App-Info"] = @"com.apple.gs.xcode.auth";
-        result[@"X-MMe-Client-Info"] =
-            @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
-        return result;
-    }
-    // fallback：动态取类（daemon 不静态链接 AuthKit 私有框架）
     static Class AKAppleIDSession = nil;
     if (!AKAppleIDSession) {
         dlopen("/System/Library/PrivateFrameworks/AuthKit.framework/AuthKit", RTLD_NOW | RTLD_GLOBAL);
@@ -150,6 +133,30 @@ static NSDictionary *RPVDaemonCredentials(void) {
     result[@"X-Apple-App-Info"] = @"com.apple.gs.xcode.auth";
     result[@"X-MMe-Client-Info"] =
         @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+
+    if ([result[@"X-Apple-I-MD"] length] > 0 && [result[@"X-Apple-I-MD-M"] length] > 0) {
+        NSLog(@"[repro-signingd] Anisette: daemon 自生成 ✅（X-Apple-I-MD=%lu 字符，永远新鲜）",
+              (unsigned long)[result[@"X-Apple-I-MD"] length]);
+        return result;
+    }
+
+    // fallback：App 进程缓存的完整 headers（可能过期，但好过没有）
+    NSLog(@"[repro-signingd] Anisette: daemon 自生成缺 X-Apple-I-MD（entitlement 未放行）→ 用 App 缓存");
+    NSDictionary *cached = [NSDictionary dictionaryWithContentsOfFile:
+                            @"/var/mobile/Library/Resign/anisette.cache"];
+    if ([cached isKindOfClass:[NSDictionary class]] && [cached[@"X-Apple-I-MD"] length] > 0) {
+        NSMutableDictionary *merged = [NSMutableDictionary dictionaryWithDictionary:cached];
+        // v2.1.5：更新 Client-Time 为当前时间
+        NSDateFormatter *utcFmt = [[NSDateFormatter alloc] init];
+        utcFmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+        utcFmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
+        utcFmt.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+        merged[@"X-Apple-I-Client-Time"] = [utcFmt stringFromDate:[NSDate date]];
+        merged[@"X-Apple-App-Info"] = @"com.apple.gs.xcode.auth";
+        merged[@"X-MMe-Client-Info"] =
+            @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        return merged;
+    }
     return result;
 }
 
