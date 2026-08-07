@@ -404,9 +404,22 @@ NSString *const REProtocolVersion = @"QH65B2";
         }
 
         NSArray *teams = [plist objectForKey:@"teams"];
-        if (![teams isKindOfClass:[NSArray class]]) teams = nil;   // v1.1.159：非数组归一化为 nil，防 for-in 闪退
+        if (![teams isKindOfClass:[NSArray class]]) teams = nil;
         if (!teams) {
-            completionHandler(error, @"");
+            // 🔴 v2.1.7：Apple 拒绝时有 resultCode + resultString（如 1100 "session expired"），
+            // 把这些信息塞进 NSError，让它一路传到 daemon 的 s_log——用户看文件日志
+            // 直接看到 "Your session has expired (resultCode=1100)"，而不是瞎猜 "No Team ID"。
+            NSNumber *rc = plist[@"resultCode"];
+            NSString *rs = plist[@"resultString"];
+            if (rc && [rc integerValue] != 0 && rs.length > 0) {
+                NSError *detailErr = [NSError errorWithDomain:@"com.apple.developerservices"
+                                                         code:[rc integerValue]
+                                                     userInfo:@{NSLocalizedDescriptionKey:
+                                           [NSString stringWithFormat:@"%@ (resultCode=%@)", rs, rc]}];
+                completionHandler(detailErr, @"");
+            } else {
+                completionHandler(error, @"");
+            }
             return;
         }
 

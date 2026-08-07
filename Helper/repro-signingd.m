@@ -1118,13 +1118,12 @@ static BOOL s_signAndInstallOneApp(NSString *appPath, NSString *identity,
     }
     if (signErr) {
         s_log(@"签名失败 %@: %@", [appPath lastPathComponent], signErr.localizedDescription);
-        // 🔴 v2.1.4：No Team ID = daemon 的 Anisette 缺 X-Apple-I-MD 被 Apple 拒
-        // （root 进程 AKAppleIDSession 生成不了完整 Anisette），需要 App 进程
-        // 生成缓存。给出明确指引，避免用户对着英文错误瞎猜。
-        if ([signErr.localizedDescription containsString:@"No Team ID"]) {
-            s_log(@"  ↳ 原因：daemon 无有效 Anisette。请打开 ReSign App（前台）一次，"
-                  @"App 会自动刷新 anisette.cache 后自动重试");
-            s_log(@"  ↳ 若打开 App 后仍失败，查看 /var/mobile/Library/Resign/anisette-fail.log 反馈作者");
+        // 🔴 v2.1.7：若错误信息已含 Apple 返回的 resultCode（如 1100 "session expired"），
+        // 不再加通用指引（用户直接看到了具体原因）；否则补上下文帮助。
+        if ([signErr.localizedDescription containsString:@"resultCode"]) {
+            // 已明确，无需补充
+        } else if ([signErr.localizedDescription containsString:@"No Team ID"]) {
+            s_log(@"  ↳ 可能是 Anisette 缓存缺失或过期。请打开 ReSign App（前台）一次刷新 anisette.cache");
         }
         return NO;
     }
