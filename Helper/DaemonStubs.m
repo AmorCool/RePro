@@ -108,6 +108,14 @@ static NSDictionary *RPVDaemonCredentials(void) {
                             @"/var/mobile/Library/Resign/anisette.cache"];
     if ([cached isKindOfClass:[NSDictionary class]] && [cached[@"X-Apple-I-MD"] length] > 0) {
         NSMutableDictionary *result = [NSMutableDictionary dictionaryWithDictionary:cached];
+        // 🔴 v2.1.5：更新 Client-Time 为当前时间。缓存可能过旧，Apple listTeams
+        // 对 X-Apple-I-Client-Time 有时效要求（真机 20:30 实锤：MD 完整、gsToken
+        // 有效，但 Client-Time 是 1 小时前的 → 仍 No Team ID）。
+        NSDateFormatter *utcFmt = [[NSDateFormatter alloc] init];
+        utcFmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+        utcFmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
+        utcFmt.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+        result[@"X-Apple-I-Client-Time"] = [utcFmt stringFromDate:[NSDate date]];
         result[@"X-Apple-App-Info"] = @"com.apple.gs.xcode.auth";
         result[@"X-MMe-Client-Info"] =
             @"<MacBookPro11,5> <Mac OS X;10.14.6;18G103> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";

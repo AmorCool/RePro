@@ -998,6 +998,14 @@ static BOOL s_readCredentials(NSString **identityOut, NSString **gsTokenOut, NSS
     if (gsTokenOut)  *gsTokenOut  = gsToken;
     if (teamIDOut)   *teamIDOut   = teamID;
     s_log(@"凭据就绪：identity=%@ teamID=%@", identity, teamID);
+    // 🔴 v2.1.5：记录 gsToken 缓存年龄，帮助判断是否因 token 过期导致签名失败
+    {
+        struct stat st;
+        if (stat(kDaemonCredentialsCachePath.UTF8String, &st) == 0) {
+            double ageHours = difftime(time(NULL), st.st_mtime) / 3600.0;
+            s_log(@"  gsToken 缓存年龄：%.1f 小时（若 > 数小时 + 签名仍 No Team ID → 请在 App 重新登录）", ageHours);
+        }
+    }
     return YES;
 }
 
