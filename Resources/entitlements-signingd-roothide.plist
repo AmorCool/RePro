@@ -51,7 +51,12 @@
 	<true/>
 	<key>com.apple.multitasking.systemappassertions</key>
 	<true/>
-    <!-- v2.1.0：signingd 自己安装签名后的 app（不再唤醒 App），需要 installd 权限 -->
+    <!-- v2.1.0：signingd 自己安装签名后的 app（不再唤醒 App），需要 installd 权限。
+         🔴 v2.1.17：补齐 App 侧全部 allowedSPI（InstallLocalProvisioned /
+         UninstallForLaunchServices）——daemon 调 LSApplicationWorkspace
+         installApplication 带 AllowInstallLocalProvisioned:YES 时必须
+         InstallLocalProvisioned SPI，否则报 "Operation not permitted"
+         （真机 23:12/23:46 实锤，App 进程能装=有这项）。 -->
     <key>com.apple.private.mobileinstall.allowedSPI</key>
     <array>
       <string>Lookup</string>
@@ -61,7 +66,12 @@
       <string>LookupForLaunchServices</string>
       <string>InstallForLaunchServices</string>
       <string>BrowseForLaunchServices</string>
+      <string>UninstallForLaunchServices</string>
+      <string>InstallLocalProvisioned</string>
     </array>
+    <!-- v2.1.17：与 App 侧对齐，安装后重建 LS 数据库需要 -->
+    <key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+    <true/>
 
     <!-- v2.1.4：尝试让 daemon 进程的 AKAppleIDSession 能生成完整 Anisette
          （X-Apple-I-MD 等，Apple developerservices2 必需）。App 进程登录成功

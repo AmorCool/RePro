@@ -1068,19 +1068,46 @@ static NSMutableArray<NSDictionary *> *s_enumerateExpiredApps(NSInteger threshol
 }
 
 /// 安装签名后的 app（daemon 独立完成，不唤醒 App）。
-/// 🔴 v2.1.15：LSApplicationWorkspace installApplication 在 daemon（root、无 UI
-/// 会话）下被 installd 拒（真机 23:12 实锤 "Operation not permitted"）——它走
-/// 前端会话层，daemon 没有 UI 上下文。改用 MobileInstallationInstall 私有 API
-/// 直连 installd XPC：installd 只校验调用者的
-/// com.apple.private.mobileinstall.allowedSPI（daemon 有），不校验 UI 会话。
+/// 🔴 v2.1.17 策略：优先 LSApplicationWorkspace（补全 InstallLocalProvisioned
+/// entitlement 后应能装——App 进程同 API 同 options 能装，差异就是 allowedSPI
+/// 数组缺 InstallLocalProvisioned，真机 23:12/23:46 实锤）；失败 fallback
+/// MobileInstallationInstall（设备 jbroot 框架符号可能被 strip，dlsym 失败则跳过）。
 static BOOL s_installSignedApp(NSString *appPath, NSString *bundleId) {
+    // 方式 1：LSApplicationWorkspace（与 App 侧 RPVApplicationSigning 同 API/options）
+    {
+        dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+        if (wsClass) {
+            id workspace = [wsClass performSelector:@selector(defaultWorkspace)];
+            NSURL *appURL = [NSURL fileURLWithPath:appPath];
+            NSDictionary *opts = @{
+                @"CFBundleIdentifier": bundleId ?: @"",
+                @"AllowInstallLocalProvisioned": @YES,
+            };
+            NSError *err = nil;
+            BOOL ok = NO;
+            @try {
+                ok = [workspace installApplication:appURL withOptions:opts error:&err];
+            } @catch (NSException *e) {
+                s_log(@"安装异常(LSAW): %@", e.description ?: @"?");
+            }
+            if (ok) {
+                s_log(@"安装成功: %@", bundleId);
+                return YES;
+            }
+            s_log(@"安装失败(LSAW) %@: %@ (domain=%@ code=%ld userInfo=%@)",
+                  bundleId, err.localizedDescription ?: @"?", err.domain ?: @"?",
+                  (long)err.code, err.userInfo ?: @{});
+        } else {
+            s_log(@"安装: LSApplicationWorkspace 不可用 → 试 MobileInstallation");
+        }
+    }
+    // 方式 2：MobileInstallationInstall（直连 installd；符号被 strip 则失败）
     void *mi = dlopen("/System/Library/PrivateFrameworks/MobileInstallation.framework/MobileInstallation", RTLD_NOW);
-    if (!mi) { s_log(@"安装失败: 无法加载 MobileInstallation.framework (%s)", dlerror()); return NO; }
-    // MobileInstallationInstall(CFURLRef url, CFDictionaryRef options, void *completion, void *unused)
-    // completion = void (^)(NSDictionary *result, NSError *error)
+    if (!mi) { s_log(@"安装失败: MobileInstallation.framework 加载失败 (%s)", dlerror()); return NO; }
     void (*installFunc)(CFURLRef, CFDictionaryRef, void *, void *) =
         (void (*)(CFURLRef, CFDictionaryRef, void *, void *))dlsym(mi, "MobileInstallationInstall");
-    if (!installFunc) { s_log(@"安装失败: MobileInstallationInstall 符号不存在"); return NO; }
+    if (!installFunc) { s_log(@"安装失败: MobileInstallationInstall 符号不存在（框架被 strip）"); return NO; }
 
     __block BOOL done = NO;
     __block BOOL ok = NO;
@@ -1110,7 +1137,7 @@ static BOOL s_installSignedApp(NSString *appPath, NSString *bundleId) {
         s_log(@"安装超时（120 秒）: %@", bundleId);
         return NO;
     }
-    if (!ok) s_log(@"安装失败 %@: %@", bundleId, errMsg ?: @"未知错误");
+    if (!ok) s_log(@"安装失败(MI) %@: %@", bundleId, errMsg ?: @"未知错误");
     else s_log(@"安装成功: %@", bundleId);
     return ok;
 }
