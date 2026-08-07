@@ -21,6 +21,12 @@
 + (void)refreshAnisetteCache;
 @end
 
+// v2.1.3：AuthKit 私有类声明（动态取类时编译器需要 selector 签名，与 DaemonStubs.m 一致）
+@interface AKAppleIDSession : NSObject
+- (id)initWithIdentifier:(id)arg1;
+- (id)appleIDHeadersForRequest:(id)arg1;
+@end
+
 @implementation RPVSigningdNotify {
     int _token;
 }
