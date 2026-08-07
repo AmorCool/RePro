@@ -1527,6 +1527,21 @@ static int s_printStatus(void) {
 // ─── main ────────────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
+    // 🔴 v2.1.12：TMPDIR 指到豁免共享目录。RootHide 下 daemon（SafeMode namespace）
+    // 的 /var/tmp/ 映射到 jbroot overlay，而 posix_spawn 的 zsign 子进程看到真实
+    // rootfs 的 /var/tmp/ —— 两个不同目录！所以 daemon 检查 -m 文件存在（14665B）
+    // 但 zsign 报 "Can't find provision file!"（真机 22:27 实锤）。
+    // /var/mobile/Library/Resign/ 是 RootHide 豁免 overlay 的共享目录，所有进程
+    // 都看到同一份真实文件 → 临时 app/profile/key/cert 全部落这里，zsign 必能读到。
+    {
+        NSString *sharedTmp = @"/var/mobile/Library/Resign/tmp";
+        [[NSFileManager defaultManager] createDirectoryAtPath:sharedTmp
+                                 withIntermediateDirectories:YES
+                                                  attributes:@{NSFilePosixPermissions:@0777}
+                                                       error:nil];
+        setenv("TMPDIR", sharedTmp.UTF8String, 1);
+        unsetenv("TMP");  // 防止 fallback
+    }
     s_open_log();
 
     // ── --status: 打印诊断状态（不写日志噪音，直接输出到终端） ──
