@@ -54,6 +54,8 @@
 #include <signal.h>
 #include <dlfcn.h>
 #include <pthread.h>   // v1.1.186：超时看门狗独立线程（不依赖主 runloop）
+#include <mach-o/dyld.h>   // v2.1.13：_NSGetExecutablePath 推自身越狱根（TMPDIR 用 jbroot 绝对路径）
+#include <limits.h>        // PATH_MAX
 #import <mach/mach.h>
 #import <Foundation/Foundation.h>
 
@@ -1527,20 +1529,50 @@ static int s_printStatus(void) {
 // ─── main ────────────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
-    // 🔴 v2.1.12：TMPDIR 指到豁免共享目录。RootHide 下 daemon（SafeMode namespace）
-    // 的 /var/tmp/ 映射到 jbroot overlay，而 posix_spawn 的 zsign 子进程看到真实
-    // rootfs 的 /var/tmp/ —— 两个不同目录！所以 daemon 检查 -m 文件存在（14665B）
-    // 但 zsign 报 "Can't find provision file!"（真机 22:27 实锤）。
-    // /var/mobile/Library/Resign/ 是 RootHide 豁免 overlay 的共享目录，所有进程
-    // 都看到同一份真实文件 → 临时 app/profile/key/cert 全部落这里，zsign 必能读到。
+    // 🔴 v2.1.13：TMPDIR 指向自身越狱根内的 <root>/var/tmp（jbroot 绝对路径）。
+    // 真机 22:39/22:50 实验实锤：daemon 与 posix_spawn 的 zsign 子进程文件系统
+    // 视图不一致——zsign 读 /var/mobile/Library/Resign/tmp/...（rootfs 里存在）
+    // 和 /rootfs/... 都失败（读 /etc/hosts 成功、读 jbroot 绝对路径成功），
+    // 说明 zsign 的 /var/ 是 overlay shadow，而 jbroot（/var/containers/Bundle/
+    // Application/.jbroot-XXXX/...）是真实目录、任何进程都能访问。
+    // 所以临时 app/profile/key/cert 全放 <jbroot>/var/tmp，daemon 与 zsign
+    // 必然看到同一份文件。v2.1.12 的 /var/mobile/Library/Resign/tmp 方案
+    // 被实验证伪（zsign 读不到，仍报 "Can't find provision file!"）。
     {
-        NSString *sharedTmp = @"/var/mobile/Library/Resign/tmp";
-        [[NSFileManager defaultManager] createDirectoryAtPath:sharedTmp
-                                 withIntermediateDirectories:YES
-                                                  attributes:@{NSFilePosixPermissions:@0777}
-                                                       error:nil];
-        setenv("TMPDIR", sharedTmp.UTF8String, 1);
-        unsetenv("TMP");  // 防止 fallback
+        NSString *root = nil;
+        char buf[PATH_MAX] = {0};
+        uint32_t size = (uint32_t)sizeof(buf);
+        if (_NSGetExecutablePath(buf, &size) == 0) {
+            char resolved[PATH_MAX] = {0};
+            const char *use = realpath(buf, resolved) ? resolved : buf;
+            NSString *selfPath = [NSString stringWithUTF8String:use];
+            // .../usr/libexec/repro-signingd → 去掉 repro-signingd/libexec/usr 三级
+            NSString *r = selfPath.stringByDeletingLastPathComponent
+                                 .stringByDeletingLastPathComponent
+                                 .stringByDeletingLastPathComponent;
+            if ([r containsString:@".jbroot"] || [r hasPrefix:@"/var/jb"] || [r isEqualToString:@"/"]) {
+                root = r;
+            }
+        }
+        if (!root) {
+            // 兜底：候选根里找 daemon 自身二进制
+            for (NSString *cand in @[ @"/var/jb", @"/" ]) {
+                NSString *p = [cand stringByAppendingPathComponent:@"usr/libexec/repro-signingd"];
+                if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) { root = cand; break; }
+            }
+        }
+        if (root.length > 0) {
+            NSString *tmp = [root stringByAppendingPathComponent:@"var/tmp"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:tmp
+                                     withIntermediateDirectories:YES
+                                                      attributes:@{NSFilePosixPermissions:@0777}
+                                                           error:nil];
+            setenv("TMPDIR", tmp.UTF8String, 1);
+            unsetenv("TMP");  // 防止 fallback
+            NSLog(@"[repro-signingd] TMPDIR → %@（自身根 %@）", tmp, root);
+        } else {
+            NSLog(@"[repro-signingd] ⚠️ 无法推算越狱根，TMPDIR 保持环境默认");
+        }
     }
     s_open_log();
 
