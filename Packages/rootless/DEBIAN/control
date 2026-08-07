@@ -2,7 +2,7 @@ Package: cn.analy.resign
 Name: ReSign
 Description: Re-signing tool for iOS jailbreak(iOS17+)
 Depends: firmware (>= 15.0), zip, unzip
-Version: 2.1.8~release
+Version: 2.1.9~release
 Section: Utilities
 Priority: optional
 Architecture: iphoneos-arm64

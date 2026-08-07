@@ -110,6 +110,19 @@
         }
     }
 
+    // 🔴 v2.1.9：profiles 数组为空时，兜底用 bundle 内嵌的 embedded.mobileprovision。
+    // 根因（真机 21:31/21:50 实锤）：daemon 环境下 EEBackend Stage 4 下载的 profile
+    // 没有进入 profiles 数组 → zsign 收不到任何 -m → "Can't find provision file!"
+    // （zsign 不会自动读 bundle 内的 profile，必须显式 -m）。
+    // bundle 内旧 profile（剩余有效期>0）完全可复用——重签只是换证书，profile 不用重下。
+    if (![args containsObject:@"-m"]) {
+        NSString *embedded = [inputPath stringByAppendingPathComponent:@"embedded.mobileprovision"];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:embedded]) {
+            [args addObject:@"-m"]; [args addObject:embedded];
+            NSLog(@"[ReSign] ⚠️ provisioningPaths 为空，兜底使用 bundle 内嵌 profile: %@", embedded);
+        }
+    }
+
     if (entitlementsPath && [[NSFileManager defaultManager] fileExistsAtPath:entitlementsPath]) {
         [args addObject:@"-e"]; [args addObject:entitlementsPath];
     }
