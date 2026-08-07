@@ -27,10 +27,6 @@ NS_ASSUME_NONNULL_BEGIN
 /// 每次进前台调用刷新。
 + (void)refreshAnisetteCache;
 
-/// v2.1.15：执行 daemon 签名后的安装（RootHide 下 daemon 无 UI 会话装不了，
-/// 安装必须由 App 进程执行）。App 每次启动（含 daemon 后台拉起）都会调用。
-+ (void)processPendingInstallIfNeeded;
-
 @end
 
 NS_ASSUME_NONNULL_END

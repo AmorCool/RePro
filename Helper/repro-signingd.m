@@ -1067,53 +1067,52 @@ static NSMutableArray<NSDictionary *> *s_enumerateExpiredApps(NSInteger threshol
     return found;
 }
 
-/// LSApplicationWorkspace 安装签名后的 app（与 App 侧 RPVApplicationSigning 同 API）。
-/// 🔴 v2.1.15：daemon（root、无 UI 会话）直接调 LSApplicationWorkspace 安装被
-/// installd 拒（真机 23:12 实锤 "Operation not permitted"，App 进程能装）。
-/// 因此安装改由 App 进程执行：daemon 只负责把签名结果放到共享目录 + 唤醒 App。
+/// 安装签名后的 app（daemon 独立完成，不唤醒 App）。
+/// 🔴 v2.1.15：LSApplicationWorkspace installApplication 在 daemon（root、无 UI
+/// 会话）下被 installd 拒（真机 23:12 实锤 "Operation not permitted"）——它走
+/// 前端会话层，daemon 没有 UI 上下文。改用 MobileInstallationInstall 私有 API
+/// 直连 installd XPC：installd 只校验调用者的
+/// com.apple.private.mobileinstall.allowedSPI（daemon 有），不校验 UI 会话。
 static BOOL s_installSignedApp(NSString *appPath, NSString *bundleId) {
-    // 1. 把签名后的 .app 复制到共享 IPC 目录（App 与 daemon 都能读写的地方）
-    NSString *pendingDir = @"/var/mobile/Library/Resign/pending-install";
-    [[NSFileManager defaultManager] removeItemAtPath:pendingDir error:nil];
-    [[NSFileManager defaultManager] createDirectoryAtPath:pendingDir
-                             withIntermediateDirectories:YES
-                                              attributes:nil error:nil];
-    NSString *destApp = [pendingDir stringByAppendingPathComponent:[appPath lastPathComponent]];
-    NSError *copyErr = nil;
-    if (![[NSFileManager defaultManager] copyItemAtPath:appPath toPath:destApp error:&copyErr]) {
-        s_log(@"复制签名结果到共享目录失败: %@", copyErr.localizedDescription ?: @"?");
-        return NO;
-    }
-    // 2. 写 pending-install 标记（App 启动时读取并执行安装）
-    NSDictionary *pending = @{
-        @"appPath": destApp,
-        @"bundleId": bundleId ?: @"",
-        @"ts": @([[NSDate date] timeIntervalSince1970]),
+    void *mi = dlopen("/System/Library/PrivateFrameworks/MobileInstallation.framework/MobileInstallation", RTLD_NOW);
+    if (!mi) { s_log(@"安装失败: 无法加载 MobileInstallation.framework (%s)", dlerror()); return NO; }
+    // MobileInstallationInstall(CFURLRef url, CFDictionaryRef options, void *completion, void *unused)
+    // completion = void (^)(NSDictionary *result, NSError *error)
+    void (*installFunc)(CFURLRef, CFDictionaryRef, void *, void *) =
+        (void (*)(CFURLRef, CFDictionaryRef, void *, void *))dlsym(mi, "MobileInstallationInstall");
+    if (!installFunc) { s_log(@"安装失败: MobileInstallationInstall 符号不存在"); return NO; }
+
+    __block BOOL done = NO;
+    __block BOOL ok = NO;
+    __block NSString *errMsg = nil;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    void (^completion)(NSDictionary *, NSError *) = [^(NSDictionary *result, NSError *error) {
+        ok = (error == nil);
+        if (error) {
+            errMsg = error.localizedDescription ?: @"未知错误";
+        } else if ([result isKindOfClass:[NSDictionary class]] && [result[@"errorString"] length] > 0) {
+            ok = NO;
+            errMsg = result[@"errorString"];
+        }
+        done = YES;
+        dispatch_semaphore_signal(sema);
+    } copy];
+    NSDictionary *opts = @{
+        @"CFBundleIdentifier": bundleId ?: @"",
+        @"ApplicationType": @"User",
+        @"AllowInstallLocalProvisioned": @YES,
     };
-    if (![pending writeToFile:@"/var/mobile/Library/Resign/pending-install.plist" atomically:YES]) {
-        s_log(@"写 pending-install 标记失败");
+    installFunc((__bridge CFURLRef)[NSURL fileURLWithPath:appPath],
+                (__bridge CFDictionaryRef)opts,
+                (__bridge void *)completion, NULL);
+    long rc = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));
+    if (rc != 0 || !done) {
+        s_log(@"安装超时（120 秒）: %@", bundleId);
         return NO;
     }
-    s_log(@"已写 pending-install 标记 → 唤醒 App 后台安装 %@", bundleId);
-    // 3. 唤醒 App（后台静默启动，setupCommon → processPendingInstallIfNeeded 执行安装）
-    s_launchAppInBackground();
-    // 4. 轮询安装结果（上限 90 秒，App 安装通常几秒内完成）
-    NSDictionary *result = nil;
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:90];
-    while ([[NSDate date] compare:deadline] == NSOrderedAscending) {
-        NSDictionary *r = [NSDictionary dictionaryWithContentsOfFile:
-                           @"/var/mobile/Library/Resign/install-result.plist"];
-        if ([r[@"bundleId"] isEqualToString:bundleId]) { result = r; break; }
-        usleep(3000000);  // 3s
-    }
-    if (result) {
-        BOOL ok = [result[@"ok"] boolValue];
-        if (!ok) s_log(@"App 安装失败 %@: %@", bundleId, result[@"error"] ?: @"?");
-        else s_log(@"App 安装成功: %@", bundleId);
-        return ok;
-    }
-    s_log(@"安装结果等待超时（App 可能没被拉起）→ 本轮视为失败，下轮重试");
-    return NO;
+    if (!ok) s_log(@"安装失败 %@: %@", bundleId, errMsg ?: @"未知错误");
+    else s_log(@"安装成功: %@", bundleId);
+    return ok;
 }
 
 /// 单个应用：复制到临时目录 → EEBackend 签名 → 装 profile → 安装回。
