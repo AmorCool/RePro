@@ -22,6 +22,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// daemon 侧仍会再判断一次设置开关（bypassFreeAppLimit），关着就不动。
 + (void)notifyBypass3AppRequest;
 
+/// v2.1.3：App 进程生成完整 Anisette（X-Apple-I-MD 等）缓存到共享 IPC 目录，
+/// 供 daemon 签名复用（root 进程 AKAppleIDSession 生成不了完整 Anisette）。
+/// 每次进前台调用刷新。
++ (void)refreshAnisetteCache;
+
 @end
 
 NS_ASSUME_NONNULL_END
