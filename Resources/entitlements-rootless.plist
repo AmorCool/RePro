@@ -68,13 +68,27 @@
     <key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
     <true/>
 
-    <!-- 安装 / 卸载 / 查询（mobileinstall SPI） -->
+    <!-- 安装 / 卸载 / 查询（mobileinstall SPI）
+         【v2.1.29 关键修复】此前只有 Install/Uninstall/Lookup/Browse 四项，
+         而 App 进程重签完成后是用 LSApplicationWorkspace -installApplication:withOptions:error:
+         真正落地安装的，installd 侧走的是 “vanilla install” 校验：
+             _LSValidateEntitlementsOfConnectionForVanillaInstall
+         该校验要求调用方带 InstallForLaunchServices，缺失即返回
+             NSPOSIXErrorDomain code=1「操作不被允许」+ Missing Entitlement = InstallForLaunchServices
+         表现为“签名 Signed OK! 但最后一步安装失败”。
+         signingd 守护进程（entitlements-signingd.plist）和 roothide App
+         （entitlements-roothide.plist）本来就带全套，唯独 rootless App 漏了 → 补齐。 -->
     <key>com.apple.private.mobileinstall.allowedSPI</key>
     <array>
-        <string>Install</string>
-        <string>Uninstall</string>
         <string>Lookup</string>
+        <string>Install</string>
         <string>Browse</string>
+        <string>Uninstall</string>
+        <string>LookupForLaunchServices</string>
+        <string>InstallForLaunchServices</string>
+        <string>BrowseForLaunchServices</string>
+        <string>UninstallForLaunchServices</string>
+        <string>InstallLocalProvisioned</string>
     </array>
 
     <!-- 后台运行 -->

@@ -149,34 +149,11 @@ jobs:
           chmod +x build/repro-helper
           echo "root helper built successfully"
 
-      - name: Build profile daemon (repro-profiledaemon) for RootHide
-        # RootHide 下 App 进程在 jbroot namespace 内，其 MCProfileConnection XPC 与
-        # 对 /var/Managed Preferences/mobile 的写入都被重定向到 overlay（假成功），
-        # 导致 installd 校验时 0xe8008015。repro-profiledaemon 由 launchd 在系统级
-        # 上下文启动（不在 App namespace 内），写真实路径并直连真实 profiled。
-        # App 通过 notify(3) + 真实共享路径触发安装。
-        run: |
-          set -e
-          mkdir -p build
-
-          xcrun -sdk iphoneos clang \
-            -x objective-c -fobjc-arc \
-            -arch arm64 -miphoneos-version-min=15.0 \
-            -O2 \
-            -framework Foundation \
-            -lobjc \
-            -o build/repro-profiledaemon \
-            Helper/repro-profiledaemon.m 2>&1 | tee profiledaemon_build.log
-
-          if [ ! -f build/repro-profiledaemon ]; then
-            echo "error: repro-profiledaemon build failed"
-            cat profiledaemon_build.log
-            exit 1
-          fi
-
-          file build/repro-profiledaemon
-          chmod +x build/repro-profiledaemon
-          echo "profile daemon built successfully"
+      # 🔀 v2.1.29：repro-profiledaemon 是 RootHide 专属组件（jbroot namespace 下
+      #    App 写 /var/Managed Preferences/mobile 会落进 overlay 假目录，必须由
+      #    rootfs 上的 LaunchDaemon 代写）。rootless/rootful 没有 namespace 隔离、
+      #    根本不装它，其源码与打包已随 roothide 一并迁到独立的 `roothide` 分支。
+      #    main 分支不再编译该二进制。
 
       - name: Build signing daemon (repro-signingd)
         # 🆕 v2.1.0：signingd 直接集成交付满签名管线（原版 ReProvision 架构）。
@@ -417,14 +394,17 @@ jobs:
           # rootless (Dopamine) 专用 App entitlements：base + AuthKit 三件套。
           # base 缺 com.apple.authkit.client.private / ak.anisette / authkit.internal → App 登录
           # AKAppleIDSession 返回的 Anisette 无 X-Apple-I-MD → Apple 服务器 -80009 "MID is invalid"。
-          # rootful 仍用 base（不在本修复范围），roothide 用 entitlements-roothide.plist（不动）。
+          # v2.1.29 追加：mobileinstall allowedSPI 补齐 InstallForLaunchServices 等，
+          # 否则 App 内 LSApplicationWorkspace 安装会被 installd 的
+          # _LSValidateEntitlementsOfConnectionForVanillaInstall 拒绝（签名成功但装不上）。
+          # rootful 仍用 base（不在本修复范围）。
           do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-rootless.plist
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$RL/usr/libexec/"
           # ★ rootless (Dopamine) 专属：jbroot 在 /var/jb 且无可透明解析的 /usr/libexec，
           #   daemon 实际装在 /var/jb/usr/libexec/repro-signingd。用通用模板（/usr/libexec/...）
           #   在 rootless 下是死路径 → launchd 拉起即失败（exit 78）。
-          #   rootless 用专属 plist（路径写 /var/jb/usr/libexec/...）；rootful/roothide 仍用通用模板。
+          #   rootless 用专属 plist（路径写 /var/jb/usr/libexec/...）；rootful 仍用通用模板。
           cp Resources/cn.analy.resign.signingd-rootless.plist "$RL/Library/LaunchDaemons/cn.analy.resign.signingd.plist"
           chmod 0755 "$RL/usr/libexec/repro-signingd"
           # v1.1.64：signingd 必须带 backboardd.launchapplications / multitasking.*assertions
