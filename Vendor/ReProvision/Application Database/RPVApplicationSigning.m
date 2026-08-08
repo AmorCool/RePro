@@ -374,32 +374,12 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 // read trusted profiles from. Two routes:
 //   1. direct write - works where our process is allowed to (rootful, and any
 //      rootless flavour where the mobile user may write the store).
-//   2. via the root daemon - required on RootHide, where the app is sandboxed
-//      and the store is root-owned; the daemon runs unsandboxed as root and is
-//      built without vroot, so it sees the REAL path.
-// The RootHide jbroot overlay path (<jbroot>/var/Managed Preferences/...) is
-// deliberately NOT used: profiled/installd are stock system daemons that only
-// ever read the real /var/Managed Preferences/mobile directory, so the overlay
-// copy (v1.3.50 approach) was invisible to them and never registered anything.
+//   2. via the root helper - required when the store is root-owned; repro-helper
+//      is setuid root and unsandboxed, so it can write the REAL path.
+// 🔀 v2.1.29：RootHide 专属分支已移除（main 只出 rootless/rootful，无 namespace 隔离）。
 - (BOOL)_registerProfileViaFileAtPath:(NSString *)profilePath {
     NSData *data = [NSData dataWithContentsOfFile:profilePath];
     if (data.length == 0) return NO;
-
-    // RootHide：sandbox 内 App 直接写 /var/Managed Preferences/mobile 会落入 jbroot
-    // overlay（installd/profiled 只读真实路径），所以"成功"也是假成功，会导致安装时
-    // 0xe8008015。此处跳过直接写，直接走 repro-helper（setuid root，能看到真实路径）。
-    if (RPVIsRootHideEnvironment()) {
-        if (_rpvDaemonProfileInstallHandler) {
-            BOOL ok = _rpvDaemonProfileInstallHandler(profilePath);
-            RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError,
-                          @"profile",
-                          @"[RootHide] daemon profile install %@", ok ? @"succeeded" : @"failed");
-            return ok;
-        }
-        RPVDiagnostic(RPVDiagError, @"profile",
-                      @"[RootHide] 未挂载 root helper，无法注册描述文件（请确认 repro-helper 已安装且 setuid）");
-        return NO;
-    }
 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *fileName = [self _profileFileNameForData:data];
@@ -423,7 +403,7 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
     }
     NSLog(@"*** [ReProvision] direct profile write failed %@: %@", dest, err);
 
-    // 2. Root daemon route (RootHide / locked-down rootless).
+    // 2. Root helper route（直接写失败时的兜底：/var/Managed Preferences/mobile 需 root）。
     if (_rpvDaemonProfileInstallHandler) {
         BOOL ok = _rpvDaemonProfileInstallHandler(profilePath);
         RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError,
@@ -437,21 +417,10 @@ static BOOL (^_rpvDaemonProfileInstallHandler)(NSString *profilePath) = nil;
 }
 
 - (BOOL)_registerProvisioningProfileAtPath:(NSString *)profilePath {
-    // RootHide：App 进程在 jbroot namespace 内，in-process MCProfileConnection 的 XPC
-    // 被重定向到 overlay profiled（返回 1 是假成功），写 /var/Managed Preferences/mobile
-    // 也落 overlay —— installd（namespace 外）读不到，必 0xe8008015。test2 源码只有
-    // rootless/rootful 包（无 namespace 隔离），其纯 App MC 在 roothide 上并不适用。
-    // 故 RootHide 跳过 App MC，直接走 LaunchDaemon（repro-profiledaemon，系统级上下文、
-    // 在 namespace 外）写真实路径并注册真实 profiled。
-    if (RPVIsRootHideEnvironment()) {
-        RPVDiagnostic(RPVDiagInfo, @"profile",
-                      @"[RootHide] 跳过 App 内 MC（namespace 内为假成功），走 repro-profiledaemon");
-        BOOL ok = [self _registerProfileViaFileAtPath:profilePath];
-        return ok;
-    }
-
-    // 非 RootHide（rootless/rootful）：对齐 test2，App 进程内 MCProfileConnection 注册，
-    // 失败再走文件/daemon 兜底。
+    // rootless/rootful：对齐 test2，App 进程内 MCProfileConnection 注册，
+    // 失败再走文件 / root helper 兜底。
+    // 🔀 v2.1.29：RootHide 的「跳过 App MC 直接走 profiledaemon」分支已移除
+    //    （那是 jbroot namespace 假成功的规避手段，本分支不存在这层隔离）。
     NSMutableString *report = [NSMutableString string];
     BOOL success = NO;
 

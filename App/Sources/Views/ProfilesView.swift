@@ -8,10 +8,9 @@ import SwiftUI
 // 删除与清理同样交给 root 侧执行。
 //
 // root 侧是谁取决于越狱形态（RPVBridge 自动选择，界面无感）：
-//  - RootHide：走 rootfs LaunchDaemon repro-profiledaemon —— App 在 jbroot namespace 内，
-//    自己（乃至 helper）访问该目录会被 overlay 重定向到假目录，必须由它代劳；
-//  - rootless / rootful：没有这层隔离，直接同步拉起 setuid root 的 repro-helper 更快。
-// 两者调用的是同一份实现（Helper/RPVProfileStore.h），行为完全一致。
+//  - rootless / rootful：没有 namespace 隔离，直接同步拉起 setuid root 的 repro-helper 即可
+//    （rootless/rootful 下 /var/Managed Preferences/mobile 只是「需 root 才能写」，helper 代劳最快）。
+// 实现见 Helper/RPVProfileStore.h。
 //
 // 为什么需要这个界面：真机实测同一个 App ID 曾堆积 102 份未过期描述文件
 // （目录内共 163 份只对应 3 个 App）。profiled 扫描到同一 application-identifier
@@ -135,7 +134,7 @@ struct ProfilesView: View {
                             .font(.headline)
                             .foregroundColor(.secondary)
                         if !isLoading {
-                            Text("点击上方「刷新清单」导出一次。\n若始终为空，说明 root 助手不可用：\nRootHide 请确认 repro-profiledaemon 已加载，\n其他形态请确认 repro-helper 有 setuid 权限。")
+                            Text("点击上方「刷新清单」导出一次。\n若始终为空，说明 repro-helper 未安装或缺少 setuid 权限：\n请确认 /var/jb/usr/libexec/repro-helper 存在且有 root 属主 + setuid 位。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)

@@ -170,16 +170,10 @@ static dispatch_queue_t gSystemStoreQueue = NULL;
 
 /// 在系统描述文件库（/var/Managed Preferences/mobile）中查找匹配本 bundle 且仍有效的 profile 到期日。
 /// 命中返回最晚的有效到期日；无匹配 / 全部过期 / 无法读取返回 nil。
-/// ⚠️ RootHide 下 App 处于 jbroot namespace，看不到真实系统库（overlay 假目录），
-/// 不应据此改写过期判定 → 直接返回 nil，保持 roothide 原行为不变。
+/// 🔀 v2.1.29：原 RootHide 规避分支（.jbroot 存在则直接返回 nil）已移除 ——
+/// main 只出 rootless/rootful，两者都能直接看到真实的系统描述文件库。
 - (NSDate *)_systemStoreExpiryDateForBundle:(NSString *)bundleID {
     if (bundleID.length == 0) return nil;
-
-    // RootHide：跳过系统库查询，保持原行为（避免误读 overlay 假目录）。
-    if ([[NSFileManager defaultManager] fileExistsAtPath:
-         [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@".jbroot"]]) {
-        return nil;
-    }
 
     NSDictionary<NSString *, NSDate *> *map = [self _systemStoreMapForDir:@"/var/Managed Preferences/mobile"];
     if (map.count == 0) return nil;

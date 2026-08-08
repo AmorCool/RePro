@@ -605,7 +605,6 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 static int RPVRunRootHelperCore(NSString *helperPath, NSArray<NSString *> *arguments, BOOL quiet);
 // v2.1.26：这两个也在本文件下方定义，补上前向声明（原来靠编译器容忍隐式声明，属隐患）。
 static NSString *RPVResolvedRootHelperPath(void);
-BOOL RPVIsRootHideEnvironment(void);
 
 #pragma mark - 越狱联网修复（国行蜂窝/WiFi 权限重置，手动入口）
 
@@ -629,8 +628,6 @@ BOOL RPVIsRootHideEnvironment(void);
 ///   → 它 spawn `repro-helper fix-cellular <bid>`（等价于 SSH root 手动执行，实测 exit=0）
 ///   → 写结果文件 → App 这边轮询读走。
 ///
-/// RootHide 形态不走这条路：它的 App entitlements 带 platform-application + no-container，
-/// 直接 spawn 一直是好的，保持原样不动。
 - (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
@@ -639,23 +636,9 @@ BOOL RPVIsRootHideEnvironment(void);
         NSString *helperPath = RPVResolvedRootHelperPath();
 
         BOOL success = NO;
-        NSString *message = nil;
-
-        if (RPVIsRootHideEnvironment()) {
-            // ── RootHide：保持 v2.1.24 起一直可用的直接 spawn 路径，一个字都不改 ──
-            int code = (helperPath.length == 0)
-                     ? -2
-                     : RPVRunRootHelperCore(helperPath, @[@"fix-cellular", selfBid], NO);
-            success = (code == 0);
-            if (code == 0)        message = @"已修复当前插件联网";
-            else if (code == -2)  message = @"未找到 repro-helper（root 助手），无法执行修复";
-            else if (code < 0)    message = [NSString stringWithFormat:@"修复失败：无法启动助手（错误 %d）", -code];
-            else                  message = [NSString stringWithFormat:@"修复失败（助手退出码 %d）", code];
-        } else {
-            message = [self _fixCellularViaSigningd:selfBid
-                                         helperPath:helperPath
-                                            success:&success];
-        }
+        NSString *message = [self _fixCellularViaSigningd:selfBid
+                                               helperPath:helperPath
+                                                  success:&success];
 
         if (completion) {
             NSString *finalMessage = message;
@@ -772,40 +755,15 @@ BOOL RPVIsRootHideEnvironment(void);
 
 #pragma mark - 环境体检
 
-/// RootHide 的根目录是每次开机随机生成的，只能通过 App bundle 旁边的
-/// .jbroot 符号链接解析出来（与 RZSignRunner.roothideJbRoot 同一套判据）。
-static NSString *RPVResolvedRootHideRoot(void) {
-    NSFileManager *fileManager = [NSFileManager defaultManager];
-    NSString *link = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@".jbroot"];
-    if (![fileManager fileExistsAtPath:link]) return nil;
-
-    NSString *resolved = [link stringByResolvingSymlinksInPath];
-    if (resolved.length == 0) return nil;
-    if (![fileManager fileExistsAtPath:[resolved stringByAppendingPathComponent:@"usr/local/bin"]]) {
-        return nil;
-    }
-    return resolved;
-}
-
-BOOL RPVIsRootHideEnvironment(void) {
-    return RPVResolvedRootHideRoot() != nil;
-}
-
 /// 找到按需 root helper（repro-helper）的绝对路径，找不到返回 nil。
-/// 三种越狱形态的安装位置不同：RootHide 在随机 jbroot 下，Dopamine 在 /var/jb，
-/// rootful 就是标准根路径。
+/// 本分支只面向两种形态：Dopamine(rootless) 装在 /var/jb，rootful 就是标准根路径。
 static NSString *RPVResolvedRootHelperPath(void) {
     NSFileManager *fileManager = [NSFileManager defaultManager];
 
-    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-    NSString *rootHideRoot = RPVResolvedRootHideRoot();
-    if (rootHideRoot) {
-        [candidates addObject:[rootHideRoot stringByAppendingPathComponent:@"usr/libexec/repro-helper"]];
-    }
-    [candidates addObjectsFromArray:@[
+    NSArray<NSString *> *candidates = @[
         @"/var/jb/usr/libexec/repro-helper",
         @"/usr/libexec/repro-helper"
-    ]];
+    ];
 
     for (NSString *candidate in candidates) {
         if ([fileManager isExecutableFileAtPath:candidate]) {
@@ -911,12 +869,8 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
         NSFileManager *fileManager = [NSFileManager defaultManager];
         RPVEnvironmentInfo *info = [[RPVEnvironmentInfo alloc] init];
 
-        // 1) 越狱形态：RootHide 优先（有 .jbroot），其次 Dopamine（/var/jb），最后 rootful。
-        NSString *rootHideRoot = RPVResolvedRootHideRoot();
-        if (rootHideRoot) {
-            info.jailbreakKind = @"roothide";
-            info.jailbreakRoot = rootHideRoot;
-        } else if ([fileManager fileExistsAtPath:@"/var/jb"]) {
+        // 1) 越狱形态：Dopamine（/var/jb）优先，其次 rootful。
+        if ([fileManager fileExistsAtPath:@"/var/jb"]) {
             info.jailbreakKind = @"dopamine";
             info.jailbreakRoot = @"/var/jb";
         } else if ([fileManager fileExistsAtPath:@"/Library/dpkg"] ||
@@ -980,219 +934,19 @@ static BOOL RPVRunRootHelper(NSString *helperPath, NSArray<NSString *> *argument
 
 /// 把 Vendor 里两个需要 root 的回调接到 repro-helper 上。
 /// 原版这两件事是走 XPC 找常驻守护进程做的，现在改成一次性 setuid root 进程。
-/// helper 不存在时干脆不注册 —— Vendor 会走「自己直接写文件」的分支，
-/// 通过 notify(3) + 共享路径触发 repro-profiledaemon（LaunchDaemon）安装描述文件。
+/// helper 不存在时干脆不注册 —— Vendor 会走「自己直接写文件」的分支。
 ///
-/// v1.1.171 实测更正：App 与 daemon 其实都运行在真实 rootfs 域，
-/// /var/mobile/Library/Resign 是同一个真实目录，IPC 完全可靠。
-/// 之所以仍必须由 daemon 落盘，是因为写 /var/Managed Preferences/mobile
-/// 需要 root，而 App 是 uid 501 且受沙盒约束。
-/// App 把描述文件数据写入 /var/mobile/Library/Resign/，发 notify 信号，
-/// 再轮询结果文件（最多 60 秒）。
-
-/// 尽力把短命的 profiledaemon 拉起来（best-effort）。
+/// 写 /var/Managed Preferences/mobile 需要 root，而 App 是 uid 501，
+/// 所以描述文件落盘必须借 setuid root 的 repro-helper 完成。
 ///
-/// 🔴 v1.1.171 真机实测：真实 rootfs 的 /bin 只有 df、ps，/sbin 只有 launchd，
-///    系统里压根没有 launchctl —— 只有越狱 bootstrap（jbroot）里才有一份。
-///    所以这里 spawn 成功与否都不能当作前提，真正的保底是 daemon plist 里的
-///    LaunchEvents(com.apple.notifyd.matching)：只要 notify_post，launchd 自己会拉起。
-///    这个函数只是让唤醒更快一点（省掉 notifyd 事件流的调度延迟）。
-/// forceRestart=YES 走 `kickstart -k`（先杀掉在跑的实例再拉起）；NO 只在未运行时拉起。
-///
-/// 🔴🔴 v1.1.180 血的教训：`kickstart -k` 里的 `-k` 就是 **kill**。
-/// v1.1.179 为了防「请求恰好投在 daemon 即将空闲退出的窗口里被吞掉」，
-/// 在等待结果的循环里每 5 秒补发一次唤醒 —— 却沿用了带 `-k` 的版本，
-/// 等于**每 5 秒把正在干活的 daemon 杀一次**。
-/// 真机上描述文件多达 163 份，daemon 启动全量扫描就要十几秒：
-/// 5 秒被杀 → 重启从头扫 → 又 5 秒被杀 …… 永远做不完，最后照样 60 秒超时。
-/// 更致命的是 daemon 侧「读到请求即原子消费（改名 .consumed）」——
-/// 一旦在消费之后、写结果之前被杀，这次请求就彻底蒸发：
-/// 描述文件根本没装进真实库，App 那头却只看到一句超时，
-/// 正是「签名成功、App 却 0xe8008015 秒退」的成因之一。
-/// 所以补发唤醒**必须**用不带 `-k` 的版本：活着就让它把活干完，死了才拉新实例。
-///
-/// 🔴🔴🔴 v1.1.183 根因订正：**这个函数此前一直是个静默空操作**。
-/// 两个各自独立、都足以致命的原因：
-///   ① 路径错。旧版只试 "/bin/launchctl"、"/usr/bin/launchctl" 两个写死路径。
-///      RootHide 进程内没有把 /usr/bin 透明重定向到 jbroot（真机日志实证：
-///      helper 自身路径就是带 .jbroot-XXXX 前缀的全路径），这两个位置根本没有
-///      launchctl，posix_spawn 直接 ENOENT(2) —— 而旧代码对 spawn 失败是
-///      `break` 掉、一声不吭，所以谁也没发现。
-///   ② 权限不足。profiledaemon 由 postinst 用 `bootstrap system` 装在 **system 域**，
-///      App 是 uid 501(mobile)，就算路径对了，`launchctl kickstart system/...`
-///      也会被拒。只有 setuid root 的 repro-helper 才有资格。
-/// 结果：安装/删除描述文件的唤醒完全落在 plist 的 notifyd LaunchEvents 上，
-/// 一旦通知恰好投在 daemon「空闲 60 秒即将自退」的窗口里被那个将死的进程收走，
-/// launchd 就不再拉新实例，请求悬在盘上没人处理 → App 干等满 60 秒 →
-/// 用户看到的「删除失败：root 侧未响应」。v1.1.179/180/181 三轮在等待循环上
-/// 打的补丁（补发唤醒、30 秒强制重启兜底）因此全部无效——它们补发的正是这个空操作。
-/// 现在统一改走 `repro-helper kickstart-profiledaemon [-k]`，路径探测 + root 身份都由
-/// helper 解决。
-static void RPVKickstartProfileDaemonEx(BOOL forceRestart) {
-    NSString *helperPath = RPVResolvedRootHelperPath();
-    if (helperPath.length == 0) return;
-
-    NSArray<NSString *> *args = forceRestart
-        ? @[@"kickstart-profiledaemon", @"-k"]
-        : @[@"kickstart-profiledaemon"];
-
-    // quiet=YES：等待循环每 5 秒调一次，只有失败才记一行，避免刷屏。
-    (void)RPVRunRootHelperEx(helperPath, args, YES);
-}
-
-/// 首次触发用**软唤醒**。
-///
-/// ⚠️ v1.1.183 必须同步改这里：在此之前 kickstart 是个空操作（见上），
-/// 所以「首次触发用 -k」写了也没真的杀过谁。现在 kickstart 真的生效了，
-/// 若仍沿用 -k，每次安装/删除都会先杀掉一个可能正在干活的 daemon —— 那正是
-/// v1.1.180 修掉的那类事故，只是换个位置重演。
-///
-/// 软唤醒足够覆盖全部情形：
-///   · daemon 已死 → launchd 拉起新实例；
-///   · daemon 活着且空闲 → kickstart 不重启它，紧随其后的 notify_post 立刻唤醒回调；
-///   · daemon 活着且在忙 → 不打扰它，它的 5 秒轮询兜底一定会捞到这次请求。
-/// 只有「等满 30 秒仍无结果」才升级为强制重启（那时 daemon 基本可判定为卡死）。
-static void RPVKickstartProfileDaemon(void) { RPVKickstartProfileDaemonEx(NO); }
-
-/// v1.1.183：超时时把盘上的真实状态打出来。
-/// 「root 侧未响应」这句话本身不含任何信息，用户报障后只能靠猜。
-/// 这里把三件能一锤定音的事实记进日志：
-///   · 请求文件还在不在 —— 还在＝daemon 压根没被唤醒（唤醒链路问题）；
-///     已不在＝daemon 读走了却没回结果（daemon 内部或被中途杀掉）。
-///   · 清单快照的时间戳 —— 是否在本次操作期间被刷新过。
-///   · daemon 二进制与 plist 是否真的装在越狱根下（排除装包不完整）。
-static void RPVLogProfileDaemonTimeoutDiagnostics(NSString *stage) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSMutableArray<NSString *> *lines = [NSMutableArray array];
-
-    NSArray<NSString *> *watched = @[
-        @"/var/mobile/Library/Resign/profile-to-install.mobileprovision",
-        @"/var/mobile/Library/Resign/profile-delete-request",
-        @"/var/mobile/Library/Resign/profile-cleanup-request",
-        @"/var/mobile/Library/Resign/profile-manage-result",
-        @"/var/mobile/Library/Resign/profile-install-result",
-        @"/var/mobile/Library/Resign/profiles-inventory.plist",
-    ];
-    for (NSString *p in watched) {
-        NSDictionary *attrs = [fm attributesOfItemAtPath:p error:nil];
-        if (attrs) {
-            [lines addObject:[NSString stringWithFormat:@"  %@ 存在 (%llu 字节, 修改于 %@)",
-                              p.lastPathComponent,
-                              (unsigned long long)[attrs fileSize],
-                              [attrs fileModificationDate]]];
-        } else {
-            [lines addObject:[NSString stringWithFormat:@"  %@ 不存在", p.lastPathComponent]];
-        }
-    }
-
-    NSString *jb = RPVResolvedRootHideRoot();
-    NSString *root = jb.length ? jb : ([fm fileExistsAtPath:@"/var/jb"] ? @"/var/jb" : @"/");
-    NSString *daemonBin = [root stringByAppendingPathComponent:@"usr/libexec/repro-profiledaemon"];
-    NSString *daemonPlist = [root stringByAppendingPathComponent:
-                             @"Library/LaunchDaemons/cn.analy.resign.profiledaemon.plist"];
-    [lines addObject:[NSString stringWithFormat:@"  daemon 二进制 %@: %@",
-                      [fm isExecutableFileAtPath:daemonBin] ? @"就位" : @"缺失", daemonBin]];
-    [lines addObject:[NSString stringWithFormat:@"  daemon plist %@: %@",
-                      [fm fileExistsAtPath:daemonPlist] ? @"就位" : @"缺失", daemonPlist]];
-    [lines addObject:[NSString stringWithFormat:@"  repro-helper: %@",
-                      RPVResolvedRootHelperPath() ?: @"未找到"]];
-
-    RPVDiagnostic(RPVDiagError, @"profiledaemon",
-                  @"【%@ 超时诊断】\n%@", stage, [lines componentsJoinedByString:@"\n"]);
-}
-
-static BOOL RPVTriggerProfileDaemon(NSString *profilePath) {
-    if (profilePath.length == 0) return NO;
-
-    static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
-    static NSString *const kProfileData = @"/var/mobile/Library/Resign/profile-to-install.mobileprovision";
-    static NSString *const kResultPath  = @"/var/mobile/Library/Resign/profile-install-result";
-
-    // 确保共享目录存在（App 是 mobile，/var/mobile 下真实可读写）。
-    [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
-
-    // 把描述文件数据写到真实共享路径（daemon 在真实上下文读得到）。
-    NSData *profileData = [NSData dataWithContentsOfFile:profilePath];
-    if (profileData.length == 0) {
-        RPVDiagnostic(RPVDiagError, @"profiledaemon", @"读取描述文件失败: %@", profilePath);
-        return NO;
-    }
-    NSError *writeErr = nil;
-    if (![profileData writeToFile:kProfileData options:NSDataWritingAtomic error:&writeErr]) {
-        RPVDiagnostic(RPVDiagError, @"profiledaemon", @"写共享描述文件失败: %@", writeErr);
-        return NO;
-    }
-
-    [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
-
-    // v1.1.170：profiledaemon 已去 KeepAlive（iOS 17 短命化），不再常驻。
-    // v1.1.171：kickstart 只是加速，真正保底的是 plist 里的 notifyd LaunchEvents。
-    RPVKickstartProfileDaemon();
-
-    // 发 notify 信号
-    uint32_t status = notify_post("cn.analy.resign.profile-install-request");
-    if (status != NOTIFY_STATUS_OK) {
-        RPVDiagnostic(RPVDiagError, @"profiledaemon", @"notify_post 失败: 0x%x", status);
-        return NO;
-    }
-    RPVDiagnostic(RPVDiagInfo, @"profiledaemon", @"已触发 profiledaemon (notify 已发)，等待结果...");
-
-    // 轮询结果文件（最多等 60 秒）。
-    // v1.1.171：daemon 启动时会先做一次全量清理（解析目录内每个 .mobileprovision，
-    // 真机上曾有 163 个文件），首次唤醒可能十几秒才轮到安装，15 秒明显不够。
-    // v1.1.179：等待期间每 5 秒补发一次唤醒，防止请求恰好投在 daemon「即将空闲退出」
-    // 的窗口里被吞掉（daemon 侧读到请求即原子消费，重发唤醒不会重复安装）。
-    // v1.1.181：前 30s 仅软唤醒（绝不让 -k 误杀正在装的 daemon）；
-    // 满 30s 仍无结果，说明 daemon 大概率已死 / 未被 launchctl 拉起，
-    // 此时强制重启是安全的（dead→restart，不会中断任何进行中的工作），
-    // 仅执行一次兜底，避免反复杀掉刚拉起、正在扫描的实例。
-    BOOL forceRestarted = NO;
-    for (int i = 0; i < 600; i++) {
-        usleep(100000); // 100ms
-        if (i > 0 && i % 50 == 0) {
-            BOOL force = NO;
-            if (!forceRestarted && i >= 300) {
-                force = YES;
-                forceRestarted = YES;
-            }
-            RPVKickstartProfileDaemonEx(force);
-            notify_post("cn.analy.resign.profile-install-request");
-            if (force) {
-                RPVDiagnostic(RPVDiagInfo, @"profiledaemon",
-                              @"软唤醒 30s 无结果，升级为强制重启 daemon（仅一次兜底）");
-            }
-        }
-        NSString *result = [NSString stringWithContentsOfFile:kResultPath
-                                                       encoding:NSUTF8StringEncoding
-                                                          error:nil];
-        if (result.length > 0) {
-            result = [result stringByTrimmingCharactersInSet:
-                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            BOOL ok = [result hasPrefix:@"OK"];
-            RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError,
-                          @"profiledaemon",
-                          @"repro-profiledaemon 结果: %@ (耗时 %.1fs)",
-                          result, (i + 1) * 0.1);
-            [[NSFileManager defaultManager] removeItemAtPath:kResultPath error:nil];
-            return ok;
-        }
-    }
-
-    RPVDiagnostic(RPVDiagError, @"profiledaemon",
-                  @"repro-profiledaemon 60 秒内未返回结果（daemon 可能未运行或未加载）");
-    RPVLogProfileDaemonTimeoutDiagnostics(@"描述文件安装");
-    return NO;
-}
+/// 🔀 v2.1.29：RootHide 专属的 repro-profiledaemon IPC 通道（写共享请求文件 +
+///    notify_post + kickstart + 轮询结果）已整体移除 —— 该守护进程只装在 roothide 包里，
+///    rootless/rootful 没有 namespace 隔离，helper 同步落盘即可，无需绕 daemon。
+///    相关实现保留在独立的 `roothide` 分支。
 
 #pragma mark - 系统描述文件管理（v1.1.171）
 
-static NSString *const kRPVProfileIpcDir        = @"/var/mobile/Library/Resign";
 static NSString *const kRPVInventoryPath        = @"/var/mobile/Library/Resign/profiles-inventory.plist";
-static NSString *const kRPVManageResultPath     = @"/var/mobile/Library/Resign/profile-manage-result";
-static NSString *const kRPVManageNotifyName     = @"cn.analy.resign.profile-manage-request";
 // 🔴 v1.1.185：删除/清理功能整体移除（MC 注销在 RootHide 下 SIGSEGV 崩溃，
 // @try 接不住信号 → daemon 崩溃 → App 等 60s「root 侧未响应」）。
 // 不再有 kRPVDeleteRequestPath / kRPVCleanupRequestPath，管理请求只剩「刷新清单」。
@@ -1212,68 +966,12 @@ static NSString *RPVRunProfileManageViaHelper(void) {
     return invOK ? @"" : nil;
 }
 
-/// 投递一次「刷新清单」请求并等待 daemon 处理完成。
-/// 🔴 v1.1.185：删除/清理已整体移除，本函数只剩刷新清单这一个用途。
-/// 返回 @"" = 清单已更新；超时返回 nil。
+/// 刷新系统描述文件清单。
+/// 🔀 v2.1.29：RootHide 的「绕 rootfs LaunchDaemon」分支已移除，
+///    rootless/rootful 一律同步走 setuid root 的 repro-helper（更快、无超时窗口）。
+/// 返回 @"" = 清单已更新；失败返回 nil。
 static NSString *RPVRunProfileManageRequest(void) {
-    // 🔴 只有 RootHide 才需要绕 daemon：那里 App 进程在 jbroot namespace 内，
-    // 直接（或经 helper）访问 /var/Managed Preferences/mobile 会被 overlay 重定向到假目录，
-    // 必须由 rootfs LaunchDaemon 代劳。rootless/rootful 没有这层隔离，helper 同步做完更快。
-    if (!RPVIsRootHideEnvironment()) {
-        return RPVRunProfileManageViaHelper();
-    }
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm createDirectoryAtPath:kRPVProfileIpcDir
-  withIntermediateDirectories:YES attributes:nil error:nil];
-
-    // 记录清单原有时间戳，用于判断 daemon 是否已经刷新过
-    NSDate *beforeStamp = [[fm attributesOfItemAtPath:kRPVInventoryPath error:nil]
-                           fileModificationDate];
-
-    [fm removeItemAtPath:kRPVManageResultPath error:nil];
-
-    RPVKickstartProfileDaemon();
-    notify_post(kRPVManageNotifyName.UTF8String);
-
-    // 最多等 60 秒：daemon 启动时要解析目录内每个描述文件，首轮可能十几秒。
-    //
-    // 🔴 v1.1.179：等待期间每 5 秒补发一次唤醒。
-    // daemon 是短命进程（空闲 60 秒自退）。请求若恰好投在它「马上要退」的窗口里，
-    // notify 会被那个正在死掉的进程收走，launchd 认为事件已被消费、不再拉起新实例，
-    // 请求就悬在盘上没人处理，App 只能干等满 60 秒报「超时未返回」。
-    // 补发唤醒只是重新发信号 / kickstart，**不重写请求文件**。
-    // v1.1.181：前 30s 仅软唤醒（绝不让 -k 误杀正在干活的 daemon）；
-    // 满 30s 仍无结果，说明 daemon 大概率已死 / 未被 launchctl 拉起，
-    // 此时强制重启是安全的（dead→restart，不会中断任何进行中的工作），
-    // 仅执行一次兜底，避免反复杀掉刚拉起、正在扫描的实例。
-    BOOL forceRestarted = NO;
-    for (int i = 0; i < 600; i++) {
-        usleep(100000); // 100ms
-
-        if (i > 0 && i % 50 == 0) {
-            BOOL force = NO;
-            if (!forceRestarted && i >= 300) {
-                force = YES;
-                forceRestarted = YES;
-            }
-            RPVKickstartProfileDaemonEx(force);
-            notify_post(kRPVManageNotifyName.UTF8String);
-            if (force) {
-                RPVDiagnostic(RPVDiagInfo, @"profiledaemon",
-                              @"软唤醒 30s 无结果，升级为强制重启 daemon（仅一次兜底）");
-            }
-        }
-
-        NSDate *now = [[fm attributesOfItemAtPath:kRPVInventoryPath error:nil]
-                       fileModificationDate];
-        if (now && (!beforeStamp || [now compare:beforeStamp] == NSOrderedDescending)) {
-            return @"";
-        }
-    }
-
-    RPVLogProfileDaemonTimeoutDiagnostics(@"清单刷新");
-    return nil;
+    return RPVRunProfileManageViaHelper();
 }
 
 + (NSArray<NSDictionary<NSString *, id> *> *)managedProfilesInventory {
@@ -1320,23 +1018,14 @@ static NSString *RPVRunProfileManageRequest(void) {
         return RPVRunRootHelper(helperPath, @[@"copy", srcPath, dstPath]);
     }];
 
-    // 2) 描述文件安装：
-    //    RootHide：/var/Managed Preferences/mobile 需要 root 才能写，App 是 uid 501
-    //             且受沙盒约束，直接写不可靠 → 交给 LaunchDaemon（repro-profiledaemon），
-    //             由 launchd 以 root 拉起，负责落盘 + MC 注册 + 通知 profiled 重扫 +
-    //             按 App ID 去重清理。App 经 notify IPC 触发（RPVTriggerProfileDaemon）。
-    //    非 RootHide（rootless/rootful）：对齐 test2，纯 App MC 即可（无 namespace 隔离）。
-    if (RPVIsRootHideEnvironment()) {
-        [RPVApplicationSigning setDaemonProfileInstallHandler:^BOOL(NSString *profilePath) {
-            if (profilePath.length == 0) return NO;
-            return RPVTriggerProfileDaemon(profilePath);
-        }];
-    } else {
-        [RPVApplicationSigning setDaemonProfileInstallHandler:^BOOL(NSString *profilePath) {
-            if (profilePath.length == 0) return NO;
-            return RPVRunRootHelper(helperPath, @[@"install-profile", profilePath]);
-        }];
-    }
+    // 2) 描述文件安装（rootless/rootful）：没有 namespace 隔离，
+    //    /var/Managed Preferences/mobile 只是「需要 root 才能写」而已，
+    //    交给 setuid root 的 repro-helper 同步落盘即可（install-profile）。
+    //    🔀 v2.1.29：RootHide 的 repro-profiledaemon 分支已随 roothide 迁到独立分支。
+    [RPVApplicationSigning setDaemonProfileInstallHandler:^BOOL(NSString *profilePath) {
+        if (profilePath.length == 0) return NO;
+        return RPVRunRootHelper(helperPath, @[@"install-profile", profilePath]);
+    }];
 }
 
 - (void)fetchAppIDsWithCompletion:(void (^)(NSArray<RPVRegisteredAppID *> *_Nullable, NSError *_Nullable))completion {

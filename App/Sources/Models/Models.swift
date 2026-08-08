@@ -113,12 +113,11 @@ struct DeveloperTeam: Identifiable, Hashable {
 // MARK: - 越狱类型
 
 enum JailbreakType: String, CaseIterable {
-    case dopamine, roothide, rootful, unknown
+    case dopamine, rootful, unknown
 
     var displayName: String {
         switch self {
         case .dopamine: return "Dopamine (rootless)"
-        case .roothide: return "RootHide"
         case .rootful: return "Rootful"
         case .unknown: return "未识别"
         }

@@ -8,9 +8,6 @@
 
 #import "RPVIpaBundleApplication.h"
 
-// 声明 App 侧的 RootHide 环境探测（定义在 RPVBridge.m，App 二进制内可链接）。
-extern BOOL RPVIsRootHideEnvironment(void);
-
 #define IS_IPAD (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
 
 @interface UIImage (Private)
@@ -100,7 +97,6 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
         [url getResourceValue:&isUb forKey:NSURLIsUbiquitousItemKey error:nil];
         if (isUb.boolValue) {
             // 触发 iCloud 下载，并**等待下载完成**再拷贝，否则下方 copyItemAtURL: 可能拷到占位符。
-            // （RootHide 下 App 在 overlay namespace，isUb 一般为 NO，iCloud 导入不受支持。）
             if ([[NSFileManager defaultManager] respondsToSelector:@selector(startDownloadingUbiquitousItemAtURL:error:)]) {
                 NSError *dlErr = nil;
                 [[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&dlErr];
@@ -112,11 +108,9 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
     NSString *tmp = NSTemporaryDirectory();
     if (!tmp) tmp = @"/tmp";
 
-    // RootHide：App 的 NSTemporaryDirectory() 落在 jbroot overlay namespace，
-    // 直接拷贝到共享路径 /var/mobile/Library/Resign/imports/<uuid>（App 可读写，
-    // 正是 profiledaemon 用的 IPC 目录），避免路径在 namespace 间对不上。
-    BOOL isRootHide = RPVIsRootHideEnvironment();
-    NSString *baseDir = isRootHide ? @"/var/mobile/Library/Resign/imports" : tmp;
+    // 🔀 v2.1.29：原 RootHide 专用的 /var/mobile/Library/Resign/imports 分支已移除
+    //    （那是为绕开 jbroot overlay namespace 的路径错配，rootless/rootful 不存在该问题）。
+    NSString *baseDir = tmp;
 
     // Namespace the copy so concurrent imports don't clash, but keep the original
     // filename so the .ipa extension (checked downstream) is preserved.
@@ -148,8 +142,7 @@ static void RPVWaitForUbiquitousDownload(NSURL *url, NSTimeInterval timeout) {
     }
 
     // Final fallback: hand the raw path to the daemon copy handler.
-    // v1.1.157：repro-importdaemon 已删除，拷贝兜底统一为 repro-helper（setuid root）
-    // 执行 copy；RootHide 下 iCloud 真实路径在 overlay 外读不到，导入会失败（场景已废弃）。
+    // v1.1.157：repro-importdaemon 已删除，拷贝兜底统一为 repro-helper（setuid root）执行 copy。
     if (!ok && _rpvDaemonFileCopyHandler && [url isFileURL] && [url path].length > 0) {
         ok = _rpvDaemonFileCopyHandler([url path], dest);
     }

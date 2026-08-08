@@ -53,7 +53,7 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 /// 运行环境体检快照（「状态」页展示用）。
 /// 全部为进程内可直接探测的事实，不依赖任何常驻服务。
 @interface RPVEnvironmentInfo : NSObject
-/// 越狱类型标识：dopamine / roothide / rootful / unknown
+/// 越狱类型标识：dopamine / rootful / unknown（main 分支只出 rootless+rootful，不再含 roothide）
 @property (nonatomic, copy) NSString *jailbreakKind;
 /// 解析出的越狱根目录（rootful 为 "/"，未越狱为 nil）
 @property (nonatomic, copy, nullable) NSString *jailbreakRoot;
@@ -261,7 +261,7 @@ typedef NS_ENUM(NSInteger, RPVLoginOutcome) {
 
 #pragma mark 系统描述文件管理（v1.1.171）
 
-/// 读取 repro-profiledaemon 导出的系统描述文件清单快照。
+/// 读取 repro-helper 导出的系统描述文件清单快照。
 /// 清单来自真实的 /var/Managed Preferences/mobile（App 是 uid 501 且受沙盒约束，
 /// 不能直接列举该目录，统一由 root daemon 导出 plist）。
 /// 每项键：fileName / appId / displayName / uuid / sizeBytes /
