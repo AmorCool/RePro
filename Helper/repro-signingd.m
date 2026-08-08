@@ -248,6 +248,17 @@ static void s_open_log(void);
 static void s_log(NSString *fmt, ...);
 static void *s_sbsHandle(void);
 
+/// daemon 越狱形态（前向声明用，定义见 s_exec_env_report 附近）
+typedef NS_ENUM(NSInteger, RPVJbFlavor) {
+    RPVJbFlavorRootful  = 0,
+    RPVJbFlavorRootless = 1,
+    RPVJbFlavorRootHide = 2,
+};
+static BOOL s_path_exists(NSString *p);
+static RPVJbFlavor s_jb_flavor(void);
+static NSString *s_flavor_name(RPVJbFlavor f);
+static NSString *s_exec_env_report(void);
+
 /// 检查日志文件是否仍然有效（被 rm 后 nlink 归零，写入会落到孤儿 inode）
 ///
 /// ⚠️ v1.1.63 致命 BUG 修复：
@@ -368,11 +379,6 @@ static NSString *s_read_self_entitlements_xml(void) {
 ///   /.roothide 存在           → RootHide（随机 jbroot + namespace 隔离）
 ///   /var/jb 存在（bind mount）→ Rootless（Dopamine/TrollStore，无 namespace 隔离）
 ///   其它                       → Rootful（标准根路径）
-typedef NS_ENUM(NSInteger, RPVJbFlavor) {
-    RPVJbFlavorRootful  = 0,
-    RPVJbFlavorRootless = 1,
-    RPVJbFlavorRootHide = 2,
-};
 
 static BOOL s_path_exists(NSString *p) {
     return [[NSFileManager defaultManager] fileExistsAtPath:p];
