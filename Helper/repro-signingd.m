@@ -70,6 +70,17 @@
 - (BOOL)installApplication:(NSURL *)arg1 withOptions:(NSDictionary *)arg2 error:(NSError **)arg3;
 @end
 
+// ─── 越狱形态检测（前向声明：崩溃循环诊断在文件前部即调用，须先声明） ───
+typedef NS_ENUM(NSInteger, RPVJbFlavor) {
+    RPVJbFlavorRootful  = 0,
+    RPVJbFlavorRootless = 1,
+    RPVJbFlavorRootHide = 2,
+};
+static BOOL s_path_exists(NSString *p);
+static RPVJbFlavor s_jb_flavor(void);
+static NSString *s_flavor_name(RPVJbFlavor f);
+static NSString *s_exec_env_report(void);
+
 static NSString *const kIpcDir      = @"/var/mobile/Library/Resign";
 static NSString *const kConfigPath  = @"/var/mobile/Library/Resign/signingd-config.plist";
 static NSString *const kTriggerPath = @"/var/mobile/Library/Resign/auto-resign-trigger";
@@ -247,17 +258,6 @@ static NSString *gLastResignStatus  = @"";    // 上次续签状态
 static void s_open_log(void);
 static void s_log(NSString *fmt, ...);
 static void *s_sbsHandle(void);
-
-/// daemon 越狱形态（前向声明用，定义见 s_exec_env_report 附近）
-typedef NS_ENUM(NSInteger, RPVJbFlavor) {
-    RPVJbFlavorRootful  = 0,
-    RPVJbFlavorRootless = 1,
-    RPVJbFlavorRootHide = 2,
-};
-static BOOL s_path_exists(NSString *p);
-static RPVJbFlavor s_jb_flavor(void);
-static NSString *s_flavor_name(RPVJbFlavor f);
-static NSString *s_exec_env_report(void);
 
 /// 检查日志文件是否仍然有效（被 rm 后 nlink 归零，写入会落到孤儿 inode）
 ///
