@@ -603,42 +603,134 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 // 可定位的具体码（如退出码 13=createConn 返回空 / -2=未找到助手 / <0=启动失败）。
 // RPVRunRootHelperCore 在本文件下方定义，这里前向声明以便此处调用。
 static int RPVRunRootHelperCore(NSString *helperPath, NSArray<NSString *> *arguments, BOOL quiet);
+// v2.1.26：这两个也在本文件下方定义，补上前向声明（原来靠编译器容忍隐式声明，属隐患）。
+static NSString *RPVResolvedRootHelperPath(void);
+BOOL RPVIsRootHideEnvironment(void);
 
 #pragma mark - 越狱联网修复（国行蜂窝/WiFi 权限重置，手动入口）
 
 /// 设置里「修复当前插件联网」按钮调用：同步拉起 repro-helper fix-cellular（CoreTelephony 路径），
 /// 只把当前插件（ReSign）自身的蜂窝/WiFi 数据策略重置为「始终允许」，刷新偏好缓存（killall cfprefsd）生效。
 /// 仅手动触发，无 daemon 自动循环。
+/// 🔴 v2.1.26：rootless/rootful 改走「守护进程代跑」。
+///
+/// 为什么不能像以前那样 App 自己 posix_spawn helper 干这件事：
+///   CoreTelephony 私有 API 必须在**无沙箱**上下文里调 —— 沙箱下 CommCenter XPC 被拒，
+///   _CTServerConnectionCreateOnTargetQueue 返回空（helper 退出码 13）。
+///   而 App 是沙箱进程，它 spawn 出来的 helper 一定继承 App 的沙箱。
+///   v2.1.25 曾试图给 helper 加 no-sandbox entitlement 来摆脱沙箱，结果更糟：
+///   iOS 根本不允许沙箱进程 spawn 一个声明 no-sandbox 的二进制 → posix_spawn 直接失败
+///   →「repro-helper 启动失败」，连带 install-profile / profiles-inventory 全挂（重签也失败）。
+///
+/// 现在的链路（每一环都在真机 iPhone XS / iOS 18.0 / Dopamine 上验证过）：
+///   App 写请求文件 → notify_post（唤醒已在跑的实例）
+///                  → helper kickstart-signingd（没在跑就让 launchd 拉起来）
+///   → repro-signingd 是 launchd 系统守护，uid 0 且天然无沙箱
+///   → 它 spawn `repro-helper fix-cellular <bid>`（等价于 SSH root 手动执行，实测 exit=0）
+///   → 写结果文件 → App 这边轮询读走。
+///
+/// RootHide 形态不走这条路：它的 App entitlements 带 platform-application + no-container，
+/// 直接 spawn 一直是好的，保持原样不动。
 - (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
+        // （不再枚举批量处理，避免对系统守护调 CoreTelephony 私有 API 污染 CT 状态）。
+        NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"cn.analy.resign";
         NSString *helperPath = RPVResolvedRootHelperPath();
-        int code;
-        if (helperPath.length == 0) {
-            code = -2; // 未找到助手
-        } else {
-            // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
-            // （不再枚举批量处理，避免对系统守护调 CoreTelephony 私有 API 污染 CT 状态）。
-            NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"cn.analy.resign";
-            code = RPVRunRootHelperCore(helperPath, @[@"fix-cellular", selfBid], NO);
-        }
 
-        NSString *message;
-        if (code == 0) {
-            message = @"已修复当前插件联网";
-        } else if (code == -2) {
-            message = @"未找到 repro-helper（root 助手），无法执行修复";
-        } else if (code < 0) {
-            message = [NSString stringWithFormat:@"修复失败：无法启动助手（错误 %d）", -code];
+        BOOL success = NO;
+        NSString *message = nil;
+
+        if (RPVIsRootHideEnvironment()) {
+            // ── RootHide：保持 v2.1.24 起一直可用的直接 spawn 路径，一个字都不改 ──
+            int code = (helperPath.length == 0)
+                     ? -2
+                     : RPVRunRootHelperCore(helperPath, @[@"fix-cellular", selfBid], NO);
+            success = (code == 0);
+            if (code == 0)        message = @"已修复当前插件联网";
+            else if (code == -2)  message = @"未找到 repro-helper（root 助手），无法执行修复";
+            else if (code < 0)    message = [NSString stringWithFormat:@"修复失败：无法启动助手（错误 %d）", -code];
+            else                  message = [NSString stringWithFormat:@"修复失败（助手退出码 %d）", code];
         } else {
-            message = [NSString stringWithFormat:@"修复失败（助手退出码 %d）", code];
+            message = [self _fixCellularViaSigningd:selfBid
+                                         helperPath:helperPath
+                                            success:&success];
         }
 
         if (completion) {
+            NSString *finalMessage = message;
+            BOOL finalSuccess = success;
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(code == 0, message);
+                completion(finalSuccess, finalMessage);
             });
         }
     });
+}
+
+/// rootless/rootful：请求 repro-signingd 在无沙箱 root 上下文里代跑 fix-cellular。
+/// 同步阻塞（调用方已在后台队列），最长等 kFixCellWaitSeconds 秒。
+- (NSString *)_fixCellularViaSigningd:(NSString *)bundleID
+                           helperPath:(NSString *)helperPath
+                              success:(BOOL *)outSuccess {
+    static NSString *const kIpcDir     = @"/var/mobile/Library/Resign";
+    static NSString *const kReqPath    = @"/var/mobile/Library/Resign/fix-cellular-request.plist";
+    static NSString *const kResPath    = @"/var/mobile/Library/Resign/fix-cellular-result.plist";
+    const NSTimeInterval kFixCellWaitSeconds = 25.0;
+
+    if (outSuccess) *outSuccess = NO;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    // 1) 清掉上一次的结果，避免读到旧值当成本次成功
+    [fm removeItemAtPath:kResPath error:nil];
+
+    // 2) 写请求（requestId 用来确认读到的结果确实是本次的）
+    NSString *requestId = [[NSUUID UUID] UUIDString];
+    NSDictionary *req = @{ @"requestId": requestId,
+                           @"bundleID" : bundleID ?: @"cn.analy.resign",
+                           @"timestamp": @([[NSDate date] timeIntervalSince1970]) };
+    if (![req writeToFile:kReqPath atomically:YES]) {
+        RPVDiagnostic(RPVDiagError, @"联网修复", @"写请求文件失败: %@", kReqPath);
+        return @"修复失败：无法写入请求文件（共享目录不可写）";
+    }
+
+    // 3) 唤醒 daemon —— 两条腿走路，谁先到算谁：
+    //    · notify：daemon 已在跑（例如正等续签完成）时即时响应；
+    //    · kickstart：daemon 没在跑时让 launchd 拉起它（App 是 mobile，kickstart 系统域
+    //      会被拒，所以必须借 setuid root 的 helper 来发；不带 -k，绝不打断正在干活的实例）。
+    notify_post("cn.analy.resign.fix-cellular-request");
+    if (helperPath.length > 0) {
+        int kick = RPVRunRootHelperCore(helperPath, @[@"kickstart-signingd"], YES);
+        if (kick != 0) {
+            RPVDiagnostic(RPVDiagWarning, @"联网修复",
+                          @"kickstart-signingd 返回 %d（若 daemon 已在运行属正常，继续等结果）", kick);
+        }
+    } else {
+        RPVDiagnostic(RPVDiagWarning, @"联网修复", @"未找到 repro-helper，只能靠 notify 唤醒 daemon");
+    }
+
+    // 4) 轮询结果
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:kFixCellWaitSeconds];
+    while ([deadline timeIntervalSinceNow] > 0) {
+        NSDictionary *res = [NSDictionary dictionaryWithContentsOfFile:kResPath];
+        if (res && [(res[@"requestId"] ?: @"") isEqualToString:requestId]) {
+            BOOL ok = [res[@"ok"] boolValue];
+            int code = [res[@"exitCode"] intValue];
+            NSString *msg = res[@"message"] ?: (ok ? @"已修复当前插件联网" : @"修复失败");
+            RPVDiagnostic(ok ? RPVDiagInfo : RPVDiagError, @"联网修复",
+                          @"daemon 回报 exit=%d：%@\n%@", code, msg, res[@"helperOutput"] ?: @"");
+            if (outSuccess) *outSuccess = ok;
+            return msg;
+        }
+        usleep(300 * 1000);   // 0.3s
+    }
+
+    // 5) 超时：把请求撤掉，免得 daemon 下一次被 launchd 拉起时才补跑，用户已经看不到结果了
+    [fm removeItemAtPath:kReqPath error:nil];
+    RPVDiagnostic(RPVDiagError, @"联网修复",
+                  @"等待 repro-signingd 回报超时（%.0f 秒）。请确认守护进程已加载："
+                   "launchctl print system/cn.analy.resign.signingd", kFixCellWaitSeconds);
+    return @"修复失败：后台守护进程未在 25 秒内响应（可重启设备后重试）";
 }
 
 #pragma mark - RPVApplicationSigningProtocol

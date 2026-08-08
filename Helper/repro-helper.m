@@ -390,6 +390,7 @@ static void RPVHelperPrintUsage(void) {
             "  repro-helper kickstart-lsd\n"
             "  repro-helper rebuild-icon-cache [App 包路径]\n"
             "  repro-helper kickstart-profiledaemon [-k]\n"
+            "  repro-helper kickstart-signingd\n"
             "  repro-helper uicache <uicache 原生参数…>\n");
 }
 
@@ -810,6 +811,47 @@ static int RPVHelperKickstartProfileDaemon(BOOL force) {
     return 1;
 }
 
+/// 🔴 v2.1.26：以 root 身份唤醒 repro-signingd（续签守护进程）。
+///
+/// 用途：App 里点「修复当前插件联网」时，需要一个**无沙箱的 root 上下文**去调
+/// CoreTelephony 私有 API。App 自己是沙箱进程，直接 posix_spawn 一个带
+/// no-sandbox 的二进制会被内核拒绝（v2.1.25 实锤回归，详见 entitlements-helper.plist 注释）。
+/// 因此改成：App 写请求文件 → 让 helper（setuid root）kickstart signingd →
+/// signingd 是 launchd 系统守护，天然无沙箱、uid 0 → 由它 spawn helper fix-cellular
+/// → 等价于 SSH root 手动执行（真机实测 exit=0）。
+///
+/// 🔴 绝不带 -k：-k = 先杀再拉。若此刻 signingd 正在续签，-k 会把它打断
+/// （v1.1.179 血泪教训：循环 kickstart -k 每 5 秒杀一次正在干活的 daemon）。
+/// 软唤醒即可——daemon 是短命进程，没在跑就拉起，在跑就靠 notify 通道即时响应。
+static int RPVHelperKickstartSigningd(void) {
+    NSString *launchctl = RPVHelperResolveTool(@"launchctl");
+    if (launchctl.length == 0) {
+        RPVHelperLog(@"kickstart-signingd: 找不到 launchctl");
+        return 2;
+    }
+    const char *lc = [launchctl fileSystemRepresentation];
+
+    // postinst 用 `bootstrap system` 加载；真机 `launchctl print` 曾解析到 user/501，
+    // 两个域都试一次（与 kickstart-profiledaemon 同策略）。
+    const char *domains[] = { "system/cn.analy.resign.signingd",
+                              "user/501/cn.analy.resign.signingd" };
+    for (int d = 0; d < 2; d++) {
+        const char *args[] = { lc, "kickstart", domains[d], NULL };
+        pid_t pid = 0;
+        if (posix_spawn(&pid, lc, NULL, NULL, (char *const *)args, NULL) != 0) {
+            continue;
+        }
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            RPVHelperLog(@"kickstart signingd 成功（%s）", domains[d]);
+            return 0;
+        }
+    }
+    RPVHelperLog(@"kickstart signingd 失败（system 与 user/501 两个域均未成功）");
+    return 1;
+}
+
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         // setuid root 二进制启动时 euid=0 但 ruid 还是调用方（mobile）。
@@ -925,6 +967,11 @@ int main(int argc, char *argv[]) {
         if ([command isEqualToString:@"kickstart-profiledaemon"]) {
             BOOL force = (argc >= 3 && strcmp(argv[2], "-k") == 0);
             return RPVHelperKickstartProfileDaemon(force);
+        }
+
+        // 🔴 v2.1.26：以 root 唤醒 signingd，让它在「无沙箱 root 上下文」里代跑 fix-cellular。
+        if ([command isEqualToString:@"kickstart-signingd"]) {
+            return RPVHelperKickstartSigningd();
         }
 
         RPVHelperLog(@"未知命令: %@", command);

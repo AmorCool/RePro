@@ -17,13 +17,18 @@
     <key>com.apple.private.security.no-container</key>
     <true/>
 
-    <!-- 🔴 v2.1.25：必须 no-sandbox，否则从 App（沙箱进程）posix_spawn 拉起时
-         helper 会继承 App 的沙箱，CommCenter XPC 被拒 → _CTServerConnectionCreateOnTargetQueue
-         返回空（fix-cellular 退出码 13）→ App 报「修复失败」。手动 su mobile 跑之所以成功，
-         正是因为 shell 上下文不继承沙箱。roothide 版早就带此 key，rootless/rootful 漏了。
-         加回后 helper 以无沙箱 root 运行，与手动验证一致；其它 helper 功能本就在沙箱下可用，不受影响。 -->
-    <key>com.apple.private.security.no-sandbox</key>
-    <true/>
+    <!-- 🔴🔴 v2.1.26：这里**绝对不能**加 com.apple.private.security.no-sandbox！
+         v2.1.25 曾误加，真机（iPhone XS / iOS 18.0 / Dopamine rootless）实锤回归：
+           · App 是沙箱进程，iOS 不允许沙箱进程 posix_spawn 一个声明 no-sandbox 的二进制
+             → posix_spawn 直接返回非 0 → App 侧「repro-helper 启动失败」。
+           · helper 是 install-profile / profiles-inventory / 工具菜单的唯一通道，
+             于是**连重签一起挂掉**（用户主诉：联网修复失败 + 重签也失败）。
+         roothide 包之所以能带 no-sandbox，是因为它的 App entitlements 里有
+         platform-application + no-container（见 entitlements-roothide.plist:62/65），
+         rootless/rootful 的 App entitlements 没有这两项 → 形态不同，不能照抄。
+         正确做法：helper 保持「可被沙箱 App 拉起」，需要无沙箱的 fix-cellular
+         改由 launchd 系统守护 repro-signingd（root、天然无沙箱）代拉 helper 执行
+         —— 与 SSH root 手动跑 helper 完全等价（真机实测 exit=0）。 -->
 
     <!-- posix_spawn 调 /usr/bin/killall -HUP profiled -->
     <key>com.apple.private.posix-spawn</key>

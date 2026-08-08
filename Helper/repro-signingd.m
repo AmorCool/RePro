@@ -56,6 +56,9 @@
 #include <pthread.h>   // v1.1.186：超时看门狗独立线程（不依赖主 runloop）
 #include <mach-o/dyld.h>   // v2.1.13：_NSGetExecutablePath 推自身越狱根（TMPDIR 用 jbroot 绝对路径）
 #include <limits.h>        // PATH_MAX
+#include <spawn.h>         // v2.1.26：fix-cellular 由 daemon 代拉 repro-helper（posix_spawn）
+#include <sys/wait.h>      // v2.1.26：waitpid / WEXITSTATUS
+#include <fcntl.h>         // v2.1.26：posix_spawn_file_actions_addopen 的 O_WRONLY/O_CREAT/O_TRUNC
 #import <mach/mach.h>
 #import <Foundation/Foundation.h>
 
@@ -86,6 +89,18 @@ static NSString *const kConfigPath  = @"/var/mobile/Library/Resign/signingd-conf
 static NSString *const kTriggerPath = @"/var/mobile/Library/Resign/auto-resign-trigger";
 static NSString *const kResultPath  = @"/var/mobile/Library/Resign/last-resign-result.plist";
 static NSString *const kPidPath     = @"/var/mobile/Library/Resign/signingd.pid";
+
+// 🔴 v2.1.26：联网修复（fix-cellular）请求/结果通道。
+// 背景：App 是沙箱进程，iOS 不允许沙箱进程 posix_spawn 一个带 no-sandbox 的二进制；
+// 而 CoreTelephony 私有 API 必须在**无沙箱**上下文里调（沙箱下 CommCenter XPC 被拒，
+// _CTServerConnectionCreateOnTargetQueue 返回空 → 退出码 13）。
+// 本 daemon 由 launchd 以 root 拉起、天然无沙箱，正好当这个执行者：
+//   App 写 request → helper(setuid root) kickstart 本 daemon（或 notify 直达在跑的实例）
+//   → daemon spawn `repro-helper fix-cellular <bid>` → 写 result → App 轮询读走。
+static NSString *const kFixCellReqPath = @"/var/mobile/Library/Resign/fix-cellular-request.plist";
+static NSString *const kFixCellResPath = @"/var/mobile/Library/Resign/fix-cellular-result.plist";
+// 请求有效期：超过这个秒数的残留请求直接丢弃，避免开机时补跑一个几天前的老请求
+static const NSTimeInterval kFixCellReqTTL = 180.0;
 // ⚠️ v1.1.69 关键修复：此前此处写成 @"cn.analy.resign"，但 App 真实的
 // CFBundleIdentifier（SpringBoard 注册 ID）= "cn.analy.resign"（见 pbxproj
 // PRODUCT_BUNDLE_IDENTIFIER 与 deb 内 Info.plist）。SBS 用 BundleID 查 App，
@@ -1712,6 +1727,156 @@ static int s_printStatus(void) {
     return 0;
 }
 
+#pragma mark - v2.1.26 联网修复（fix-cellular）代跑
+
+/// 推算自身所在的越狱根（与 main 里 TMPDIR 那段同一套判据）。
+/// rootless=/var/jb，rootful=/，RootHide=随机 jbroot（本功能不走 RootHide，见下）。
+static NSString *s_selfJbRoot(void) {
+    char buf[PATH_MAX] = {0};
+    uint32_t size = (uint32_t)sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        char resolved[PATH_MAX] = {0};
+        const char *use = realpath(buf, resolved) ? resolved : buf;
+        NSString *selfPath = [NSString stringWithUTF8String:use];
+        // .../usr/libexec/repro-signingd → 去掉 repro-signingd/libexec/usr 三级
+        NSString *r = selfPath.stringByDeletingLastPathComponent
+                             .stringByDeletingLastPathComponent
+                             .stringByDeletingLastPathComponent;
+        if (r.length > 0) return r;
+    }
+    return (s_jb_flavor() == RPVJbFlavorRootless) ? @"/var/jb" : @"/";
+}
+
+/// 找到与自己同一个越狱根下的 repro-helper。
+static NSString *s_resolveHelperPath(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *cands = [NSMutableArray array];
+    NSString *root = s_selfJbRoot();
+    if (root.length > 0) {
+        [cands addObject:[root stringByAppendingPathComponent:@"usr/libexec/repro-helper"]];
+    }
+    [cands addObjectsFromArray:@[ @"/var/jb/usr/libexec/repro-helper",
+                                  @"/usr/libexec/repro-helper" ]];
+    for (NSString *p in cands) {
+        if ([fm isExecutableFileAtPath:p]) return p;
+    }
+    return nil;
+}
+
+/// 同步跑一次 `repro-helper fix-cellular <bundleID>`，返回它的真实退出码。
+/// 本 daemon 是 launchd 系统守护（uid 0、无沙箱），子进程继承「无沙箱」上下文，
+/// 与 SSH 里 root 手动执行完全等价（真机 iPhone XS/iOS18.0/Dopamine 实测 exit=0）。
+/// spawn 本身失败返回 -errno，便于和退出码区分。
+static int s_runFixCellularOnce(NSString *bundleID, NSString **outLog) {
+    NSString *helper = s_resolveHelperPath();
+    if (helper.length == 0) {
+        s_log(@"联网修复: 找不到 repro-helper");
+        if (outLog) *outLog = @"找不到 repro-helper";
+        return -2;
+    }
+
+    NSString *logPath = [NSString stringWithFormat:@"%@/fix-cellular-helper.log", kIpcDir];
+
+    const char *argv[] = { [helper fileSystemRepresentation],
+                           "fix-cellular",
+                           [(bundleID ?: kAppBundleID) UTF8String],
+                           NULL };
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO,
+                                     [logPath fileSystemRepresentation],
+                                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&fa, STDOUT_FILENO, STDERR_FILENO);
+
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, [helper fileSystemRepresentation], &fa, NULL,
+                         (char *const *)argv, NULL);
+    posix_spawn_file_actions_destroy(&fa);
+
+    if (rc != 0) {
+        s_log(@"联网修复: posix_spawn 失败 errno=%d（%@）", rc, helper);
+        if (outLog) *outLog = [NSString stringWithFormat:@"posix_spawn 失败 errno=%d", rc];
+        return -rc;
+    }
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    NSString *out = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
+    if (outLog) *outLog = out.length ? out : @"（helper 无输出）";
+
+    s_log(@"联网修复: helper fix-cellular %@ exit=%d", bundleID ?: kAppBundleID, code);
+    return code;
+}
+
+/// 消费一次 App 写来的 fix-cellular 请求；没有待处理请求返回 NO。
+///
+/// 铁律（沿用 profiledaemon 的经验）：
+///   · 先原子 rename 成 .consumed 再干活 —— 防止 daemon 被拉起两次重复执行；
+///   · 消费后**必回结果**（哪怕失败也写 result），否则 App 只能干等到超时。
+static BOOL s_handleFixCellularRequest(NSString *reason) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:kFixCellReqPath]) return NO;
+
+    NSString *consumed = [kFixCellReqPath stringByAppendingPathExtension:@"consumed"];
+    [fm removeItemAtPath:consumed error:nil];
+    NSError *mvErr = nil;
+    if (![fm moveItemAtPath:kFixCellReqPath toPath:consumed error:&mvErr]) {
+        // 另一个实例抢先消费了，本轮什么都不做（正常竞态，不算错误）
+        s_log(@"联网修复: 请求已被其它实例消费（%@）", mvErr.localizedDescription ?: @"-");
+        return NO;
+    }
+
+    NSDictionary *req = [NSDictionary dictionaryWithContentsOfFile:consumed] ?: @{};
+    [fm removeItemAtPath:consumed error:nil];
+
+    NSString *reqId    = req[@"requestId"] ?: @"";
+    NSString *bundleID = req[@"bundleID"]  ?: kAppBundleID;
+    NSTimeInterval ts  = [req[@"timestamp"] doubleValue];
+    NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - ts;
+
+    s_log(@"════ 联网修复请求（来源=%@，requestId=%@，%.1f 秒前写入）════", reason, reqId, age);
+
+    if (ts > 0 && age > kFixCellReqTTL) {
+        s_log(@"联网修复: 请求已过期（%.0f 秒 > %.0f 秒上限）→ 丢弃", age, kFixCellReqTTL);
+        NSDictionary *res = @{ @"requestId": reqId,
+                               @"timestamp": @([[NSDate date] timeIntervalSince1970]),
+                               @"ok": @NO,
+                               @"exitCode": @(-100),
+                               @"message": @"请求已过期（守护进程唤醒太慢），请重试" };
+        [res writeToFile:kFixCellResPath atomically:YES];
+        chown(kFixCellResPath.UTF8String, 501, 501);
+        return YES;
+    }
+
+    NSString *helperOut = nil;
+    int code = s_runFixCellularOnce(bundleID, &helperOut);
+    // helper 的 fix-cellular：0 = 成功；2 = CoreTelephony 无策略条目/系统应用忽略，
+    //   也按成功处理（见 RPVHelperFixCellularViaCTServer 注释）。其余非零码才是真失败。
+    // ⚠️ 这条必须与 helper 的返回语义保持一致，否则会误报「修复失败」。
+    BOOL ok = (code == 0 || code == 2);
+
+    NSString *msg;
+    if (ok)                 msg = @"已修复当前插件联网";
+    else if (code == -2)    msg = @"未找到 repro-helper（root 助手）";
+    else if (code < 0)      msg = [NSString stringWithFormat:@"守护进程无法启动助手（errno %d）", -code];
+    else                    msg = [NSString stringWithFormat:@"修复失败（助手退出码 %d）", code];
+
+    NSDictionary *res = @{ @"requestId": reqId,
+                           @"timestamp": @([[NSDate date] timeIntervalSince1970]),
+                           @"ok": @(ok),
+                           @"exitCode": @(code),
+                           @"message": msg,
+                           @"helperOutput": (helperOut ?: @"") };
+    [res writeToFile:kFixCellResPath atomically:YES];
+    chown(kFixCellResPath.UTF8String, 501, 501);
+    s_log(@"联网修复: 结果已写回 → %@（exit=%d）", msg, code);
+    return YES;
+}
+
 // ─── main ────────────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
@@ -1782,6 +1947,16 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    // ── 🔴 v2.1.26 --fix-cellular [bundleID]: 终端手动跑一次联网修复（排查用） ──
+    if (argc >= 2 && strcmp(argv[1], "--fix-cellular") == 0) {
+        NSString *bid = (argc >= 3) ? [NSString stringWithUTF8String:argv[2]] : kAppBundleID;
+        NSString *out = nil;
+        int code = s_runFixCellularOnce(bid, &out);
+        printf("fix-cellular %s → exit=%d\n%s\n", bid.UTF8String, code, (out ?: @"").UTF8String);
+        if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
+        return code;
+    }
+
     // ── --bypass-3app: 手动解除免费账号 3 应用限制（无视设置开关，强制执行一次） ──
     if (argc >= 2 && strcmp(argv[1], "--bypass-3app") == 0) {
         s_log(@"========================================");
@@ -1791,6 +1966,20 @@ int main(int argc, char *argv[]) {
         s_log(@"========================================");
         if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
         return 0;
+    }
+
+    // ── 🔴 v2.1.26：优先处理 App 的「联网修复」请求 ──
+    // 触发链：App 写 fix-cellular-request.plist → helper(setuid root) kickstart 本 daemon
+    //        → launchd 以 root/无沙箱拉起我们 → 这里消费请求、代跑 helper、写回结果 → 退出。
+    // 放在正常续签轮次之前：这是用户点按钮后在前台干等的操作，必须秒回；
+    // 本轮跳过的续签检查由 launchd 下一次拉起补上（最多晚一小时，无影响）。
+    {
+        [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
+        if (s_handleFixCellularRequest(@"launchd 唤醒")) {
+            s_log(@"联网修复处理完毕 → 本轮退出（续签检查由 launchd 下次拉起补上）");
+            if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
+            return 0;
+        }
     }
 
     // ── 正常守护模式（v1.1.155 短命化） ──
@@ -1851,6 +2040,16 @@ int main(int argc, char *argv[]) {
         dispatch_get_main_queue(), ^(int _){
         s_log(@"3应用绕过: 收到 App 的 bypass-3app-request 信号（合并后执行）");
         s_requestBypass(@"App 签名完成");
+    });
+
+    // 🔴 v2.1.26：本实例已经在跑（比如正等 App 完成续签）时，launchctl kickstart 不会
+    // 再拉一个新实例 —— 那样请求文件就只能等下一次拉起才被消费。所以这里再挂一条
+    // notify 通道：App 写完请求会同时 notify_post，活着的实例即时响应。
+    // （notify 是纯 userland API，不依赖 launchd LaunchEvents；App→daemon 的
+    //   signing-complete 早就在用同一套机制，已被真机验证可靠。）
+    int t4; notify_register_dispatch("cn.analy.resign.fix-cellular-request", &t4,
+        dispatch_get_main_queue(), ^(int _){
+        (void)s_handleFixCellularRequest(@"notify 直达");
     });
 
     // ── 核心：立即执行一轮到期检查 ──
