@@ -153,8 +153,12 @@ static NSDictionary *RPVDaemonCredentials(void) {
               [[[appCache allKeys] sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]);
         // anisette XPC 可达性：xpc_connection_create 只创建连接对象，resume 后发 ping
         // 触发连接，1 秒后看有无错误/响应回调 —— 区分 entitlement 拒绝 vs XPC 不可达。
-        xpc_connection_t conn = xpc_connection_create_mach_service(
-            "com.apple.ak.anisette.xpc", NULL, XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
+        // iOS SDK 把 xpc_connection_create_mach_service 标为 unavailable（编译期拦截），
+        // 但符号运行时存在，用 dlsym 动态调用（daemon 调私有 API 的一贯做法）。
+        typedef xpc_connection_t (*CreateMachFn)(const char *, dispatch_queue_t, uint64_t);
+        CreateMachFn createMach = (CreateMachFn)dlsym(RTLD_DEFAULT, "xpc_connection_create_mach_service");
+        xpc_connection_t conn = createMach ? createMach(
+            "com.apple.ak.anisette.xpc", NULL, XPC_CONNECTION_MACH_SERVICE_PRIVILEGED) : NULL;
         if (conn) {
             __block BOOL gotEvent = NO;
             xpc_connection_set_event_handler(conn, ^(xpc_object_t obj) {
@@ -176,7 +180,9 @@ static NSDictionary *RPVDaemonCredentials(void) {
                       gotEvent ? @"有" : @"无", conn ? @"已" : @"未");
             });
         } else {
-            NSLog(@"[repro-signingd] Anisette XPC: xpc_connection_create_mach_service 返回 NULL");
+            NSLog(@"[repro-signingd] Anisette XPC: create_mach_service %@（dlsym %@）",
+                  createMach ? @"返回 NULL" : @"符号不可用",
+                  createMach ? @"成功" : @"失败");
         }
     }
 
