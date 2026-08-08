@@ -454,32 +454,10 @@ jobs:
           do_sign_bare "$PKG2/usr/local/bin/zsign"
           chmod 4755 "$PKG2/usr/libexec/repro-helper"
 
-          # --- RootHide deb ---
-          PKG3="Packages/roothide"
-          mkdir -p "$PKG3/Applications" "$PKG3/usr/libexec" "$PKG3/usr/local/bin" \
-                   "$PKG3/usr/share/reprovision/certificates" \
-                   "$PKG3/Library/LaunchDaemons"
-          cp -R "$APP_DIR" "$PKG3/Applications/"
-          cp build/repro-helper "$PKG3/usr/libexec/"
-          cp build/repro-profiledaemon "$PKG3/usr/libexec/"
-          cp build/repro-signingd "$PKG3/usr/libexec/"
-          cp /tmp/zsign "$PKG3/usr/local/bin/zsign"
-          chmod 0755 "$PKG3/usr/local/bin/zsign"
-          cp Resources/Certificates/*.pem "$PKG3/usr/share/reprovision/certificates/"
-          cp Resources/Icon.png "$PKG3/Applications/ReSign.app/Icon.png"
-          cp Resources/cn.analy.resign.profiledaemon.plist "$PKG3/Library/LaunchDaemons/"
-          # v1.1.65：roothide 用专属 LaunchDaemon plist（带 _MSSafeMode=1/_SafeMode=1，
-          # 否则 RootHide 运行时剥离 backboardd.launchapplications → SBSLaunch 返回 7）
-          cp Resources/cn.analy.resign.signingd-roothide.plist "$PKG3/Library/LaunchDaemons/cn.analy.resign.signingd.plist"
-          do_sign "$PKG3/Applications/ReSign.app/ReSign" Resources/entitlements-roothide.plist
-          do_sign "$PKG3/usr/libexec/repro-helper" Resources/entitlements-roothide-helper.plist
-          do_sign "$PKG3/usr/libexec/repro-profiledaemon" Resources/entitlements-profiledaemon.plist
-          chmod 0755 "$PKG3/usr/libexec/repro-signingd"
-          do_sign "$PKG3/usr/libexec/repro-signingd" Resources/entitlements-signingd-roothide.plist
-          do_sign_bare "$PKG3/usr/local/bin/zsign"
-          chmod 4755 "$PKG3/usr/libexec/repro-helper"
+          # 🔀 v2.1.28：roothide 包已移至独立的 `roothide` 分支单独构建/发布（见该分支 build.yml）。
+          #    main 分支仅构建并发布 rootless(Dopamine) + rootful，避免 rootless/rootful 的改动误伤 roothide。
 
-          echo "Signing + packaging complete for all 3 packages (with zsign)"
+          echo "Signing + packaging complete (rootless + rootful only)"
 
       - name: Package debs
         run: |
@@ -490,13 +468,12 @@ jobs:
           mkdir -p CydiaPackages
 
           # DEBIAN 维护脚本必须有可执行权限（0555~0775），否则 dpkg-deb 报错
-          for pkg in rootless rootful roothide; do
+          for pkg in rootless rootful; do
             find "Packages/$pkg/DEBIAN" -type f -exec chmod 0755 {} \;
           done
 
           dpkg-deb -Zgzip -b Packages/rootless "CydiaPackages/cn.analy.resign_${VERSION}_iphoneos-arm64.deb"
           dpkg-deb -Zgzip -b Packages/rootful "CydiaPackages/cn.analy.resign_${VERSION}_iphoneos-arm.deb"
-          dpkg-deb -Zgzip -b Packages/roothide "CydiaPackages/cn.analy.resign_${VERSION}_roothide-iphoneos-arm64.deb"
 
           ls -lh CydiaPackages/
 
@@ -512,7 +489,6 @@ jobs:
             ### 安装包
             | 包 | 适用环境 |
             |---|---|
-            | `*_roothide-iphoneos-arm64.deb` | **RootHide 用户安装此包** |
             | `*_iphoneos-arm64.deb` | Dopamine / rootless |
             | `*_iphoneos-arm.deb` | rootful (iOS 13/14) |
           files: CydiaPackages/*.deb
