@@ -233,7 +233,7 @@ static void s_checkCrashLoop(void) {
     chown(path.UTF8String, 501, 501);
     if (count >= 3) {
         s_log(@"⚠️⚠️⚠️ daemon 10 分钟内已被拉起 %ld 次（崩溃循环）", (long)count);
-        s_log(@"   疑似 RootHide hook 环境问题 —— 建议更新 RootHide/roothide，或重装本 deb；");
+        s_log(@"   疑似越狱环境 hook 问题（%@）—— 建议更新对应越狱工具/roothide，或重装本 deb；", s_flavor_name(s_jb_flavor()));
         s_log(@"   若重启后仍循环，用 --status 排查，并把本日志反馈给作者");
     }
 }
@@ -363,18 +363,53 @@ static NSString *s_read_self_entitlements_xml(void) {
     return out;
 }
 
-/// 判断 daemon 实际跑在哪个 namespace（这是 RootHide 下 result=7 的决定性证据）：
-///   argv[0] = /var/jb/usr/libexec/...     → jbroot namespace ❌（私有 entitlement 被剥离）
-///   argv[0] = /usr/libexec/...            → rootfs 真实 namespace ✅（entitlement 保留）
+/// daemon 自包含的越狱形态检测（daemon 不是 App bundle，拿不到 App 的 .jbroot 符号链接，
+/// 故用文件系统标记判断）：
+///   /.roothide 存在           → RootHide（随机 jbroot + namespace 隔离）
+///   /var/jb 存在（bind mount）→ Rootless（Dopamine/TrollStore，无 namespace 隔离）
+///   其它                       → Rootful（标准根路径）
+typedef NS_ENUM(NSInteger, RPVJbFlavor) {
+    RPVJbFlavorRootful  = 0,
+    RPVJbFlavorRootless = 1,
+    RPVJbFlavorRootHide = 2,
+};
+
+static BOOL s_path_exists(NSString *p) {
+    return [[NSFileManager defaultManager] fileExistsAtPath:p];
+}
+
+static RPVJbFlavor s_jb_flavor(void) {
+    if (s_path_exists(@"/.roothide")) return RPVJbFlavorRootHide;
+    if (s_path_exists(@"/var/jb"))    return RPVJbFlavorRootless;
+    return RPVJbFlavorRootful;
+}
+
+static NSString *s_flavor_name(RPVJbFlavor f) {
+    switch (f) {
+        case RPVJbFlavorRootHide: return @"RootHide";
+        case RPVJbFlavorRootless: return @"Rootless";
+        case RPVJbFlavorRootful:  return @"Rootful";
+    }
+    return @"Unknown";
+}
+
+/// 说明 daemon 实际运行环境。
+///   RootHide：有 namespace 隔离，是否跑在真实 rootfs namespace 决定 entitlement 是否被剥离。
+///   Rootless/Rootful：无 namespace 隔离，jbroot 只是 bind mount，entitlement 完整保留。
 /// 注：libproc.h/proc_pidpath 是 macOS 专属，iOS SDK 没有，故用进程启动路径判断。
-static NSString *s_namespace_report(void) {
+static NSString *s_exec_env_report(void) {
     NSString *me = [[[NSProcessInfo processInfo] arguments] firstObject];
-    if (me.length) {
+    RPVJbFlavor f = s_jb_flavor();
+    if (me.length == 0) return @"无法取得自身启动路径";
+    if (f == RPVJbFlavorRootHide) {
         if ([me hasPrefix:@"/var/jb/"])
             return [NSString stringWithFormat:@"jbroot namespace (启动路径=%@) ❌ 私有权限会被 RootHide 剥离", me];
         return [NSString stringWithFormat:@"rootfs 真实 namespace (启动路径=%@) ✅ entitlement 应保留", me];
     }
-    return @"无法取得自身启动路径";
+    NSString *kind = (f == RPVJbFlavorRootless)
+        ? @"rootless jbroot（bind mount，无 namespace 隔离）"
+        : @"rootfs（rootful，无 namespace 隔离）";
+    return [NSString stringWithFormat:@"%@ (启动路径=%@) ✅ entitlement 完整保留（无 namespace 剥离）", kind, me];
 }
 
 /// 缓存的自检报告（进程内只算一次，每次触发都打印，避免重复 popen 刷屏）
@@ -382,36 +417,43 @@ static NSString *gSelfEntitlementReport = nil;
 
 /// 计算自身 entitlement 自检报告（进程启动时调用一次）
 static void s_compute_self_entitlements(void) {
+    RPVJbFlavor f = s_jb_flavor();
+    NSString *flavor = s_flavor_name(f);
     // RootHide 下 daemon 跑在 rootfs 真实 namespace，而 ldid/codesign 装在 jbroot，
-    // 不在 daemon 的 PATH 里 → popen 调不到。此时读不到 ≠ 二进制没签名
-    // （已用 Mach-O 解析证明 CI 确实签上了 entitlements）。避免误报「CI 裸签」。
-    BOOL toolsAvailable = s_tool_exists(@"/usr/bin/codesign") || s_tool_exists(@"codesign")
-                       || s_tool_exists(@"ldid");
+    // 不在 daemon 的 PATH 里 → popen 调不到。Rootless 同理（工具在 /var/jb/usr/bin）。
+    // 此时读不到 ≠ 二进制没签名（已用 Mach-O 解析证明 CI 确实签上了 entitlements）。
+    // 避免误报「CI 裸签」。
+    BOOL toolsAvailable = s_tool_exists(@"/usr/bin/codesign") || s_tool_exists(@"/var/jb/usr/bin/codesign")
+                       || s_tool_exists(@"/usr/bin/ldid")    || s_tool_exists(@"/var/jb/usr/bin/ldid")
+                       || s_tool_exists(@"codesign")         || s_tool_exists(@"ldid");
     if (!toolsAvailable) {
+        NSString *daemonPath = (f == RPVJbFlavorRootless) ? @"/var/jb/usr/libexec/repro-signingd"
+                                                          : @"/usr/libexec/repro-signingd";
         gSelfEntitlementReport = [NSString stringWithFormat:
-            @"ℹ️ 无法自检 entitlement（ldid/codesign 不在 daemon 的 rootfs PATH，属 RootHide 正常现象，不代表未签名）\n"
-            @"  namespace: %@\n"
-            @"  （若怀疑裸签，请用 ssh 进设备执行 `ldid -e /usr/libexec/repro-signingd` 手动确认）",
-            s_namespace_report()];
+            @"ℹ️ 无法自检 entitlement（ldid/codesign 装在 jbroot 不在 daemon 的 PATH，属 %@ 越狱环境正常现象，不代表未签名）\n"
+            @"  %@\n"
+            @"  （若怀疑裸签，请用 ssh 进设备执行 `ldid -e %@` 手动确认）",
+            flavor, s_exec_env_report(), daemonPath];
         return;
     }
     NSString *xml = s_read_self_entitlements_xml();
     if (xml.length == 0) {
         gSelfEntitlementReport = [NSString stringWithFormat:
-            @"⚠️ 无法读取自身 entitlement（codesign/ldid 可用但都没返回 → 确属 CI 裸签，必须 do_sign 带 entitlements）\n  namespace: %@", s_namespace_report()];
+            @"⚠️ 无法读取自身 entitlement（codesign/ldid 可用但都没返回 → 确属 CI 裸签，必须 do_sign 带 entitlements）\n  %@", s_exec_env_report()];
         return;
     }
     BOOL hasLaunch = [xml containsString:@"com.apple.backboardd.launchapplications"];
     BOOL hasUnlim  = [xml containsString:@"com.apple.multitasking.unlimitedassertions"];
     BOOL hasSys    = [xml containsString:@"com.apple.multitasking.systemappassertions"];
+    NSString *launchNote = (f == RPVJbFlavorRootHide) ? @"❌缺失(被 RootHide 剥离)" : @"❌缺失";
     NSMutableString *r = [NSMutableString stringWithFormat:
         @"自身 entitlement 自检: backboardd.launchapplications=%@  unlimitedassertions=%@  systemappassertions=%@\n"
-        @"  namespace: %@",
-        hasLaunch ? @"✅有" : @"❌缺失(被 RootHide 剥离)",
+        @"  %@",
+        hasLaunch ? @"✅有" : launchNote,
         hasUnlim  ? @"✅有" : @"❌缺失",
         hasSys    ? @"✅有" : @"❌缺失",
-        s_namespace_report()];
-    if (!hasLaunch) {
+        s_exec_env_report()];
+    if (!hasLaunch && f == RPVJbFlavorRootHide) {
         [r appendString:@"\n  ❌ 致命: backboardd.launchapplications 缺失 → daemon 跑在 jbroot namespace，"
                         "SBSLaunch 必返回 7。修复: roothide postinst 必须用 jbroot 命令把 plist 转 rootfs 路径再 launchctl bootstrap。"];
     }
@@ -913,9 +955,9 @@ static BOOL s_launchAppAndWait(BOOL waitForCompletion) {
         BOOL registered = s_isAppRegistered(kAppBundleID, &regPid);
         if (registered) {
             s_log(@"   App 已注册到 SpringBoard（pid=%d，未运行）。"
-                  @"→ 根因是 daemon 的后台启动权限被拒：检查上方『自身 entitlement 自检』的 namespace 行；"
-                  @"若显示 jbroot namespace，说明 daemon 仍跑在 jbroot 路径下（postinst 未用 jbroot 命令转 rootfs）。",
-                  regPid);
+                  @"→ 根因是 daemon 的后台启动权限被拒：请检查上方『自身 entitlement 自检』的运行环境行；"
+                  @"%@下若显示 jbroot namespace，说明 daemon 仍跑在 jbroot 路径下（postinst 未用 jbroot 命令转 rootfs）。",
+                  regPid, s_flavor_name(s_jb_flavor()));
         } else {
             s_log(@"   ⚠️ App 未注册到 SpringBoard（SBSProcessID 返回 NO）。"
                   @"→ 根因是 uicache 注册问题，不是权限。请在 App 内或终端执行 uicache -p /Applications/ReSign.app 后重试。");
