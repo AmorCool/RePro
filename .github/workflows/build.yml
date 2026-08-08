@@ -386,73 +386,7 @@ jobs:
             fi
           }
 
-          # --- Rootless deb (Dopamine) ---
-          PKG="Packages/rootless"
-          RL="$PKG/var/jb"
-          mkdir -p "$RL/Applications" "$RL/usr/libexec" "$RL/usr/local/bin" \
-                   "$RL/usr/share/reprovision/certificates" \
-                   "$RL/Library/LaunchDaemons"
-          APP_DIR=$(find build -name "ReSign.app" -type d | head -1)
-          cp -R "$APP_DIR" "$RL/Applications/"
-          cp build/repro-helper "$RL/usr/libexec/"
-          cp /tmp/zsign "$RL/usr/local/bin/zsign"
-          chmod 0755 "$RL/usr/local/bin/zsign"
-          cp Resources/Certificates/*.pem "$RL/usr/share/reprovision/certificates/"
-
-          # 验证 Assets.car 存在（图标依赖于此文件）
-          echo "=== 验证 .app 包结构 ==="
-          ls -lah "$RL/Applications/ReSign.app/"
-          if [ -f "$RL/Applications/ReSign.app/Assets.car" ]; then
-              echo "Assets.car 存在: $(ls -lh "$RL/Applications/ReSign.app/Assets.car" | awk '{print $5}')"
-          else
-              echo "警告: Assets.car 不存在！图标可能无法显示"
-          fi
-
-          # 复制图标（供 Sileo/Cydia 显示，不影响 iOS 图标加载）
-          cp Resources/Icon.png "$RL/Applications/ReSign.app/Icon.png"
-
-          # 签名：先签二进制，不破坏 Assets.car
-          # 设置正确的权限：root 可执行
-          chmod 0755 "$RL/Applications/ReSign.app/ReSign"
-          # rootless (Dopamine) 专用 App entitlements：base + AuthKit 三件套。
-          # base 缺 com.apple.authkit.client.private / ak.anisette / authkit.internal → App 登录
-          # AKAppleIDSession 返回的 Anisette 无 X-Apple-I-MD → Apple 服务器 -80009 "MID is invalid"。
-          # rootful 仍用 base（不在本修复范围），roothide 用 entitlements-roothide.plist（不动）。
-          do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-rootless.plist
-          do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
-          cp build/repro-signingd "$RL/usr/libexec/"
-          # ★ rootless (Dopamine) 专属：jbroot 在 /var/jb 且无可透明解析的 /usr/libexec，
-          #   daemon 实际装在 /var/jb/usr/libexec/repro-signingd。用通用模板（/usr/libexec/...）
-          #   在 rootless 下是死路径 → launchd 拉起即失败（exit 78）。
-          #   rootless 用专属 plist（路径写 /var/jb/usr/libexec/...）；rootful/roothide 仍用通用模板。
-          cp Resources/cn.analy.resign.signingd-rootless.plist "$RL/Library/LaunchDaemons/cn.analy.resign.signingd.plist"
-          chmod 0755 "$RL/usr/libexec/repro-signingd"
-          # v1.1.64：signingd 必须带 backboardd.launchapplications / multitasking.*assertions
-          # 才能唤醒 App 到后台并保活。此前 rootless/rootful 甚至完全没签 → 唤醒永远失败。
-          do_sign "$RL/usr/libexec/repro-signingd" Resources/entitlements-signingd.plist
-          do_sign_bare "$RL/usr/local/bin/zsign"
-          # 4755 = setuid root。postinst 里还会再设一次（CI 非 root，dpkg-deb 存不住属主）
-          chmod 4755 "$RL/usr/libexec/repro-helper"
-
-          # --- Rootful deb ---
-          PKG2="Packages/rootful"
-          mkdir -p "$PKG2/Applications" "$PKG2/usr/libexec" "$PKG2/usr/local/bin" \
-                   "$PKG2/usr/share/reprovision/certificates" \
-                   "$PKG2/Library/LaunchDaemons"
-          cp -R "$APP_DIR" "$PKG2/Applications/"
-          cp build/repro-helper "$PKG2/usr/libexec/"
-          cp /tmp/zsign "$PKG2/usr/local/bin/zsign"
-          chmod 0755 "$PKG2/usr/local/bin/zsign"
-          cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
-          cp Resources/Icon.png "$PKG2/Applications/ReSign.app/Icon.png"
-          do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
-          do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
-          cp build/repro-signingd "$PKG2/usr/libexec/"
-          cp Resources/cn.analy.resign.signingd.plist "$PKG2/Library/LaunchDaemons/"
-          chmod 0755 "$PKG2/usr/libexec/repro-signingd"
-          do_sign "$PKG2/usr/libexec/repro-signingd" Resources/entitlements-signingd.plist
-          do_sign_bare "$PKG2/usr/local/bin/zsign"
-          chmod 4755 "$PKG2/usr/libexec/repro-helper"
+          # 🔀 v2.1.28：rootless(Dopamine)/rootful 包在 main 分支单独构建/发布；本 roothide 分支只构建 roothide。
 
           # --- RootHide deb ---
           PKG3="Packages/roothide"
@@ -479,23 +413,21 @@ jobs:
           do_sign_bare "$PKG3/usr/local/bin/zsign"
           chmod 4755 "$PKG3/usr/libexec/repro-helper"
 
-          echo "Signing + packaging complete for all 3 packages (with zsign)"
+          echo "Signing + packaging complete (roothide only)"
 
       - name: Package debs
         run: |
           set -e
           # 版本号以 DEBIAN/control 中的 Version 为准（PackageVersion.plist 的 string 字段含空值，grep 易误取）
-          VERSION=$(grep -m1 '^Version:' Packages/rootless/DEBIAN/control | awk '{print $2}')
+          VERSION=$(grep -m1 '^Version:' Packages/roothide/DEBIAN/control | awk '{print $2}')
           echo "Version: $VERSION"
           mkdir -p CydiaPackages
 
           # DEBIAN 维护脚本必须有可执行权限（0555~0775），否则 dpkg-deb 报错
-          for pkg in rootless rootful roothide; do
+          for pkg in roothide; do
             find "Packages/$pkg/DEBIAN" -type f -exec chmod 0755 {} \;
           done
 
-          dpkg-deb -Zgzip -b Packages/rootless "CydiaPackages/cn.analy.resign_${VERSION}_iphoneos-arm64.deb"
-          dpkg-deb -Zgzip -b Packages/rootful "CydiaPackages/cn.analy.resign_${VERSION}_iphoneos-arm.deb"
           dpkg-deb -Zgzip -b Packages/roothide "CydiaPackages/cn.analy.resign_${VERSION}_roothide-iphoneos-arm64.deb"
 
           ls -lh CydiaPackages/
@@ -513,8 +445,6 @@ jobs:
             | 包 | 适用环境 |
             |---|---|
             | `*_roothide-iphoneos-arm64.deb` | **RootHide 用户安装此包** |
-            | `*_iphoneos-arm64.deb` | Dopamine / rootless |
-            | `*_iphoneos-arm.deb` | rootful (iOS 13/14) |
           files: CydiaPackages/*.deb
           draft: false
           prerelease: false
