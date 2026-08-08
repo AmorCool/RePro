@@ -425,7 +425,7 @@ jobs:
           #   daemon 实际装在 /var/jb/usr/libexec/repro-signingd。用通用模板（/usr/libexec/...）
           #   在 rootless 下是死路径 → launchd 拉起即失败（exit 78）。
           #   rootless 用专属 plist（路径写 /var/jb/usr/libexec/...）；rootful/roothide 仍用通用模板。
-          cp Resources/cn.analy.resign.signingd-rootless.plist "$RL/Library/LaunchDaemons/"
+          cp Resources/cn.analy.resign.signingd-rootless.plist "$RL/Library/LaunchDaemons/cn.analy.resign.signingd.plist"
           chmod 0755 "$RL/usr/libexec/repro-signingd"
           # v1.1.64：signingd 必须带 backboardd.launchapplications / multitasking.*assertions
           # 才能唤醒 App 到后台并保活。此前 rootless/rootful 甚至完全没签 → 唤醒永远失败。
