@@ -17,6 +17,14 @@
     <key>com.apple.private.security.no-container</key>
     <true/>
 
+    <!-- 🔴 v2.1.25：必须 no-sandbox，否则从 App（沙箱进程）posix_spawn 拉起时
+         helper 会继承 App 的沙箱，CommCenter XPC 被拒 → _CTServerConnectionCreateOnTargetQueue
+         返回空（fix-cellular 退出码 13）→ App 报「修复失败」。手动 su mobile 跑之所以成功，
+         正是因为 shell 上下文不继承沙箱。roothide 版早就带此 key，rootless/rootful 漏了。
+         加回后 helper 以无沙箱 root 运行，与手动验证一致；其它 helper 功能本就在沙箱下可用，不受影响。 -->
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+
     <!-- posix_spawn 调 /usr/bin/killall -HUP profiled -->
     <key>com.apple.private.posix-spawn</key>
     <true/>

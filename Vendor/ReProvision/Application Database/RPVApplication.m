@@ -8,6 +8,13 @@
 
 #import "RPVApplication.h"
 
+#pragma mark - 系统描述文件库兜底（仅 rootless/rootful；roothide 不查，保持原行为）
+
+// 系统库 profile(application-identifier) → 到期日 的缓存，按目录 mtime 失效。
+static NSDictionary<NSString *, NSDate *> *gSystemStoreCache = nil;
+static NSTimeInterval gSystemStoreCacheMtime = 0;
+static dispatch_queue_t gSystemStoreQueue = NULL;
+
 @interface _LSDiskUsage : NSObject
 @property (nonatomic, readonly) NSNumber *dynamicUsage;
 @property (nonatomic, readonly) NSNumber *onDemandResourcesUsage;
@@ -130,28 +137,102 @@
 }
 
 - (NSDate *)applicationExpiryDate {
-    if (!self.proxy) {
-        // Date that is 2 days away.
-        return [NSDate date];
-    }
-
     NSString *provisionPath = [[self.proxy.bundleURL path] stringByAppendingString:@"/embedded.mobileprovision"];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:provisionPath]) {
-        NSLog(@"*** [ReProvision] :: ERROR :: No embedded.mobileprovision at %@, given bundleURL is %@", provisionPath, self.proxy.bundleURL);
 
-        return [NSDate date];
+    // 无 proxy 或根本没有 embedded.mobileprovision：尝试用系统描述文件库兜底，
+    // 已安装且系统库里仍有有效 profile 的应用不应被误判为过期。
+    if (!self.proxy || ![[NSFileManager defaultManager] fileExistsAtPath:provisionPath]) {
+        NSDate *sys = [self _systemStoreExpiryDateForBundle:[self bundleIdentifier]];
+        return sys ?: [NSDate date];
     }
 
     NSDictionary *provision = [RPVApplication provisioningProfileAtPath:provisionPath];
-    if (!provision) {
-        return [NSDate date];
+    if (!provision || !self._provisioningProfileReallyExists) {
+        NSDate *sys = [self _systemStoreExpiryDateForBundle:[self bundleIdentifier]];
+        return sys ?: [NSDate date];
     }
 
-    if (!self._provisioningProfileReallyExists) {
-        return [NSDate date];
+    NSDate *embedded = [provision objectForKey:@"ExpirationDate"];
+    if (embedded && [embedded isKindOfClass:[NSDate class]] && [embedded compare:[NSDate date]] == NSOrderedDescending) {
+        return embedded; // 内嵌 profile 仍有效，直接用
     }
 
-    return [provision objectForKey:@"ExpirationDate"];
+    // 内嵌已过期（或缺失日期）：看系统描述文件库里是否有匹配本 bundle 的有效 profile。
+    // 例如用户用本机 Apple ID 重签后系统库已写入有效 profile，但 bundle 内 embedded 未更新，
+    // 此时应用实际仍可运行，应按系统库的有效日期显示，避免「明明在有效期却显示已过期」。
+    NSDate *sys = [self _systemStoreExpiryDateForBundle:[self bundleIdentifier]];
+    if (sys && [sys compare:[NSDate date]] == NSOrderedDescending) {
+        return sys;
+    }
+
+    return embedded ?: [NSDate date];
+}
+
+/// 在系统描述文件库（/var/Managed Preferences/mobile）中查找匹配本 bundle 且仍有效的 profile 到期日。
+/// 命中返回最晚的有效到期日；无匹配 / 全部过期 / 无法读取返回 nil。
+/// ⚠️ RootHide 下 App 处于 jbroot namespace，看不到真实系统库（overlay 假目录），
+/// 不应据此改写过期判定 → 直接返回 nil，保持 roothide 原行为不变。
+- (NSDate *)_systemStoreExpiryDateForBundle:(NSString *)bundleID {
+    if (bundleID.length == 0) return nil;
+
+    // RootHide：跳过系统库查询，保持原行为（避免误读 overlay 假目录）。
+    if ([[NSFileManager defaultManager] fileExistsAtPath:
+         [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@".jbroot"]]) {
+        return nil;
+    }
+
+    NSDictionary<NSString *, NSDate *> *map = [self _systemStoreMapForDir:@"/var/Managed Preferences/mobile"];
+    if (map.count == 0) return nil;
+
+    NSString *suffix = [@"." stringByAppendingString:bundleID];
+    NSDate *best = nil;
+    NSDate *now = [NSDate date];
+    for (NSString *appID in map) {
+        // 匹配：appID 以 .<bundleID> 结尾（teamID.bundleID），或为通配符 teamID.*
+        BOOL match = [appID hasSuffix:suffix] || [appID hasSuffix:@".*"];
+        if (!match) continue;
+        NSDate *exp = map[appID];
+        if ([exp compare:now] == NSOrderedDescending &&
+            (!best || [exp compare:best] == NSOrderedDescending)) {
+            best = exp;
+        }
+    }
+    return best;
+}
+
+/// 解析系统描述文件库为 {application-identifier: ExpirationDate}，带按目录 mtime 失效的缓存。
+- (NSDictionary<NSString *, NSDate *> *)_systemStoreMapForDir:(NSString *)dir {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gSystemStoreQueue = dispatch_queue_create("com.reprovision.systemstore", DISPATCH_QUEUE_SERIAL);
+    });
+
+    __block NSDictionary *result = nil;
+    dispatch_sync(gSystemStoreQueue, ^{
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:dir error:nil];
+        NSTimeInterval mtime = attrs ? [attrs[NSFileModificationDate] timeIntervalSince1970] : 0;
+        if (gSystemStoreCache && mtime == gSystemStoreCacheMtime) {
+            result = gSystemStoreCache;
+            return;
+        }
+        NSMutableDictionary *map = [NSMutableDictionary dictionary];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *file in files) {
+            if (![file hasSuffix:@".mobileprovision"] && ![file hasSuffix:@".provisionprofile"]) continue;
+            NSDictionary *plist = [RPVApplication provisioningProfileAtPath:[dir stringByAppendingPathComponent:file]];
+            if (![plist isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *ents = plist[@"Entitlements"];
+            NSString *appID = ents[@"application-identifier"];
+            NSDate *exp = plist[@"ExpirationDate"];
+            if ([appID isKindOfClass:[NSString class]] && [exp isKindOfClass:[NSDate class]]) {
+                map[appID] = exp;
+            }
+        }
+        gSystemStoreCache = [map copy];
+        gSystemStoreCacheMtime = mtime;
+        result = gSystemStoreCache;
+    });
+    return result;
 }
 
 - (BOOL)hasEmbeddedMobileprovision {

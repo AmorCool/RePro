@@ -599,6 +599,11 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
     [EEBackend setExtensionImportOptionsRemoveExtensions:remove useMainProfileForExtensions:useMain];
 }
 
+// 🔴 fix-cellular 诊断增强：直接取 helper 真实退出码，把「修复失败」从一句空话变成
+// 可定位的具体码（如退出码 13=createConn 返回空 / -2=未找到助手 / <0=启动失败）。
+// RPVRunRootHelperCore 在本文件下方定义，这里前向声明以便此处调用。
+static int RPVRunRootHelperCore(NSString *helperPath, NSArray<NSString *> *arguments, BOOL quiet);
+
 #pragma mark - 越狱联网修复（国行蜂窝/WiFi 权限重置，手动入口）
 
 /// 设置里「修复当前插件联网」按钮调用：同步拉起 repro-helper fix-cellular（CoreTelephony 路径），
@@ -607,25 +612,30 @@ static void RPVBridgeCallOnMain(dispatch_block_t block) {
 - (void)fixCellularDataWithCompletion:(void (^)(BOOL success, NSString *_Nullable message))completion {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *helperPath = RPVResolvedRootHelperPath();
+        int code;
         if (helperPath.length == 0) {
-            if (completion) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completion(NO, @"未找到 repro-helper（root 助手），无法执行修复");
-                });
-            }
-            return;
+            code = -2; // 未找到助手
+        } else {
+            // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
+            // （不再枚举批量处理，避免对系统守护调 CoreTelephony 私有 API 污染 CT 状态）。
+            NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"cn.analy.resign";
+            code = RPVRunRootHelperCore(helperPath, @[@"fix-cellular", selfBid], NO);
         }
 
-        // 把 ReSign 自身的 bundle id 传给 helper：v1.1.146 起 helper 只修复这一个应用
-        // （不再枚举批量处理，避免对系统守护调 CoreTelephony 私有 API 污染 CT 状态）。
-        NSString *selfBid = [[NSBundle mainBundle] bundleIdentifier] ?: @"cn.analy.resign";
-        BOOL ok = RPVRunRootHelper(helperPath, @[@"fix-cellular", selfBid]);
-        NSString *message = ok
-            ? @"已修复当前插件联网"
-            : @"修复失败，请稍后重试。";
+        NSString *message;
+        if (code == 0) {
+            message = @"已修复当前插件联网";
+        } else if (code == -2) {
+            message = @"未找到 repro-helper（root 助手），无法执行修复";
+        } else if (code < 0) {
+            message = [NSString stringWithFormat:@"修复失败：无法启动助手（错误 %d）", -code];
+        } else {
+            message = [NSString stringWithFormat:@"修复失败（助手退出码 %d）", code];
+        }
+
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(ok, message);
+                completion(code == 0, message);
             });
         }
     });

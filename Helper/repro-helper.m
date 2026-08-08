@@ -293,17 +293,23 @@ static int RPVHelperFixCellularViaCTServer(NSString *bid) {
     } @catch (NSException *e) {
         RPVHelperLog(@"fix-cellular(CT): %@ 设置异常: %@", bid, e.reason);
     }
-    RPVHelperLog(@"fix-cellular(CT): %@ 返回 %d（0=成功）", bid, r);
+    RPVHelperLog(@"fix-cellular(CT): %@ 返回 %d（0=成功；2=无策略条目/系统应用忽略，视为成功）", bid, r);
 
     if (conn) CFRelease(conn);
     dlclose(ctHandle);
 
-    // v1.1.124：写共享修复时间戳（与 signingd 开机自动修复共用防抖文件）。
-    // 手动/自动修复成功后，下次设备重启前不再重复触发。
-    NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
-    [stamp writeToFile:@"/var/mobile/Library/Resign/fix-cellular-last.plist" atomically:YES];
+    // 🔴 真实返回 CoreTelephony 设置结果：0 或 2 视为成功；其余为真实失败码。
+    // 之前恒返回 0 会掩盖 createConn 返回空(code 13)/dlsym 失败(code 12) 等真实错误，
+    // 导致 App 侧要么误报「成功」、要么拿不到任何失败原因。
+    int result = (r == 0 || r == 2) ? 0 : r;
 
-    return 0;
+    if (result == 0) {
+        // v1.1.124：写共享修复时间戳（与 signingd 开机自动修复共用防抖文件）。
+        // 仅成功时写，避免失败也写戳造成「已修复」假象。
+        NSDictionary *stamp = @{ @"timestamp": @((double)time(NULL)) };
+        [stamp writeToFile:@"/var/mobile/Library/Resign/fix-cellular-last.plist" atomically:YES];
+    }
+    return result;
 }
 
 /// 温和刷新偏好缓存（killall cfprefsd），使设置 UI 立即反映刚写入的策略。
