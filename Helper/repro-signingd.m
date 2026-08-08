@@ -1098,6 +1098,28 @@ static BOOL s_installSignedApp(NSString *appPath, NSString *bundleId) {
             s_log(@"安装失败(LSAW) %@: %@ (domain=%@ code=%ld userInfo=%@)",
                   bundleId, err.localizedDescription ?: @"?", err.domain ?: @"?",
                   (long)err.code, err.userInfo ?: @{});
+            // 🔴 v2.1.21：免费账号 3 应用限制（MIInstallerErrorDomain code=13 /
+            // "maximum number of installed apps"）→ 自动绕过（删除已装 app 的
+            // com.apple.installd.validatedByFreeProfile xattr）→ 重试一次。
+            // 真机（设备2，iOS16.3.1）09:20 实锤：第 4 个 app 安装失败 code=13。
+            if (err.code == 13 ||
+                [err.localizedDescription containsString:@"maximum number of installed apps"]) {
+                s_log(@"检测到免费账号 3 应用限制 → 自动绕过（删 validatedByFreeProfile xattr）后重试");
+                s_bypass3AppLimit(@"安装失败自动绕过");
+                NSError *err2 = nil;
+                BOOL ok2 = NO;
+                @try {
+                    ok2 = [workspace installApplication:appURL withOptions:opts error:&err2];
+                } @catch (NSException *e) {
+                    s_log(@"安装异常(重试): %@", e.description ?: @"?");
+                }
+                if (ok2) {
+                    s_log(@"绕过后续签安装成功: %@", bundleId);
+                    return YES;
+                }
+                s_log(@"绕过重试仍失败: %@ (domain=%@ code=%ld)",
+                      err2.localizedDescription ?: @"?", err2.domain ?: @"?", (long)err2.code);
+            }
         } else {
             s_log(@"安装: LSApplicationWorkspace 不可用 → 试 MobileInstallation");
         }
