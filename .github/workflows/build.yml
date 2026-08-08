@@ -417,7 +417,11 @@ jobs:
           do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$RL/usr/libexec/"
-          cp Resources/cn.analy.resign.signingd.plist "$RL/Library/LaunchDaemons/"
+          # ★ rootless (Dopamine) 专属：jbroot 在 /var/jb 且无可透明解析的 /usr/libexec，
+          #   daemon 实际装在 /var/jb/usr/libexec/repro-signingd。用通用模板（/usr/libexec/...）
+          #   在 rootless 下是死路径 → launchd 拉起即失败（exit 78）。
+          #   rootless 用专属 plist（路径写 /var/jb/usr/libexec/...）；rootful/roothide 仍用通用模板。
+          cp Resources/cn.analy.resign.signingd-rootless.plist "$RL/Library/LaunchDaemons/"
           chmod 0755 "$RL/usr/libexec/repro-signingd"
           # v1.1.64：signingd 必须带 backboardd.launchapplications / multitasking.*assertions
           # 才能唤醒 App 到后台并保活。此前 rootless/rootful 甚至完全没签 → 唤醒永远失败。

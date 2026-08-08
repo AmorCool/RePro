@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>cn.analy.resign.signingd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<!-- ★ rootless (Dopamine) 专属：jbroot 在 /var/jb，无 overlay，
+		     真实二进制路径是 /var/jb/usr/libexec/repro-signingd。
+		     写 /usr/libexec/repro-signingd 在 rootless 下是死路径，
+		     launchd 拉起即失败（exit 78）。rootful 与 roothide 才有
+		     /usr/libexec 透明解析，故它们仍用通用模板。 -->
+		<string>/var/jb/usr/libexec/repro-signingd</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- v1.1.155 短命化：去掉 KeepAlive，改由 StartCalendarInterval 每小时（第 0 分钟）拉起一次。
+	     根因（SSH 实测）：iOS 17 launchd 的 efficiency 管理会对「长驻但 IPC 稀疏」的
+	     守护进程判 immediate reason=inefficient 并 SIGKILL(-9)；KeepAlive=true 会造成
+	     「被杀→立刻拉起→再被杀」风暴（实测 daemon 活不过 5 秒，自动续签调度瘫痪；
+	     ProcessType=Background 也绕不开该判定）。
+	     短命模式：进程启动→一轮到期检查→需要则唤醒 App 等其完成→退出，
+	     被杀无意义（本来就要退），RootHide XPC 拦截器常驻泄漏也彻底无累积机会。
+	     设备深睡错过调度时，launchd 会在唤醒后立即补执行。 -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<!-- v1.1.150 方案B → v1.1.192：ThrottleInterval 从 30s 提高到 300s。
+	     真机实锤（22:25-22:27，31 次 Jetsam largestProcess=repro-signingd）：
+	     signingd 在 RootHide SafeMode 下泄漏超过 MemoryLimit 50MB → launchd Jetsam
+	     杀掉 → 30s 后立刻重拉 → 新实例再泄漏再被杀 → 2 分钟内 31 次循环 →
+	     整机 Jetsam 雪崩 → SpringBoard 反复被杀 → 注销动画死循环 → ResetCounter 重启。
+	     300s（5 分钟）给设备足够喘息时间：signingd 被 Jetsam 后至少等 5 分钟
+	     才可能重拉，打内泄漏循环。配合内存看门狗（45MB 独立线程 10s 检查），
+	     正常情况下在内存到 MemoryLimit 50MB 前就会被看门狗主动退出 → 正常退出
+	     不走 Jetsam 路径 → ThrottleInterval 不被触发，定时拉起照常工作。 -->
+	<key>ThrottleInterval</key>
+	<integer>300</integer>
+	<key>UserName</key>
+	<string>root</string>
+	<!-- v1.1.152：移除 POSIXSpawnType=Interactive 改默认 Background 类型。
+	     Interactive spawn 在 iOS 17 launchd 下容易被判 "inefficient" 主动 SIGTERM；
+	     实测在 iPhone 11 (4GB) 上 3 个 daemon 全部立即被杀 + 指数退避越拉越慢。
+	     Background 类型让 launchd 知道这是后台守护，不强制要求"持续产生 IPC"。 -->
+	<!-- v1.1.152：显式声明 ProcessType=Background + MemoryLimit=50MB。
+	     默认 daemon category jetsam memory limit 仅 6MB（iPhone 11 实测），
+	     一旦 Roothide 容器内 minor 波动就超限被 jetsam 杀；
+	     提到 50MB 给正常 rootfs 守护足够空间（纯 C daemon 峰值 < 30MB）。 -->
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>MemoryLimit</key>
+	<integer>50</integer>
+</dict>
+</plist>
