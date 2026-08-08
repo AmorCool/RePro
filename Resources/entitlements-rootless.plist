@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Rootless（Dopamine）专属 App entitlements = entitlements-base.plist + AuthKit 三件套 -->
+    <!-- 背景：rootless 装的 App 缺少 com.apple.authkit.client.private / ak.anisette / authkit.internal，
+         调用 AKAppleIDSession 生成 Anisette 时拿不到 X-Apple-I-MD，Apple 服务器返回 -80009 "MID is invalid"。
+         roothide 包未受影响：entitlements-roothide.plist 第 99 行已含 com.apple.authkit.client.private。
+         修法：仅 rootless 包用这份 entitlements，rootful 仍用 base（不在本修复范围），roothide 不动。 -->
+
+    <!-- 网络权限（用于 Apple ID 认证和 profile 下载） -->
+    <key>com.apple.CommCenter.fine-grained</key>
+    <true/>
+    <key>com.apple.SystemConfiguration.SCPreferences-write-access</key>
+    <array>
+        <string>com.apple.network.eapon</string>
+    </array>
+    <key>com.apple.SystemConfiguration.SCDynamicStore-write-access</key>
+    <true/>
+
+    <!-- Keychain 访问 -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>cn.analy.resign.*</string>
+    </array>
+
+    <!-- 后台运行 -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>fetch</string>
+    </array>
+
+    <!-- 调试权限（越狱环境需要） -->
+    <key>get-task-allow</key>
+    <true/>
+
+    <!-- AuthKit（关键）：补足后 AKAppleIDSession 才能产出 X-Apple-I-MD -->
+    <key>com.apple.authkit.client.private</key>
+    <true/>
+    <key>com.apple.private.ak.anisette</key>
+    <true/>
+    <key>com.apple.authkit.internal</key>
+    <true/>
+</dict>
+</plist>

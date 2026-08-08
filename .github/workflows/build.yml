@@ -441,7 +441,11 @@ jobs:
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG2/Applications/ReSign.app/Icon.png"
-          do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
+          # rootless (Dopamine) 专用 App entitlements：base + AuthKit 三件套。
+          # base 缺 com.apple.authkit.client.private / ak.anisette / authkit.internal → App 登录
+          # AKAppleIDSession 返回的 Anisette 无 X-Apple-I-MD → Apple 服务器 -80009 "MID is invalid"。
+          # rootful 仍用 base（不在本修复范围），roothide 用 entitlements-roothide.plist（不动）。
+          do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-rootless.plist
           do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$PKG2/usr/libexec/"
           cp Resources/cn.analy.resign.signingd.plist "$PKG2/Library/LaunchDaemons/"
