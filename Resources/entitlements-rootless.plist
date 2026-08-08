@@ -2,11 +2,35 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Rootless（Dopamine）专属 App entitlements = entitlements-base.plist + AuthKit 三件套 -->
-    <!-- 背景：rootless 装的 App 缺少 com.apple.authkit.client.private / ak.anisette / authkit.internal，
-         调用 AKAppleIDSession 生成 Anisette 时拿不到 X-Apple-I-MD，Apple 服务器返回 -80009 "MID is invalid"。
-         roothide 包未受影响：entitlements-roothide.plist 第 99 行已含 com.apple.authkit.client.private。
-         修法：仅 rootless 包用这份 entitlements，rootful 仍用 base（不在本修复范围），roothide 不动。 -->
+    <!--
+      Rootless（Dopamine）专属 App entitlements。
+      【v2.1.28 关键修复】此前 rootless App 只有 base + AuthKit，缺少脱离沙箱的 key，
+      导致 iOS App Sandbox 拦截了两件事，表现为“root-helper 启动失败 / 联网修复不成功 /
+      重签也失败 / 没有权限 / 完全不能用”：
+        1) posix_spawn 容器外的 /var/jb/usr/libexec/repro-helper → 被沙箱拒绝；
+        2) 读写 IPC 目录 /var/mobile/Library/Resign → 被沙箱拒绝。
+      roothide 包之所以一直正常，正是因为它带了 platform-application + no-container。
+      rootless 在 Dopamine 下是真实 rootfs、没有 roothide 的 namespace/overlay，
+      因此 roothide 为规避 namespace 误路由而刻意“不含 no-sandbox”的约束对 rootless 不适用；
+      rootless 直接采用与 roothide 等价的“逃逸沙箱”entitlements 即可（已在设备3真机验证可启动、不崩）。
+    -->
+
+    <!-- 逃逸 iOS App Sandbox：platform-application 使 App 以平台身份运行（无沙箱），
+         no-container 解除容器路径限制。二者配合是 roothide 能正常 spawn helper 的根因。 -->
+    <key>platform-application</key>
+    <true/>
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+
+    <!-- 平台身份（与 roothide 一致，越狱包用占位 team id 即可） -->
+    <key>application-identifier</key>
+    <string>AAAAAAAAAA.cn.analy.resign.ios</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>AAAAAAAAAA</string>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.cn.analy.resign.ios</string>
+    </array>
 
     <!-- 网络权限（用于 Apple ID 认证和 profile 下载） -->
     <key>com.apple.CommCenter.fine-grained</key>
@@ -24,6 +48,35 @@
         <string>cn.analy.resign.*</string>
     </array>
 
+    <!-- 描述文件安装（App 进程内 MCProfileConnection 需要 profiled 访问权） -->
+    <key>com.apple.managedconfiguration.profiled-access</key>
+    <true/>
+    <key>com.apple.private.MobileContainerManager.allowed</key>
+    <true/>
+
+    <!-- 重签需要访问 App 本体与数据容器 -->
+    <key>com.apple.private.security.storage.AppBundles</key>
+    <true/>
+    <key>com.apple.private.security.storage.AppDataContainers</key>
+    <true/>
+
+    <!-- 越狱环境加载自有 dylib / framework（避免库校验失败） -->
+    <key>com.apple.private.skip-library-validation</key>
+    <true/>
+
+    <!-- 图标刷新 / 应用数据库重建（uicache 等价操作） -->
+    <key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+    <true/>
+
+    <!-- 安装 / 卸载 / 查询（mobileinstall SPI） -->
+    <key>com.apple.private.mobileinstall.allowedSPI</key>
+    <array>
+        <string>Install</string>
+        <string>Uninstall</string>
+        <string>Lookup</string>
+        <string>Browse</string>
+    </array>
+
     <!-- 后台运行 -->
     <key>UIBackgroundModes</key>
     <array>
@@ -34,7 +87,7 @@
     <key>get-task-allow</key>
     <true/>
 
-    <!-- AuthKit（关键）：补足后 AKAppleIDSession 才能产出 X-Apple-I-MD -->
+    <!-- AuthKit（关键）：补足后 AKAppleIDSession 才能产出 X-Apple-I-MD，登录不再 -80009 -->
     <key>com.apple.authkit.client.private</key>
     <true/>
     <key>com.apple.private.ak.anisette</key>
