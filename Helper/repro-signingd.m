@@ -1957,6 +1957,18 @@ int main(int argc, char *argv[]) {
         return code;
     }
 
+    // ── 🔴 v2.1.26 --fix-cellular-request: 由 repro-helper 直接拉起时走这条（不走 launchctl）──
+    // 只读 /var/mobile/Library/Resign/fix-cellular-request.plist → 代跑 helper fix-cellular
+    // → 写回 fix-cellular-result.plist → 退出。绝不进入下方常驻 runloop，避免重复拉起时多实例抢活。
+    // （iOS 18 上 launchctl kickstart 两个域都会卡死，故改为直接 posix_spawn 本进程。）
+    if (argc >= 2 && strcmp(argv[1], "--fix-cellular-request") == 0) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:kIpcDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];
+        (void)s_handleFixCellularRequest(@"helper 直拉");
+        s_log(@"--fix-cellular-request 处理完毕，退出");
+        if (gLogFile) { fflush(gLogFile); fclose(gLogFile); }
+        return 0;
+    }
+
     // ── --bypass-3app: 手动解除免费账号 3 应用限制（无视设置开关，强制执行一次） ──
     if (argc >= 2 && strcmp(argv[1], "--bypass-3app") == 0) {
         s_log(@"========================================");

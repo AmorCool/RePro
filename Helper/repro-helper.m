@@ -811,45 +811,84 @@ static int RPVHelperKickstartProfileDaemon(BOOL force) {
     return 1;
 }
 
-/// 🔴 v2.1.26：以 root 身份唤醒 repro-signingd（续签守护进程）。
+/// 🔴 v2.1.26：以 root 身份直接拉起 repro-signingd 跑一次「联网修复」请求。
 ///
 /// 用途：App 里点「修复当前插件联网」时，需要一个**无沙箱的 root 上下文**去调
 /// CoreTelephony 私有 API。App 自己是沙箱进程，直接 posix_spawn 一个带
 /// no-sandbox 的二进制会被内核拒绝（v2.1.25 实锤回归，详见 entitlements-helper.plist 注释）。
-/// 因此改成：App 写请求文件 → 让 helper（setuid root）kickstart signingd →
-/// signingd 是 launchd 系统守护，天然无沙箱、uid 0 → 由它 spawn helper fix-cellular
+/// 因此改成：App 写请求文件 → 让 helper（setuid root）拉起 signingd →
+/// signingd 是短命进程（来一个请求→处理→退出），由它再 spawn helper fix-cellular
 /// → 等价于 SSH root 手动执行（真机实测 exit=0）。
 ///
-/// 🔴 绝不带 -k：-k = 先杀再拉。若此刻 signingd 正在续签，-k 会把它打断
-/// （v1.1.179 血泪教训：循环 kickstart -k 每 5 秒杀一次正在干活的 daemon）。
-/// 软唤醒即可——daemon 是短命进程，没在跑就拉起，在跑就靠 notify 通道即时响应。
+/// 🔴 为什么**不再用 launchctl kickstart**：
+///   iOS 17 起系统服务陆续从 system 域迁到 user/foreground 域；到 iOS 18（Dopamine
+///   rootless）实测，`launchctl kickstart system/cn.analy.resign.signingd` 与
+///   `user/501/cn.analy.resign.signingd` **都会卡死不返回**（timeout 12s 被 SIGTERM），
+///   导致 helper 的 waitpid 永久阻塞、App 永远收不到修复结果。
+///   而 signingd 本身是一次性进程，直接 posix_spawn 它（本 helper 是 setuid root，
+///   子进程继承 root + 无沙箱）与 launchd 拉起完全等价，且已在真机验证 CoreTelephony 路径 exit=0。
+///   固定传 `--fix-cellular-request`：daemon 只读请求文件、代跑 fix-cellular、写回结果、退出，
+///   绝不进入常驻 runloop（避免一次修复被拉起多次时多个实例抢活）。
+static NSString *RPVHelperResolveSigningdPath(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *cands = [NSMutableArray array];
+
+    // 优先按自身可执行文件反推越狱根（与 daemon 同一套判据）：
+    // .../usr/libexec/repro-helper → 去掉 repro-helper/libexec/usr 三级 → jbroot。
+    char buf[PATH_MAX] = {0};
+    uint32_t size = (uint32_t)sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        char resolved[PATH_MAX] = {0};
+        const char *use = realpath(buf, resolved) ? resolved : buf;
+        NSString *selfPath = [NSString stringWithUTF8String:use];
+        NSString *jbroot = selfPath.stringByDeletingLastPathComponent
+                                 .stringByDeletingLastPathComponent
+                                 .stringByDeletingLastPathComponent;
+        if (jbroot.length > 0) {
+            [cands addObject:[jbroot stringByAppendingPathComponent:@"usr/libexec/repro-signingd"]];
+        }
+    }
+    [cands addObjectsFromArray:@[ @"/var/jb/usr/libexec/repro-signingd",
+                                  @"/usr/libexec/repro-signingd" ]];
+    for (NSString *p in cands) {
+        if ([fm isExecutableFileAtPath:p]) return p;
+    }
+    return nil;
+}
+
 static int RPVHelperKickstartSigningd(void) {
-    NSString *launchctl = RPVHelperResolveTool(@"launchctl");
-    if (launchctl.length == 0) {
-        RPVHelperLog(@"kickstart-signingd: 找不到 launchctl");
+    NSString *signingd = RPVHelperResolveSigningdPath();
+    if (signingd.length == 0) {
+        RPVHelperLog(@"kickstart-signingd: 找不到 repro-signingd");
         return 2;
     }
-    const char *lc = [launchctl fileSystemRepresentation];
+    const char *sd = [signingd fileSystemRepresentation];
+    const char *args[] = { sd, "--fix-cellular-request", NULL };
 
-    // postinst 用 `bootstrap system` 加载；真机 `launchctl print` 曾解析到 user/501，
-    // 两个域都试一次（与 kickstart-profiledaemon 同策略）。
-    const char *domains[] = { "system/cn.analy.resign.signingd",
-                              "user/501/cn.analy.resign.signingd" };
-    for (int d = 0; d < 2; d++) {
-        const char *args[] = { lc, "kickstart", domains[d], NULL };
-        pid_t pid = 0;
-        if (posix_spawn(&pid, lc, NULL, NULL, (char *const *)args, NULL) != 0) {
-            continue;
-        }
-        int status = 0;
-        waitpid(pid, &status, 0);
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            RPVHelperLog(@"kickstart signingd 成功（%s）", domains[d]);
-            return 0;
-        }
+    // daemon 是独立子进程，输出对调用方（App）无意义；接 /dev/null，
+    // 避免占用 App 的 stdout 通道导致 helper 的 waitpid 拿不到 EOF 而卡住。
+    int devnull = open("/dev/null", O_WRONLY);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (devnull >= 0) {
+        posix_spawn_file_actions_adddup2(&fa, devnull, STDOUT_FILENO);
+        posix_spawn_file_actions_adddup2(&fa, devnull, STDERR_FILENO);
     }
-    RPVHelperLog(@"kickstart signingd 失败（system 与 user/501 两个域均未成功）");
-    return 1;
+
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, sd, &fa, NULL, (char *const *)args, NULL);
+    posix_spawn_file_actions_destroy(&fa);
+    if (devnull >= 0) close(devnull);
+
+    if (rc != 0) {
+        RPVHelperLog(@"kickstart-signingd: posix_spawn signingd 失败 errno=%d", rc);
+        return -rc;
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    RPVHelperLog(@"kickstart-signingd: signingd 退出 code=%d", code);
+    return code;
 }
 
 int main(int argc, char *argv[]) {
