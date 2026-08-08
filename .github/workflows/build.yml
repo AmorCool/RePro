@@ -414,7 +414,11 @@ jobs:
           # 签名：先签二进制，不破坏 Assets.car
           # 设置正确的权限：root 可执行
           chmod 0755 "$RL/Applications/ReSign.app/ReSign"
-          do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
+          # rootless (Dopamine) 专用 App entitlements：base + AuthKit 三件套。
+          # base 缺 com.apple.authkit.client.private / ak.anisette / authkit.internal → App 登录
+          # AKAppleIDSession 返回的 Anisette 无 X-Apple-I-MD → Apple 服务器 -80009 "MID is invalid"。
+          # rootful 仍用 base（不在本修复范围），roothide 用 entitlements-roothide.plist（不动）。
+          do_sign "$RL/Applications/ReSign.app/ReSign" Resources/entitlements-rootless.plist
           do_sign "$RL/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$RL/usr/libexec/"
           # ★ rootless (Dopamine) 专属：jbroot 在 /var/jb 且无可透明解析的 /usr/libexec，
@@ -441,11 +445,7 @@ jobs:
           chmod 0755 "$PKG2/usr/local/bin/zsign"
           cp Resources/Certificates/*.pem "$PKG2/usr/share/reprovision/certificates/"
           cp Resources/Icon.png "$PKG2/Applications/ReSign.app/Icon.png"
-          # rootless (Dopamine) 专用 App entitlements：base + AuthKit 三件套。
-          # base 缺 com.apple.authkit.client.private / ak.anisette / authkit.internal → App 登录
-          # AKAppleIDSession 返回的 Anisette 无 X-Apple-I-MD → Apple 服务器 -80009 "MID is invalid"。
-          # rootful 仍用 base（不在本修复范围），roothide 用 entitlements-roothide.plist（不动）。
-          do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-rootless.plist
+          do_sign "$PKG2/Applications/ReSign.app/ReSign" Resources/entitlements-base.plist
           do_sign "$PKG2/usr/libexec/repro-helper" Resources/entitlements-helper.plist
           cp build/repro-signingd "$PKG2/usr/libexec/"
           cp Resources/cn.analy.resign.signingd.plist "$PKG2/Library/LaunchDaemons/"
