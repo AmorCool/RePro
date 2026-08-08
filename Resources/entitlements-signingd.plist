@@ -72,5 +72,8 @@
     <true/>
     <key>com.apple.authkit.internal</key>
     <true/>
+    <!-- 🔴 v2.1.20：补 App 侧才有的 com.apple.authkit.client.private（见 roothide 版注释） -->
+    <key>com.apple.authkit.client.private</key>
+    <true/>
 </dict>
 </plist>

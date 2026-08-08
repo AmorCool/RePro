@@ -15,6 +15,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <dlfcn.h>
+#include <xpc/xpc.h>   // v2.1.20：诊断 anisette XPC 可达性（xpc_connection_*）
 
 // ─── CoreGraphics/UIKit 全局常量（匹配 SDK extern 声明，避免链接 UIKit）───────
 const CGRect CGRectZero = {{0,0},{0,0}};
@@ -140,8 +141,47 @@ static NSDictionary *RPVDaemonCredentials(void) {
         return result;
     }
 
+    // 🔴 v2.1.20 诊断：daemon 自生成缺 MD。打印生成的全部 header keys（对比 App
+    // 缓存的 keys），并测 anisette XPC 可达性——区分「entitlement 被拒」vs
+    // 「XPC 连不上（namespace/注入拦截）」。
+    NSLog(@"[repro-signingd] Anisette: daemon 自生成缺 X-Apple-I-MD，headers keys: [%@]",
+          [[result allKeys] componentsJoinedByString:@","]);
+    {
+        NSDictionary *appCache = [NSDictionary dictionaryWithContentsOfFile:
+                                  @"/var/mobile/Library/Resign/anisette.cache"];
+        NSLog(@"[repro-signingd] Anisette: App 缓存 keys: [%@]",
+              [[[appCache allKeys] sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]);
+        // anisette XPC 可达性：xpc_connection_create 只创建连接对象，resume 后发 ping
+        // 触发连接，1 秒后看有无错误/响应回调 —— 区分 entitlement 拒绝 vs XPC 不可达。
+        xpc_connection_t conn = xpc_connection_create_mach_service(
+            "com.apple.ak.anisette.xpc", NULL, XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
+        if (conn) {
+            __block BOOL gotEvent = NO;
+            xpc_connection_set_event_handler(conn, ^(xpc_object_t obj) {
+                gotEvent = YES;
+                if (xpc_get_type(obj) == XPC_TYPE_ERROR) {
+                    NSLog(@"[repro-signingd] Anisette XPC 连接错误: %s",
+                          xpc_dictionary_get_string(obj, XPC_ERROR_KEY_DESCRIPTION) ?: "?");
+                } else {
+                    NSLog(@"[repro-signingd] Anisette XPC 收到响应（类型 %ld）", (long)xpc_get_type(obj));
+                }
+            });
+            xpc_connection_resume(conn);
+            xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
+            xpc_dictionary_set_string(msg, "command", "ping");
+            xpc_connection_send_message(conn, msg);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC),
+                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                NSLog(@"[repro-signingd] Anisette XPC: 1 秒内%@事件（连接对象%@创建）",
+                      gotEvent ? @"有" : @"无", conn ? @"已" : @"未");
+            });
+        } else {
+            NSLog(@"[repro-signingd] Anisette XPC: xpc_connection_create_mach_service 返回 NULL");
+        }
+    }
+
     // fallback：App 进程缓存的完整 headers（可能过期，但好过没有）
-    NSLog(@"[repro-signingd] Anisette: daemon 自生成缺 X-Apple-I-MD（entitlement 未放行）→ 用 App 缓存");
+    NSLog(@"[repro-signingd] Anisette: 用 App 缓存");
     NSDictionary *cached = [NSDictionary dictionaryWithContentsOfFile:
                             @"/var/mobile/Library/Resign/anisette.cache"];
     if ([cached isKindOfClass:[NSDictionary class]] && [cached[@"X-Apple-I-MD"] length] > 0) {

@@ -81,5 +81,12 @@
     <true/>
     <key>com.apple.authkit.internal</key>
     <true/>
+    <!-- 🔴 v2.1.20：补 App 侧才有的 com.apple.authkit.client.private！
+         App 能生成完整 Anisette、daemon 不能（23:43 实测自生成缺 X-Apple-I-MD），
+         entitlements 差异里 App 独有 client.private（AuthKit 客户端私有权限），
+         daemon 只有 internal/ak.anisette。anisette XPC 校验的很可能就是
+         client.private —— 补上后 daemon 可能直接生成完整 Anisette。 -->
+    <key>com.apple.authkit.client.private</key>
+    <true/>
 </dict>
 </plist>
